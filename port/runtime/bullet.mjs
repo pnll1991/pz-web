@@ -1,6 +1,6 @@
 /** Loader for the locally built wasm32 Bullet module; never simulates a missing library. */
-const EXPORTED = ['version', 'initLogging', 'loggingInitialised', 'createWorld', 'bodyCount',
-  'addBox', 'addSphere', 'stepSimulation', 'getTransform', 'removeAllBodies', 'disposeWorld'];
+const EXPORTED = ['version', 'initLogging', 'loggingInitialised', 'worldInitialised', 'createWorld',
+  'bodyCount', 'addBox', 'addSphere', 'stepSimulation', 'getTransform', 'removeAllBodies', 'disposeWorld'];
 
 async function loadManifest(locateFile) {
   const response = await fetch(locateFile('manifest.json'));
@@ -28,6 +28,8 @@ export async function bulletBridge({ locateFile = name => '/vendor/pzbullet/' + 
     version: call('pzbullet_version', ['string', []]),
     initLogging: call('pzbullet_init_logging', ['void', []]),
     loggingInitialised: call('pzbullet_logging_initialised', ['number', []]),
+    loggingBufferBytes: call('pzbullet_logging_buffer_bytes', ['number', []]),
+    worldInitialised: call('pzbullet_world_initialised', ['number', []]),
     createWorld: call('pzbullet_create_world', ['number', ['number', 'number', 'number']]),
     bodyCount: call('pzbullet_body_count', ['number', []]),
     addBox: call('pzbullet_add_box', ['number', ['number', 'number', 'number', 'number', 'number', 'number', 'number', 'number', 'number', 'number', 'number']]),

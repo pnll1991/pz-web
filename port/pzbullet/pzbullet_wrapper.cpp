@@ -42,6 +42,9 @@ bool g_logging_initialised = false;
 // Stable scratch buffers so callers never own wasm memory.
 char g_version[64] = {0};
 double g_transform[3] = {0, 0, 0};
+// Own logging buffer: allocated for real by pzbullet_init_logging, never invented.
+constexpr int k_logging_buffer_bytes = 4096;
+char *g_logging_buffer = nullptr;
 
 }  // namespace
 
@@ -53,9 +56,23 @@ const char *pzbullet_version() {
   return g_version;
 }
 
-void pzbullet_init_logging() { g_logging_initialised = true; }
+// The port's own logging initialisation: allocates the formatting buffer and marks it ready.
+// Idempotent, like the game entry point it stands in for.
+void pzbullet_init_logging() {
+  if (g_logging_buffer) { g_logging_initialised = true; return; }
+  g_logging_buffer = static_cast<char *>(std::malloc(k_logging_buffer_bytes));
+  if (!g_logging_buffer) return;
+  std::memset(g_logging_buffer, 0, k_logging_buffer_bytes);
+  g_logging_initialised = true;
+}
 
-int pzbullet_logging_initialised() { return g_logging_initialised ? 1 : 0; }
+int pzbullet_logging_initialised() { return g_logging_initialised && g_logging_buffer ? 1 : 0; }
+
+// 0 until logging really is initialised; otherwise the real buffer capacity.
+int pzbullet_logging_buffer_bytes() { return g_logging_buffer ? k_logging_buffer_bytes : 0; }
+
+// Real module state: 1 only while a world object exists in this build.
+int pzbullet_world_initialised() { return g_world ? 1 : 0; }
 
 int pzbullet_create_world(double gravity_x, double gravity_y, double gravity_z) {
   if (g_world) return 0;

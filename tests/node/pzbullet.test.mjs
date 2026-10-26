@@ -23,6 +23,8 @@ async function loadBridge() {
     version: call('pzbullet_version', ['string', []]),
     initLogging: call('pzbullet_init_logging', ['void', []]),
     loggingInitialised: call('pzbullet_logging_initialised', ['number', []]),
+    loggingBufferBytes: call('pzbullet_logging_buffer_bytes', ['number', []]),
+    worldInitialised: call('pzbullet_world_initialised', ['number', []]),
     createWorld: call('pzbullet_create_world', ['number', ['number', 'number', 'number']]),
     bodyCount: call('pzbullet_body_count', ['number', []]),
     addBox: call('pzbullet_add_box', ['number', ['number', 'number', 'number', 'number', 'number', 'number', 'number', 'number', 'number', 'number', 'number']]),
@@ -41,14 +43,20 @@ test('compiled Bullet module reports its real version from the pinned source mac
   const version = bridge.version();
   assert.match(version, /^Bullet 283 \(upstream bullet3-2\.83, wasm32 port build\)$/, 'version string is derived from BT_BULLET_VERSION');
   assert.equal(bridge.loggingInitialised(), 0, 'logging starts uninitialized');
+  assert.equal(bridge.loggingBufferBytes(), 0, 'no logging buffer is claimed before real allocation');
+  assert.equal(bridge.worldInitialised(), 0, 'no world is claimed before createWorld');
   bridge.initLogging();
   assert.equal(bridge.loggingInitialised(), 1);
+  assert.equal(bridge.loggingBufferBytes(), 4096, 'init logging really allocates its own buffer');
+  bridge.initLogging();
+  assert.equal(bridge.loggingInitialised(), 1, 'a repeated init stays ready without a second buffer');
   bridge.disposeWorld();
 });
 
 test('a dynamic box falls under gravity through real Bullet simulation steps', async () => {
   const { bridge } = await loadBridge();
   assert.equal(bridge.createWorld(0, -9.82, 0), 1);
+  assert.equal(bridge.worldInitialised(), 1, 'an existing world is reported as initialised');
   assert.equal(bridge.createWorld(0, 0, 0), 0, 'a second world must be refused');
   const ground = bridge.addBox(50, 1, 50, 0, 0, 0, 0, 0, 0, 0, 1);
   const box = bridge.addBox(0.5, 0.5, 0.5, 80, 0, 12, 0, 0, 0, 0, 1);
@@ -68,5 +76,6 @@ test('a dynamic box falls under gravity through real Bullet simulation steps', a
   assert.equal(bridge.bodyCount(), 0);
   bridge.disposeWorld();
   assert.equal(bridge.bodyCount(), -1, 'after disposal there is no world');
+  assert.equal(bridge.worldInitialised(), 0, 'disposal really removes the world');
   assert.equal(bridge.stepSimulation(1 / 30, 1, 1 / 60), -1);
 });

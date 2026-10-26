@@ -18,7 +18,8 @@ DOWNLOADS = CACHE / 'downloads'
 BUILD = ROOT / 'build/round7/pzbullet'
 OUTPUT = ROOT / 'port/target/web/vendor/pzbullet'
 EXPORTS = ['pzbullet_version', 'pzbullet_init_logging', 'pzbullet_logging_initialised',
-           'pzbullet_create_world', 'pzbullet_body_count', 'pzbullet_add_box', 'pzbullet_add_sphere',
+           'pzbullet_logging_buffer_bytes', 'pzbullet_world_initialised', 'pzbullet_create_world', 'pzbullet_body_count',
+           'pzbullet_add_box', 'pzbullet_add_sphere',
            'pzbullet_step_simulation', 'pzbullet_get_transform', 'pzbullet_remove_all_bodies',
            'pzbullet_dispose_world']
 

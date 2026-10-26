@@ -76,6 +76,8 @@ public final class BuildCompiler {
             });
             tool.getTransformers().add(CompatReferences.class.getName());
             tool.getTransformers().add(FailFastNatives.class.getName());
+            tool.getTransformers().add(BulletNativeCompatibility.class.getName());
+            tool.getTransformers().add(LwjglPlatformCompatibility.class.getName());
             tool.getTransformers().add(JdkCompatibility.class.getName());
             tool.getTransformers().add(PolymorphicCalls.class.getName());
             tool.getTransformers().add(MemoryCompatibility.class.getName());
