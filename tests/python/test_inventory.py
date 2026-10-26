@@ -11,7 +11,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools/inventory'))
 from classfile import ClassReader, jni_names
-from inventory import inspect_game, report
+from inventory import inspect_game, report, resolve_game_home, launcher_metadata
 
 
 class InventoryTest(unittest.TestCase):
@@ -29,6 +29,7 @@ class InventoryTest(unittest.TestCase):
         source = cls.base / 'Native_Fixture.java'
         source.write_text('''package fixture;
           public class Native_Fixture {
+            public static final String UNPAIRED="\\uD800", PAIR="\\uD83D\\uDE00", NUL="\\u0000";
             public static native int add(int a,int b);
             public native long overload(int x);
             public native long overload(String x);
@@ -90,6 +91,28 @@ class InventoryTest(unittest.TestCase):
 
     def test_bad_class_is_not_silently_ignored(self):
         with self.assertRaises(ValueError): ClassReader(b'\xca\xfe\xba\xbe').parse()
+
+    def test_java_utf16_constants_preserve_unpaired_surrogates(self):
+        fields = {f['name']: f.get('constant') for f in ClassReader(self.bytecode).parse()['fields']}
+        self.assertEqual(fields['UNPAIRED'], '\ud800')
+        self.assertEqual(fields['PAIR'], '😀')
+        self.assertEqual(fields['NUL'], '\0')
+
+    def test_nested_linux_launcher_and_lowercase_classpath(self):
+        nested = self.base / 'nested/projectzomboid'
+        nested.mkdir(parents=True, exist_ok=True)
+        (nested / 'ProjectZomboid64.json').write_text(json.dumps({'classpath':['.', 'projectzomboid.jar'], 'mainClass':'fixture/Main'}))
+        self.assertEqual(resolve_game_home(nested.parent), nested)
+        self.assertEqual(launcher_metadata(nested)['mainClass'], 'fixture.Main')
+        self.assertEqual(launcher_metadata(nested)['classPath'], ['.', 'projectzomboid.jar'])
+        with self.assertRaises(ValueError): resolve_game_home(self.base / 'missing')
+        (nested / 'media').mkdir(exist_ok=True)
+        (nested / 'media/fixture.txt').write_text('our nested fixture')
+        startup = self.base / 'nested-startup.txt'; startup.write_text('media/fixture.txt\n')
+        out = self.base / 'nested-packs'
+        subprocess.run([sys.executable,str(ROOT/'tools/pack/pack.py'),'--pz-home',str(nested.parent),
+                        '--files',str(startup),'--out',str(out)],check=True,capture_output=True)
+        self.assertEqual(json.loads((out/'index.json').read_text())['files'][0]['path'], '/media/fixture.txt')
 
     def test_missing_tool_and_copy_are_clear(self):
         command = [sys.executable,str(ROOT/'tools/inventory/inventory.py'),str(self.game)]

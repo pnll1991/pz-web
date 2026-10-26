@@ -24,6 +24,45 @@ export class GLBridge {
   viewport(...args) { this.call('viewport', ...args); }
   getError() { return this.call('getError'); }
   unsupported(jniName) { throw new Error(`Unsupported native: ${jniName}`); }
+  async loadTexture(url) {
+    const location = new URL(url, globalThis.location.href);
+    if (location.origin !== globalThis.location.origin) throw new Error('Texture must be local');
+    const response = await fetch(location);
+    if (!response.ok) throw new Error(`Texture HTTP ${response.status}`);
+    const bitmap = await createImageBitmap(await response.blob(), { premultiplyAlpha:'none', colorSpaceConversion:'none' });
+    const gl = this.context, previous = gl.getParameter(gl.TEXTURE_BINDING_2D);
+    const texture = this.call('createTexture');
+    try {
+      this.call('bindTexture', gl.TEXTURE_2D, texture);
+      this.call('texParameteri', gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      this.call('texParameteri', gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      this.call('texParameteri', gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      this.call('texParameteri', gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      this.call('texImage2D', gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+      if (this.getError() !== gl.NO_ERROR) throw new Error('Texture upload failed');
+      return { texture, width:bitmap.width, height:bitmap.height };
+    } catch (error) { gl.deleteTexture(texture); throw error; }
+    finally { gl.bindTexture(gl.TEXTURE_2D, previous); bitmap.close(); }
+  }
+  readTexture({ texture, width, height }) {
+    const gl = this.context;
+    const previousRead = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);
+    const previousDraw = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING);
+    const framebuffer = this.call('createFramebuffer');
+    try {
+      this.call('bindFramebuffer', gl.FRAMEBUFFER, framebuffer);
+      this.call('framebufferTexture2D', gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('Texture framebuffer incomplete');
+      const pixels = new Uint8Array(width * height * 4);
+      this.call('readPixels', 0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      if (this.getError() !== gl.NO_ERROR) throw new Error('Texture readback failed');
+      return pixels;
+    } finally {
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, previousRead);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, previousDraw);
+      gl.deleteFramebuffer(framebuffer);
+    }
+  }
   shader(type, source) {
     const gl = this.context;
     const shader = this.call('createShader', type);

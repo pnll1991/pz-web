@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Properties;
 import org.teavm.diagnostics.DefaultProblemTextConsumer;
 import org.teavm.tooling.ConsoleTeaVMToolLog;
 import org.teavm.tooling.TeaVMTargetType;
@@ -15,11 +16,21 @@ import org.teavm.vm.TeaVMOptimizationLevel;
 
 /** Compiler-side code only; never included in the browser entrypoint. */
 public final class BuildCompiler {
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] args) throws Throwable {
         Path port = Path.of(args[0]);
         Path config = port.resolve("target/config");
-        Path output = port.resolve("target/web");
+        Properties entrypoint = new Properties();
+        try (var reader = Files.newBufferedReader(config.resolve("entrypoint.properties"))) { entrypoint.load(reader); }
+        String mode = entrypoint.getProperty("mode");
+        boolean game = "game-main".equals(mode);
+        long heapLimit = Runtime.getRuntime().maxMemory();
+        String gameMain = entrypoint.getProperty("main", "");
+        Path output = port.resolve(game ? "target/web/game" : "target/web");
+        Path reports = port.resolve("target/reports/" + mode + "-" + entrypoint.getProperty("reflection"));
+        Files.createDirectories(reports);
+        write(port, reports, "build-report.json", "{\"success\":false,\"status\":\"running\",\"mode\":\"" + mode + "\"}\n");
         Files.createDirectories(output);
+        Files.writeString(output.resolve("build-state.json"), "{\"success\":false,\"status\":\"running\",\"mode\":\"" + mode + "\"}\n");
         // Prevent a failed compile from leaving an old, apparently working module.
         Files.deleteIfExists(output.resolve("boot.wasm"));
         List<File> classPath = new ArrayList<>();
@@ -38,13 +49,14 @@ public final class BuildCompiler {
         for (File file : classPath) urls.add(file.toURI().toURL());
         System.setProperty("pz.nativeIndex", config.resolve("natives.tsv").toString());
         System.setProperty("pz.glIndex", config.resolve("gl-overrides.tsv").toString());
-        System.setProperty("pz.reflection", port.resolve("config/reflection.txt").toString());
+        System.setProperty("pz.reflection", config.resolve("reflection.txt").toString());
+        System.setProperty("pz.gameMain", gameMain);
         long started = System.nanoTime();
         try (var loader = new URLClassLoader(urls.toArray(URL[]::new), BuildCompiler.class.getClassLoader())) {
             TeaVMTool tool = new TeaVMTool();
             tool.setClassLoader(loader);
             tool.setClassPath(classPath);
-            tool.setMainClass("port.Boot");
+            tool.setMainClass(game ? "port.GameBoot" : "port.Boot");
             tool.setTargetType(TeaVMTargetType.WEBASSEMBLY_GC);
             tool.setTargetDirectory(output.toFile());
             tool.setTargetFileName("boot.wasm");
@@ -52,11 +64,15 @@ public final class BuildCompiler {
             tool.setObfuscated(false);
             tool.setLog(new ConsoleTeaVMToolLog(true));
             tool.getTransformers().add(FailFastNatives.class.getName());
+            tool.getTransformers().add(JdkCompatibility.class.getName());
+            if (game) tool.getTransformers().add(GameEntryTransformer.class.getName());
             try {
                 tool.generate();
-            } catch (Exception error) {
-                Files.writeString(port.resolve("target/teavm-diagnostics.txt"), error.toString());
-                Files.writeString(port.resolve("target/build-report.json"), "{\"success\":false,\"mode\":\"platform-smoke\",\"game_initialized\":false}\n");
+            } catch (Throwable error) {
+                Files.deleteIfExists(output.resolve("boot.wasm"));
+                write(port, reports, "teavm-diagnostics.txt", error.toString());
+                write(port, reports, "build-report.json", "{\"success\":false,\"status\":\"compiler-failed\",\"mode\":\"" + mode + "\",\"failure_type\":\"" + error.getClass().getName() + "\",\"game_initialized\":false}\n");
+                Files.copy(reports.resolve("build-report.json"), output.resolve("build-state.json"), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                 throw error;
             }
             StringBuilder problems = new StringBuilder();
@@ -66,29 +82,43 @@ public final class BuildCompiler {
                 problems.append(problem.getSeverity()).append(": ").append(problem.getLocation() == null ? "compiler" : problem.getLocation().getMethod())
                     .append(": ").append(text.getText()).append('\n');
             }
-            Files.writeString(port.resolve("target/teavm-diagnostics.txt"), problems);
-            StringBuilder jdkProblems = new StringBuilder("Scope: reachable platform code only; the game has not been initialized.\n");
+            write(port, reports, "teavm-diagnostics.txt", problems.toString());
+            StringBuilder jdkProblems = new StringBuilder("Scope: " + mode + "; compilation reachability is not runtime evidence.\n");
             for (String line : problems.toString().split("\n")) {
                 if (line.contains("java.") || line.contains("javax.") || line.contains("jdk.") || line.contains("sun.")) {
                     jdkProblems.append(line).append('\n');
                 }
             }
-            Files.writeString(port.resolve("target/jdk-api-report.txt"), jdkProblems);
+            write(port, reports, "jdk-api-report.txt", jdkProblems.toString());
             boolean success = tool.getProblemProvider().getSevereProblems().isEmpty();
             long bytes = success && Files.exists(output.resolve("boot.wasm")) ? Files.size(output.resolve("boot.wasm")) : 0;
             long elapsed = (System.nanoTime() - started) / 1_000_000;
             var dependencies = tool.getDependencyInfo();
             String report = """
-                    {"mode":"platform-smoke","game_initialized":false,"success":%s,
+                    {"mode":"%s","game_main":"%s","reflection":"%s","game_initialized":false,"success":%s,
                      "teavm":"0.16.0","target":"WEBASSEMBLY_GC",
                      "reachable_classes":%d,"reachable_methods":%d,
                      "wasm_bytes":%d,"compile_ms":%d,"external_classpath_entries":%d,
+                     "jvm_heap_limit_bytes":%d,"process_peak_rss_kib":%d,
                      "diagnostics_file":"teavm-diagnostics.txt"}
-                    """.formatted(success, dependencies.getReachableClasses().size(),
-                    dependencies.getReachableMethods().size(), bytes, elapsed, externalCount);
-            Files.writeString(port.resolve("target/build-report.json"), report);
+                    """.formatted(mode, gameMain, entrypoint.getProperty("reflection"), success, dependencies.getReachableClasses().size(),
+                    dependencies.getReachableMethods().size(), bytes, elapsed, externalCount, heapLimit, peakRss());
+            write(port, reports, "build-report.json", report);
+            Files.writeString(output.resolve("build-state.json"), report);
             System.out.println(report);
             if (!success) throw new IllegalStateException("TeaVM compilation failed:\n" + problems);
         }
+    }
+
+    private static void write(Path port, Path reports, String name, String value) throws Exception {
+        Files.writeString(reports.resolve(name), value);
+        Files.writeString(port.resolve("target").resolve(name), value);
+    }
+
+    private static long peakRss() throws Exception {
+        for (String line : Files.readAllLines(Path.of("/proc/self/status"))) {
+            if (line.startsWith("VmHWM:")) return Long.parseLong(line.split("\\s+")[1]);
+        }
+        return -1;
     }
 }

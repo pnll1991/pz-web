@@ -9,10 +9,12 @@ import port.demo.GLMappingProbe;
 import port.runtime.CoreChecks;
 import port.demo.lwjgl.GL11;
 import port.shim.BrowserFiles;
+import port.shim.BrowserFileSystem;
 
 public final class Boot {
     private static int frames;
     public static void main(String[] args) throws Exception {
+        BrowserFileSystem.install();
         CoreChecks.run();
         String missing;
         try {
@@ -37,13 +39,35 @@ public final class Boot {
         BrowserFiles.writeUtf8("/Zomboid/java-probe.txt", "Java → VFS: ñ");
         if (!"Java → VFS: ñ".equals(BrowserFiles.readUtf8("/Zomboid/java-probe.txt")))
             throw new AssertionError("Java VFS round trip");
-        // TODO F1/F2: initialize the real game only after inventory and API analysis.
+        // GameBoot is compiled separately from this platform fixture.
         System.out.println("PZ platform smoke: Wasm GC, reflection, JNI failures and direct buffers OK; game not initialized.");
         ready(missing, checksum);
     }
     @JSExport public static int frame(double timestamp) { return ++frames; }
     @JSExport public static int frameCount() { return frames; }
     @JSExport public static int glError() { return GL11.glGetError(); }
+    @JSExport public static String readJavaFile(String path) throws Exception {
+        return java.nio.file.Files.readString(new java.io.File(path).toPath());
+    }
+    @JSExport public static String exerciseJavaFiles(String base) throws Exception {
+        var directory = new java.io.File(base);
+        if (!directory.isDirectory() && !directory.mkdirs()) throw new AssertionError("mkdirs");
+        var file = new java.io.File(directory, "nio.txt");
+        java.nio.file.Files.writeString(file.toPath(), "Java NIO: ñ😀");
+        try (var random = new java.io.RandomAccessFile(file, "rw")) {
+            random.seek(0); random.writeByte('j');
+            random.seek(0); if (random.readUnsignedByte() != 'j') throw new AssertionError("seek/write");
+        }
+        var target = directory.toPath().resolve("sub", "file");
+        if (!target.toString().endsWith("/sub/file")) throw new AssertionError("resolve varargs");
+        Thread.onSpinWait();
+        return java.nio.file.Files.readString(file.toPath());
+    }
+    @JSExport public static boolean readUnsignedBytes(String path) throws Exception {
+        try (var stream = new java.io.FileInputStream(path)) {
+            return stream.read() == 0 && stream.read() == 128 && stream.read() == 255 && stream.read() == -1;
+        }
+    }
     @JSBody(params="data", script="return data[0]+data[1]+data[2]+data[3];")
     private static native int bufferSum(Uint8Array data);
     @JSBody(params={"missing","checksum"}, script="globalThis.pzBoot={ready:true,missingNative:missing,bufferChecksum:checksum,javaVfs:true,gameInitialized:false};")

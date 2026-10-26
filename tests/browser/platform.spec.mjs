@@ -108,3 +108,22 @@ test('an aborted IndexedDB save retains the previous committed snapshot', async 
   await page.reload(); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
   expect(await page.evaluate(()=>new TextDecoder().decode(pzLab.vfs.readFile('/Zomboid/atomic.txt')))).toBe('previous');
 });
+
+test('java.io, RandomAccessFile and NIO share the persistent browser filesystem', async ({ page }) => {
+  await page.goto('/'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  expect(await page.evaluate(() => pzLab.teavm.exports.readJavaFile('/media/platform-probe.txt'))).toContain('sintético');
+  expect(await page.evaluate(() => pzLab.teavm.exports.exerciseJavaFiles('/Zomboid/java-io/nested'))).toBe('java NIO: ñ😀');
+  expect(await page.evaluate(() => {
+    pzLab.vfs.mount('/media/binary-probe.bin', new Uint8Array([0, 128, 255]));
+    return pzLab.teavm.exports.readUnsignedBytes('/media/binary-probe.bin');
+  })).toBe(true);
+  await page.evaluate(async () => {
+    if (!pzLab.vfs.mkdir('/Zomboid/empty-dir')) throw new Error('mkdir');
+    pzLab.vfs.setAttribute('/Zomboid/java-io/nested/nio.txt', 'modified', 123456000);
+    await pzLab.vfs.flush();
+  });
+  await page.reload(); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  expect(await page.evaluate(() => pzLab.teavm.exports.readJavaFile('/Zomboid/java-io/nested/nio.txt'))).toBe('java NIO: ñ😀');
+  expect(await page.evaluate(() => pzLab.vfs.isDirectory('/Zomboid/empty-dir'))).toBe(true);
+  expect(await page.evaluate(() => pzLab.vfs.lastModified('/Zomboid/java-io/nested/nio.txt'))).toBe(123456000);
+});

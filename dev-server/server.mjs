@@ -46,7 +46,14 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
   webRoot = await realpath(webRoot).catch(() => { throw new Error('Build missing. Run scripts/build.sh first.'); });
   let mediaRoot;
   if (pzHome) {
-    const home = await realpath(pzHome);
+    const requestedHome = await realpath(pzHome);
+    let home = requestedHome;
+    try { await stat(path.join(home, 'ProjectZomboid64.json')); }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      home = await realpath(path.join(home, 'projectzomboid'));
+      if (!inside(requestedHome, home)) throw new Error('Nested game directory escapes PZ_HOME');
+    }
     await stat(path.join(home, 'ProjectZomboid64.json'));
     mediaRoot = await realpath(path.join(home, 'media'));
     if (!inside(home, mediaRoot)) throw new Error('PZ_HOME/media must stay inside the pinned copy');

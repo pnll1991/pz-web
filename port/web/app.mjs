@@ -1,6 +1,6 @@
 import { GLBridge } from '/runtime/gl.mjs';
 import { CanvasInput } from '/runtime/input.mjs';
-import { VirtualFileSystem } from '/runtime/vfs.mjs';
+import { VirtualFileSystem, normalizePath } from '/runtime/vfs.mjs';
 import { preloadPacks } from '/runtime/packs.mjs';
 
 const el = id => document.getElementById(id);
@@ -22,7 +22,7 @@ try {
   if (!probe.ok) throw new Error(`Recurso de prueba HTTP ${probe.status}`);
   vfs.mount('/media/platform-probe.txt', new Uint8Array(await probe.arrayBuffer()));
   el('vfs').textContent = 'OK';
-  globalThis.pzRuntime = { gl, vfs, input };
+  globalThis.pzRuntime = { gl, vfs, input, normalizePath };
   if (!globalThis.TeaVM) throw new Error('Falta el runtime de TeaVM: ejecutá scripts/build.sh');
   const teavm = await TeaVM.wasmGC.load('/boot.wasm');
   teavm.exports.main([]);

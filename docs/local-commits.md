@@ -1,28 +1,21 @@
-# Commits locales pendientes
+# Commits locales sugeridos — tarea 2
 
-La tarea pide commits chicos. El sandbox de la sesión inicial permite editar el proyecto pero monta su `.git` en solo lectura. El intento real de `git add` falló con:
+La base ya está registrada en **ba29078** (`Base F0-F3: toolchain, inventario, TeaVM Wasm GC, WebGL2, VFS`). En esta sesión `.git` está montado en solo lectura. Se conservaron los cambios en disco sin intentar eludir esa restricción y sin crear remotos.
 
-```text
-fatal: Unable to create '/datos/Projects/pz-web/.git/index.lock': Read-only file system
-```
-
-No se cambió esa restricción, no se creó otra base git ni se publicó nada. Desde una terminal del dueño con escritura normal en `.git`, después de revisar `git status`, se pueden registrar los grupos siguientes. No usar `git add -f` ni agregar `.toolchain`, `build`, `target`, `inventory`, `packs` o archivos del juego.
+Desde una terminal del dueño con escritura en `.git`, revisar `git status` y registrar estos grupos. No usar `git add -f`: `inventory/`, `build/`, `target/`, paquetes, binarios, recursos y capturas reales deben permanecer ignorados.
 
 ```bash
-git add .gitignore AGENTS.md AGENT_LEARNINGS.md docs/CODEX_TASK.md docs/ROADMAP-source.txt docs/decisions.md
-git commit -m "docs: establish personal port scope and repository rules"
+git add tools/inventory tools/exposure tools/pack tests/python AGENT_LEARNINGS.md
+git commit -m "fix: inventory the pinned Linux fat jar and generate Lua exposure metadata"
 
-git add scripts/bootstrap.py scripts/toolchain-lock.json scripts/env.sh scripts/doctor.py scripts/check-toolchains.sh tools/inventory tools/pack tools/glgen tests/python
-git commit -m "build: add pinned user toolchains and offline game inventory"
+git add port scripts/prepare_build.py scripts/report_game.py
+git commit -m "feat: link the real game main and bridge TeaVM file APIs to browser storage"
 
-git add port scripts/build.sh scripts/prepare_build.py
-git commit -m "feat: compile platform probes to TeaVM Wasm GC with explicit native failures"
+git add dev-server/server.mjs playwright.config.mjs playwright.game.config.mjs tests/browser tests/node tests/prepare_real.py
+git commit -m "test: verify persistent Java IO and exact WebGL texture transfer from the local copy"
 
-git add dev-server package.json package-lock.json playwright.config.mjs scripts/dev.sh scripts/test.sh tests/browser tests/node tests/prepare_browser.py
-git commit -m "test: verify local serving graphics input and persistent browser files"
-
-git add README.md STATUS.md docs/local-commits.md docs/verification.md
-git commit -m "docs: record validation and next steps requiring the game"
+git add README.md STATUS.md docs/decisions.md docs/local-commits.md docs/verification.md docs/CODEX_TASK_2.md
+git commit -m "docs: record real inventory, build failures and verified F2-F3 progress"
 ```
 
-Los primeros commits organizan el trabajo; la secuencia completa constituye la base ejecutable. Si falta identidad git, el dueño debe elegirla; no se inventó nombre ni email.
+La secuencia completa corresponde al estado verificado. No se ejecutó ningún commit en esta sesión. `docs/CODEX_TASK_2.md` es el documento de tarea aportado por el dueño, que ya estaba sin seguimiento al comenzar.

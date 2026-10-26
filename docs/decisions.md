@@ -18,3 +18,15 @@
 - 2026-10-25: Chrome separado con SwiftShader para pruebas reproducibles de WebGL2; no extrapolar fps ni memoria de la demo al juego o a la RTX 3090.
 - 2026-10-25: Ghidra, Vineflower y Emscripten se verifican con código propio; no leer decompilaciones o chats privados ni descargar activos del juego.
 - 2026-10-25: `.git` es de solo lectura en este sandbox; conservar cambios en archivos y documentar commits pendientes, sin eludir esa protección.
+
+- 2026-10-26: aceptar el launcher directamente o en `projectzomboid/` y normalizar `classpath`/main con barras; fuente: launcher real de la copia 25485521. Rechazar discrepancias con el inventario en builds.
+- 2026-10-26: inspeccionar el fat jar y sus ELF embebidos mediante memfd, sin extraer binarios al repositorio; distinguir exports, firmas únicas, variantes multi-release y plataformas.
+- 2026-10-26: enlazar el main del launcher mediante IR propio y conservar la demo en otro módulo; un build real fallido nunca demuestra un hito del juego ni conserva un Wasm viejo.
+- 2026-10-26: generar reflexión desde registros literales, objetos globales construidos inline, helpers y jerarquía usando Class-File API de JDK 25; informar límites dinámicos sin cargar clases del juego.
+- 2026-10-26: seleccionar clases de reflexión mediante un conjunto con comprobación de null; fuente: SPI y source jars TeaVM 0.16.0 y prueba real. La documentación de la versión está en https://teavm.org/docs/release-notes/0.16.0.html.
+- 2026-10-26: usar el SPI VirtualFileSystem de TeaVM para integrar java.io/java.nio con el VFS existente, en lugar de duplicar todas las clases estándar; fuente: teavm-core y teavm-classlib 0.16.0 locales.
+- 2026-10-26: ampliar solamente APIs JDK con implementación propia comprobable y conservar diagnósticos del resto; `onSpinWait` cede mediante Thread.yield, conforme al modelo de corrutinas documentado en https://teavm.org/docs/runtime/coroutines.html.
+- 2026-10-26: persistir archivos y metadata de directorios en una transacción IndexedDB versión 2; mantener flush explícito y no afirmar sincronización durable de RandomAccessFile rws/rwd.
+- 2026-10-26: verificar el texto y cada byte de una textura real mediante hashes locales, sin guardar su contenido en fuentes versionables; diferenciar esta evidencia del menú y de shaders del juego.
+- 2026-10-26: reservar puertos 8091/8092 para tests y conservar el servidor existente en 8090. Todos escuchan exclusivamente en 127.0.0.1.
+- 2026-10-26: no detener aplicaciones ajenas ni ejecutar el heap predeterminado de 20 GiB con aproximadamente 3-5 GB de RAM libre; registrar los fallos reales con los límites de diagnóstico de 2/3 GiB y solicitar memoria disponible para el análisis completo.

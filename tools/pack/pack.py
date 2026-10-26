@@ -8,6 +8,9 @@ from pathlib import Path
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'inventory'))
+from inventory import resolve_game_home
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -17,9 +20,9 @@ def main():
     parser.add_argument('--max-bytes', type=int, default=32 * 1024 * 1024)
     args = parser.parse_args()
     if not args.pz_home: parser.error('PZ_HOME is required')
-    root = Path(args.pz_home).resolve()
-    if not (root / 'ProjectZomboid64.json').is_file(): parser.error('Not a pinned PZ Linux copy')
-    if args.out.resolve().is_relative_to(root): parser.error('Output must be outside read-only PZ_HOME')
+    requested = Path(args.pz_home).expanduser().resolve()
+    root = resolve_game_home(requested)
+    if args.out.resolve().is_relative_to(requested): parser.error('Output must be outside read-only PZ_HOME')
     if args.max_bytes < 1: parser.error('--max-bytes must be positive')
     paths = sorted({line.strip() for line in args.files.read_text().splitlines() if line.strip() and not line.startswith('#')})
     if not paths: parser.error('The startup file list is empty')
