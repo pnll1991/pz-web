@@ -1,0 +1,62 @@
+{
+  "jdk": {
+    "version": "jdk-25.0.5+8",
+    "url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5%2B8/OpenJDK25U-jdk_x64_linux_hotspot_25.0.5_8.tar.gz",
+    "filename": "OpenJDK25U-jdk_x64_linux_hotspot_25.0.5_8.tar.gz",
+    "sha256": "68982529869257d0ee6b824ec5aa270ff8b118bb438670da0b97ebdab178d7fb"
+  },
+  "ghidra": {
+    "version": "Ghidra_12.2_build",
+    "url": "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.2_build/ghidra_12.2_PUBLIC_20261016.zip",
+    "filename": "ghidra_12.2_PUBLIC_20261016.zip",
+    "sha256": "2c2cd776db3c1f6a097ba418922378ac3649cadd5e844a6f5f088ae628a7be67"
+  },
+  "vineflower": {
+    "version": "1.12.0",
+    "url": "https://github.com/Vineflower/vineflower/releases/download/1.12.0/vineflower-1.12.0.jar",
+    "filename": "vineflower-1.12.0.jar",
+    "sha256": "1dfcfe974395734fa467ce620661c7623d05ba83670de0529b1fbd63ff548b9d"
+  },
+  "apitrace": {
+    "version": "14.0",
+    "url": "https://github.com/apitrace/apitrace/releases/download/14.0/apitrace-14.0-Linux.tar.bz2",
+    "filename": "apitrace-14.0-Linux.tar.bz2",
+    "sha256": "3d32d9a493c9fece4b09efc9d4b987512d8716a8a5210e294ac58cc9343f8ec7"
+  },
+  "cmake": {
+    "version": "v4.4.4",
+    "url": "https://github.com/Kitware/CMake/releases/download/v4.4.4/cmake-4.4.4-linux-x86_64.tar.gz",
+    "filename": "cmake-4.4.4-linux-x86_64.tar.gz",
+    "sha256": "e5bb807f7728cb60cd8b27ebc97a2edb469b68655f21e844a600c3575b76f5bb"
+  },
+  "ninja": {
+    "version": "v1.13.2",
+    "url": "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-linux.zip",
+    "filename": "ninja-linux.zip",
+    "sha256": "5749cbc4e668273514150a80e387a957f933c6ed3f5f11e03fb30955e2bbead6"
+  },
+  "maven": {
+    "version": "3.9.16",
+    "filename": "apache-maven-3.9.16-bin.tar.gz",
+    "url": "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.16/apache-maven-3.9.16-bin.tar.gz",
+    "sha512": "831a8591fe20c8243b1dbe7d71e3244f31d1665b0804b2e825e38cbbe5ce0cafb8338851f90780735568773e0a6cd07bbec107cda0b896b008b861075358b6f6"
+  },
+  "node": {
+    "version": "v24.22.1",
+    "filename": "node-v24.22.1-linux-x64.tar.xz",
+    "url": "https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-x64.tar.xz",
+    "sha256": "6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6"
+  },
+  "emsdk": {
+    "version": "6.0.13",
+    "filename": "emsdk-6.0.13.tar.gz",
+    "url": "https://codeload.github.com/emscripten-core/emsdk/tar.gz/refs/tags/6.0.13",
+    "sha256": "8c04da75eeceb015e766f4766b713bae0dbb9156ceaacf3cf353585b88656114"
+  },
+  "renderdoc": {
+    "version": "1.46",
+    "filename": "renderdoc_1.46.tar.gz",
+    "url": "https://renderdoc.org/stable/1.46/renderdoc_1.46.tar.gz",
+    "sha256": "6fedf15eab1288d9a81889ba8a4452dca53f5c10de8162be32a0f8972f62dc09"
+  }
+}

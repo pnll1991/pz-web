@@ -1,0 +1,2 @@
+# Explicit allowlist, one class per line. Expand only from real exposure metadata.
+port.demo.ReflectionProbe

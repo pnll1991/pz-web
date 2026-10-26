@@ -1,0 +1,626 @@
+<cursor_untrusted_data_1337 source="ReadCanvas">
+
+Canvas "Project Zomboid en el navegador: roadmap del port personal" (https://cursor.com/canvas/store-edbd192a-424a-4a39-ab0a-eeacc00f5516/260efcd5-14cc-402d-991a-2b580d5aa534):
+
+import {
+  Page,
+  Section,
+  Text,
+  Callout,
+  Table,
+  Steps,
+  BulletList,
+  ProsCons,
+  Properties,
+  Diagram,
+  Bars,
+  Segmented,
+  LinkCards,
+  TableOfContents,
+  useGrokTheme,
+  useState,
+} from "grok/canvas";
+
+function Code(props: { text: string; label?: string }) {
+  const theme = useGrokTheme();
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {props.label ? (
+        <div
+          style={{
+            fontFamily: theme.font.family,
+            fontSize: theme.font.label.fontSize,
+            lineHeight: theme.font.label.lineHeight,
+            color: theme.text.tertiary,
+          }}
+        >
+          {props.label}
+        </div>
+      ) : null}
+      <pre
+        style={{
+          margin: 0,
+          padding: 14,
+          border: `1px solid ${theme.border.default}`,
+          borderRadius: theme.radius.md,
+          background: theme.bg.subtle,
+          color: theme.text.primary,
+          fontFamily: theme.font.mono,
+          fontSize: theme.font.code.fontSize,
+          lineHeight: theme.font.code.lineHeight,
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+          userSelect: "text",
+        }}
+      >
+        {props.text}
+      </pre>
+    </div>
+  );
+}
+
+type PhaseId = "f0" | "f1" | "f2" | "f3" | "f4" | "f5" | "f6" | "f7" | "f8";
+
+interface Phase {
+  id: PhaseId;
+  short: string;
+  name: string;
+  weeks: string;
+  milestone: string;
+  codex: string[];
+  you: string[];
+  prompts: { label: string; text: string }[];
+}
+
+const PHASES: Phase[] = [
+  {
+    id: "f0",
+    short: "F0",
+    name: "Entorno, copia fija del juego e inventario",
+    weeks: "1 semana",
+    milestone: "Tenés `inventory/report.md` con todos los jars, las librerías nativas, cada método `native` de Java y la versión exacta de LWJGL y del juego.",
+    codex: [
+      "Escribir un script que recorra tu copia fija del juego y genere el inventario.",
+      "Listar cada método `native` (con `javap -p`) y cruzarlo con los símbolos `Java_*` exportados por cada `.so` (con `nm -D`).",
+      "Agrupar las funciones por librería y contar cuántas hay que reemplazar.",
+    ],
+    you: [
+      "Instalar el juego en Steam, abrirlo una vez en Linux y confirmar que anda.",
+      "Copiar la instalación a `~/pz-pinned/<build>` para que las actualizaciones de Steam no te rompan el trabajo.",
+    ],
+    prompts: [
+      {
+        label: "Prompt para Codex: inventario",
+        text: `Leé AGENTS.md antes de empezar.
+Tarea: crear tools/inventory/run.sh (bash + python3) que reciba la ruta PZ_HOME (mi copia fija de Project Zomboid para Linux) y genere inventory/report.md e inventory/inventory.json. NO copies ningún archivo del juego al repo; solo nombres, tamaños y metadatos.
+
+Tiene que incluir:
+1. Árbol de carpetas de primer nivel con tamaños (du -sh), y el contenido de ProjectZomboid64.json (classpath, mainClass, vmArgs).
+2. Todos los .jar: nombre, tamaño, Implementation-Version del MANIFEST, cantidad de clases, versión de class file (major) de una muestra.
+3. Versión de LWJGL (de los manifests de lwjgl*.jar) y qué módulos hay (opengl, glfw, stb, jemalloc, etc.).
+4. Por cada clase de projectzomboid.jar y de los jars propios del juego: los métodos native (usar javap -p -s sobre las clases, o parsear el class file con un script). Salida: clase, método, descriptor JNI.
+5. Por cada .so en linux64/, natives/ y la raíz: nm -D --defined-only, filtrar símbolos Java_*, y cruzarlos con el punto 4 para saber qué método implementa cada librería. Marcar si el .so tiene símbolos de debug (file, readelf -S).
+6. Paquetes de Kahlua (se.krka.kahlua.* o el que corresponda) y cuántas clases tiene.
+7. Resumen al principio de report.md: tabla librería -> cantidad de funciones nativas.
+
+Que sea idempotente, que no necesite red y que falle con un mensaje claro si falta una herramienta.`,
+      },
+    ],
+  },
+  {
+    id: "f1",
+    short: "F1",
+    name: "Esqueleto TeaVM que compila el juego entero",
+    weeks: "2 a 3 semanas",
+    milestone: "TeaVM 0.16 compila `projectzomboid.jar` completo a WebAssembly GC con 0 errores. Cada nativa ausente lanza una excepción con su nombre, nunca un stub que finge éxito.",
+    codex: [
+      "Armar el proyecto Maven con TeaVM 0.16 (backend Wasm GC) que toma el jar desde tu disco, no desde el repo.",
+      "Generar a partir del inventario una clase stub por cada `native`, que lance `UnsupportedOperationException(\"nombre\")`.",
+      "Crear el reporte de APIs del JDK que TeaVM no tiene, para ir sustituyéndolas con `SubstitutionPolicy`.",
+    ],
+    you: [
+      "Darle memoria al compilador: `MAVEN_OPTS=-Xmx20g`. El otro port se quedó sin memoria con 8 GB al compilar la reflexión completa.",
+    ],
+    prompts: [
+      {
+        label: "Prompt para Codex: proyecto TeaVM",
+        text: `Leé AGENTS.md. Usá inventory/inventory.json como fuente de verdad.
+Crear un proyecto Maven en port/ con TeaVM 0.16.0, target WebAssembly GC, que:
+- Tome el classpath del juego desde la variable PZ_HOME (projectzomboid.jar y los jars de java/). Nunca los copies al repo ni a target/ versionado.
+- Use como entrypoint una clase nuestra port.Boot que por ahora solo llame a la inicialización mínima del juego (dejala vacía con un TODO y logueo).
+- Genere automáticamente, desde el inventario, una implementación por cada método native del juego y de LWJGL usando las extension points de TeaVM 0.16 (SubstitutionPolicy / class-library substitution). Cada una debe lanzar UnsupportedOperationException con el nombre JNI completo. Nada de devolver 0 o null en silencio.
+- Imprima al final un reporte: clases alcanzadas, métodos, APIs del JDK faltantes, tamaño del .wasm.
+- Configure la reflexión con la API de policy de 0.15+ (selectClasses(...).reflectablePublicMembers()) dejando un archivo de configuración separado; por ahora mínimo.
+Agregá scripts/build.sh que exporte MAVEN_OPTS=-Xmx20g. Probá que compile y pegame el reporte.`,
+      },
+    ],
+  },
+  {
+    id: "f2",
+    short: "F2",
+    name: "Plataforma: archivos, loop e hilos",
+    weeks: "2 a 3 semanas",
+    milestone: "En Chrome, la consola muestra el log real del juego desde `LoggerManager.init` hasta la carga de recursos, leyendo tus archivos desde localhost.",
+    codex: [
+      "Servidor de desarrollo en Node que sirve tu copia fija en `/media` (solo lectura, solo en 127.0.0.1) con headers COOP/COEP.",
+      "Sistema de archivos virtual para `java.io`/`java.nio`: lectura desde paquetes precargados y cacheados, escritura en memoria con volcado a IndexedDB/OPFS.",
+      "Loop principal sobre `requestAnimationFrame` y revisión de hilos: TeaVM convierte los hilos de Java en corrutinas sobre un solo hilo.",
+    ],
+    you: [
+      "Revisar con el decompilador qué hilos arranca el juego (render, carga de mundo, iluminación, pathfinding) y avisarle a Codex cuáles hacen busy-wait.",
+    ],
+    prompts: [
+      {
+        label: "Prompt para Codex: servidor y archivos",
+        text: `Leé AGENTS.md.
+1. dev-server/: servidor Node 24 (sin frameworks pesados) que escuche SOLO en 127.0.0.1:8090, sirva port/target (wasm, js, html) y monte PZ_HOME/media como /media de solo lectura. Headers: Cross-Origin-Opener-Policy: same-origin y Cross-Origin-Embedder-Policy: require-corp. Soporte Range y ETag.
+2. tools/pack/: script que agrupe los archivos que el juego lee al arrancar en N paquetes (índice JSON + blobs), generados en mi PC a partir de PZ_HOME, nunca versionados. Los paquetes se cachean en Cache Storage del navegador.
+3. port/runtime/vfs: sustituciones de TeaVM para java.io.File, FileInputStream, RandomAccessFile y java.nio.file.Files/Paths que lean del índice precargado (lectura sincrónica desde memoria) y escriban en un FS en memoria con flush asíncrono a IndexedDB bajo /Zomboid (equivalente a ~/Zomboid).
+4. Un test en navegador (Playwright + Chrome) que lea un .txt real de media y escriba/relea un archivo en /Zomboid después de recargar la página.`,
+      },
+      {
+        label: "Prompt para Codex: hilos y loop",
+        text: `Leé AGENTS.md. Contexto: TeaVM Wasm GC emula Thread con corrutinas en un solo hilo; un busy-wait sin yield cuelga todo.
+Tarea: con el código decompilado que está en ~/pz-decomp (solo lectura, no lo copies al repo), listá cada lugar donde el juego crea Thread/Executor y cada loop que espera un flag volatile o hace while(!x){}. Proponé un parche mínimo por caso (Thread.yield(), o ejecutar el trabajo de ese hilo como tarea por frame) aplicado como transformación de bytecode en build time, no editando fuentes. Implementá port.Boot para que el game loop corra un frame por requestAnimationFrame y cedá el control al navegador entre frames. Dejá un contador de frames y de tiempo por fase en la consola.`,
+      },
+    ],
+  },
+  {
+    id: "f3",
+    short: "F3",
+    name: "Gráficos e input: llegar al menú principal",
+    weeks: "4 a 6 semanas",
+    milestone: "El menú principal real se dibuja en un canvas WebGL 2 (con imagen fija en lugar del video Bink) y responde al mouse y al teclado.",
+    codex: [
+      "Reemplazar las clases de LWJGL OpenGL por llamadas a WebGL 2 vía JSO. Son unas 2.244 funciones; la mayoría se generan automáticamente.",
+      "Emular lo que WebGL 2 no tiene: pipeline fijo (matrices, `glBegin`/`glEnd` si aparecen), `GL_QUADS`, formatos de textura y reescritura de GLSL de escritorio a GLSL ES 3.00.",
+      "Implementar GLFW y `MemoryUtil` sobre el canvas y un arena de memoria nativa con `ByteBuffer` directos.",
+      "Traducir eventos DOM a códigos GLFW, con pointer lock y la Gamepad API para joystick.",
+    ],
+    you: [
+      "Abrir el juego real con RenderDoc o apitrace en Linux para capturar un frame del menú. Esa es tu referencia para comparar.",
+    ],
+    prompts: [
+      {
+        label: "Prompt para Codex: generador GL → WebGL 2",
+        text: `Leé AGENTS.md. Objetivo: sustituir org.lwjgl.opengl.* (GL11..GL45, ARB/EXT que use el juego) por implementaciones TeaVM que llamen a WebGL2 vía JSO.
+1. Generador (tools/glgen) que lea las firmas de las clases LWJGL del jar del juego e inventory.json y produzca: (a) mapeo directo cuando existe en WebGL2, (b) emulación cuando no (lista abajo), (c) excepción explícita con nombre para lo que no se use.
+2. Emulación: pila de matrices y estado del pipeline fijo en un shader genérico, GL_QUADS -> triángulos con índice, glTexImage2D con formatos de escritorio -> internalformat válido de WebGL2, glMapBuffer -> buffer espejo + bufferSubData, glGetError real.
+3. Shaders: pasador GLSL 1.20/3.30 -> GLSL ES 3.00 (version, precision, attribute/varying -> in/out, gl_FragColor, texture2D). Usá un parser real, no regex.
+4. Pasaje de buffers: Wasm GC no comparte arrays por referencia; usá NIO direct buffers como canal hacia JS.
+5. Telemetría: contador de llamadas por función y por frame, dibujado en un overlay opcional.
+Test: un shader del juego compila en WebGL2 y un PNG real del menú se sube y se lee igual con readPixels.`,
+      },
+      {
+        label: "Prompt para Codex: GLFW e input",
+        text: `Leé AGENTS.md. Implementá las sustituciones de org.lwjgl.glfw.GLFW que usa el juego (ver inventory.json): ventana = <canvas> a pantalla completa, tamaño y devicePixelRatio, callbacks de teclado (KeyboardEvent.code -> GLFW_KEY_*), mouse, scroll, char input para cajas de texto, cursor custom, pointer lock y gamepad (Gamepad API -> glfwGetGamepadState con el mapeo de media/gamecontrollerdb.txt). Liberá todas las teclas al perder el foco. Test con Playwright: tipear en una caja de texto del menú y hacer click en Opciones.`,
+      },
+    ],
+  },
+  {
+    id: "f4",
+    short: "F4",
+    name: "Lua (Kahlua) y la reflexión",
+    weeks: "2 a 4 semanas",
+    milestone: "`LuaManager.init` completo: cargan los archivos Lua shared, client y server, funciona la UI de Lua y llegás a crear un personaje.",
+    codex: [
+      "Kahlua es Java puro, así que compila con TeaVM. El problema es que el juego expone unas mil clases a Lua por reflexión.",
+      "Generar en build time un manifiesto de exposición leyendo el bytecode, sin ejecutar el juego, y pasárselo a la policy de reflexión de TeaVM.",
+      "Si el binario explota de tamaño: generar un dispatcher estático (tabla de llamadas) que reemplace la reflexión solo en el exposer.",
+    ],
+    you: [
+      "Comparar el log de Lua del juego real en tu PC con el del navegador: tienen que cargar la misma cantidad de archivos.",
+    ],
+    prompts: [
+      {
+        label: "Prompt para Codex: exposición Java → Lua",
+        text: `Leé AGENTS.md. El juego expone clases Java a Kahlua por reflexión (LuaManager y su Exposer). En TeaVM la reflexión solo existe para lo que declaremos.
+1. tools/exposure: leé el bytecode del jar (ASM o Class-File API de JDK 25) y encontrá cada clase que se registra para Lua y sus miembros públicos (métodos, campos, constructores, jerarquía). Salida: exposure.json determinista.
+2. Generá desde exposure.json la configuración de reflexión de TeaVM 0.16 (policy API) y medí: tiempo de compilación, RAM del compilador y tamaño del .wasm.
+3. Plan B detrás de un flag: generar una clase port.lua.StaticDispatch con un switch por id de método que llame directo, y parchear en build time el exposer para usarla en lugar de Method.invoke.
+4. Test: en el navegador, LuaManager.init termina y el número de archivos Lua cargados coincide con el log del juego real (te paso el log).`,
+      },
+    ],
+  },
+  {
+    id: "f5",
+    short: "F5",
+    name: "Reemplazar las librerías nativas",
+    weeks: "6 a 10 semanas",
+    milestone: "Se carga un mundo nuevo, caminás, aparecen zombies, hay luz y sombra correctas y los autos tienen física.",
+    codex: [
+      "Ir librería por librería, en este orden: Clipper, PathFind, PopMan, Lighting, Bullet, modelos (jassimp), SQLite y STB.",
+      "Para cada una, armar tests de oro: grabar entradas y salidas de la nativa real en tu PC y exigir el mismo resultado en el navegador.",
+      "Bullet es open source (zlib): compilarlo con Emscripten como módulo aparte. Las demás se portan a Java para que vivan en el mismo heap.",
+    ],
+    you: [
+      "Usar Ghidra sobre tus `.so` para documentar lo que hace cada función. Ver la sección de ingeniería inversa.",
+    ],
+    prompts: [
+      {
+        label: "Prompt para Codex: grabador de llamadas nativas (en tu PC)",
+        text: `Leé AGENTS.md. Necesito tests de oro para reemplazar las nativas del juego.
+Escribí un Java agent (tools/jnitrace, JDK 25) que use Instrumentation.setNativeMethodPrefix para envolver los métodos native de las clases que te indico (empezá por zombie.vehicles.Clipper y la clase de PopMan del inventario). Por cada llamada, grabá en un archivo binario compacto: método, argumentos (incluyendo el contenido de ByteBuffer/arrays), valor de retorno y buffers modificados. Con muestreo configurable para no frenar el juego.
+Agregá instrucciones para activarlo SOLO en mi copia ~/pz-pinned editando ProjectZomboid64.json (vmArgs -javaagent). Después, un runner que reproduzca esas grabaciones contra nuestra implementación (en JVM y en el navegador) y reporte diferencias exactas.`,
+      },
+      {
+        label: "Prompt para Codex: una nativa (repetir por librería)",
+        text: `Leé AGENTS.md. Librería objetivo: <PZClipper64 | PZPopMan64 | Lighting64 | PZPathFind64>.
+Entradas: inventory.json (firmas JNI), docs/re/<lib>.md (mis notas de Ghidra sobre qué hace cada función) y las grabaciones de tools/jnitrace.
+1. Implementá cada función en Java dentro de port/natives/<lib>, como sustitución TeaVM del método native. Para Clipper usá clipper2-java (Boost) y un port de earcut (ISC); para PathFind primero verificá si el juego tiene un camino Java propio y usalo.
+2. Corré las grabaciones en la JVM primero y después en Chrome. Cero diferencias o una tolerancia de float que me justifiques caso por caso.
+3. No copies código decompilado ni desensamblado: implementá a partir de la especificación en docs/re.`,
+      },
+      {
+        label: "Prompt para Codex: Bullet con Emscripten",
+        text: `Leé AGENTS.md. PZBullet64 es un wrapper JNI propio del juego sobre Bullet Physics (zlib). 
+1. Clonar Bullet 2.x (fijá la versión que mejor coincida con las cadenas de versión del .so; te las paso), compilar con Emscripten como módulo wasm32 separado (MODULARIZE, sin threads al principio, ALLOW_MEMORY_GROWTH).
+2. Escribir en C++ nuestro wrapper con la misma semántica que cada función de docs/re/PZBullet64.md, exportado a JS.
+3. En TeaVM, sustituir los native de las clases de física por llamadas JSO a ese módulo, pasando datos por NIO direct buffers.
+4. Validar con las grabaciones de jnitrace: creación de mundo, autos, step de simulación, remolque.`,
+      },
+    ],
+  },
+  {
+    id: "f6",
+    short: "F6",
+    name: "Partidas guardadas en el navegador",
+    weeks: "2 semanas",
+    milestone: "Guardás, cerrás la pestaña, volvés a abrir y la partida sigue donde la dejaste.",
+    codex: [
+      "Reemplazar el driver `sqlite-jdbc` por la build oficial de `sqlite-wasm`, con las bases en memoria y exportadas a IndexedDB al guardar.",
+      "Persistir `/Zomboid` (Saves, options, logs) en OPFS o IndexedDB, con escritura atómica para no corromper una partida si se cierra la pestaña.",
+      "Agregar exportar e importar partidas como `.zip` para pasarlas a tu PC y de vuelta.",
+    ],
+    you: [
+      "Probar a cerrar la pestaña en medio de un guardado y verificar que la partida anterior siga intacta.",
+    ],
+    prompts: [
+      {
+        label: "Prompt para Codex: saves y SQLite",
+        text: `Leé AGENTS.md.
+1. Sustituí el uso de JDBC del juego (sqlite-jdbc) por un driver mínimo sobre la build oficial de sqlite-wasm (sqlite.org), solo con las partes de java.sql que el juego usa (listalas desde el bytecode). Bases en memoria en el hilo principal; al guardar, sqlite3_js_db_export y escritura a IndexedDB.
+2. Hacé que el FS virtual persista /Zomboid/Saves con escritura atómica (escribir a temp + renombrar) y un journal simple.
+3. Botones en la página host: exportar e importar partida como .zip.
+4. Test Playwright: nueva partida, caminar, guardar, recargar, Continuar, y verificar la posición del jugador.`,
+      },
+    ],
+  },
+  {
+    id: "f7",
+    short: "F7",
+    name: "Audio",
+    weeks: "4 a 6 semanas",
+    milestone: "Se escuchan pasos, zombies, música y la radio, con los bancos `.bank` originales de tu copia.",
+    codex: [
+      "Usar el SDK oficial de FMOD Studio para HTML5 (WebAssembly), que lee los mismos `.bank` que usa el juego.",
+      "Reimplementar sobre él las cerca de 445 funciones de `fmodintegration`, con callbacks hacia Java.",
+      "Hacer streaming de bancos con lecturas por rango y reanudar el `AudioContext` en el primer click.",
+    ],
+    you: [
+      "Crear una cuenta en fmod.com y bajar el SDK HTML5. La licencia es gratuita para uso no comercial; no se puede redistribuir.",
+    ],
+    prompts: [
+      {
+        label: "Prompt para Codex: FMOD HTML5",
+        text: `Leé AGENTS.md. Tengo el SDK de FMOD Studio HTML5 en ~/sdk/fmod-html5 (no lo copies al repo; referencialo por variable FMOD_HTML5).
+1. Con inventory.json, listá las funciones native de fmodintegration que el juego llama de verdad al arrancar y en partida (cruzalo con las grabaciones de jnitrace).
+2. Implementalas como sustituciones TeaVM -> JSO -> FMOD HTML5 (Studio System, banks, events, parameters, buses, Core channels, reverb, 3D attributes). Callbacks de eventos de vuelta a Java.
+3. Bancos: cargarlos desde /media con lectura por rango, sin bajar todo de una.
+4. AudioContext: resume en el primer gesto del usuario. Medí latencia y uso de memoria.`,
+      },
+    ],
+  },
+  {
+    id: "f8",
+    short: "F8",
+    name: "Rendimiento y memoria",
+    weeks: "3 a 4 semanas, y después continuo",
+    milestone: "Más de 30 fps en una zona poblada y una sesión de 1 hora sin pasar de 3 GB de heap.",
+    codex: [
+      "Perfilar con Chrome DevTools y arreglar lo caro: ZomboidWeb ganó mucho redibujando la UI 20 veces por segundo y no cada frame.",
+      "Cazar fugas: ZomboidWeb crece 100 MB por minuto y llena el heap de 4 GB en media hora.",
+      "Hacer streaming de las celdas del mapa con cachés acotadas, y bajar el tamaño del `.wasm` eliminando código muerto (multijugador, ImGui, servidor).",
+    ],
+    you: [
+      "Definir tu escenario de prueba fijo (por ejemplo, Muldraugh con 1 hora de juego) y medir siempre el mismo.",
+    ],
+    prompts: [
+      {
+        label: "Prompt para Codex: memoria y fps",
+        text: `Leé AGENTS.md. Escenario fijo: partida guardada bench-01 (te la paso exportada), caminar 10 minutos en una ruta grabada.
+1. Harness Playwright que reproduzca la ruta, mida fps (p50/p95), tiempo de carga del mundo, performance.memory y uso de GPU estimado, y guarde un JSON por corrida.
+2. Tomá heap snapshots a los 0, 5 y 10 minutos y decime qué tipos de objeto crecen.
+3. Proponé y aplicá los 3 cambios de mayor impacto, uno por commit, con la medición antes y después. No cambies reglas de juego.`,
+      },
+    ],
+  },
+];
+
+const AGENTS_MD = `# AGENTS.md (port personal de Project Zomboid al navegador)
+
+## Reglas duras
+- Nunca agregues al repo archivos del juego: ni .jar, .class, .so, media/, .bank, mapas, ni código decompilado o desensamblado.
+- Los archivos del juego se leen de PZ_HOME (mi copia fija) en build time o desde el dev server local.
+- El repo es privado. El dev server escucha solo en 127.0.0.1.
+- Las nativas ausentes lanzan una excepción con su nombre JNI. Nunca un stub que devuelve éxito.
+- No cambies la lógica del juego: solo plataforma (archivos, gráficos, input, audio, nativas).
+
+## Stack
+- TeaVM 0.16.0, backend WebAssembly GC. JDK 25. Maven. Node 24. Chrome estable.
+- Emscripten solo para Bullet (módulo wasm32 separado).
+- Builds: scripts/build.sh (MAVEN_OPTS=-Xmx20g).
+
+## Cómo trabajar
+- Un cambio chico por tarea, con un test que corra en la JVM y en Chrome (Playwright).
+- Ante la duda, compará contra el juego real en mi PC (logs, grabaciones de tools/jnitrace, capturas de RenderDoc).
+- Documentá cada decisión en docs/decisions.md (una línea por decisión).`;
+
+const SETUP = `# 1. Herramientas base
+sudo apt update
+sudo apt install -y git curl unzip build-essential cmake ninja-build python3 python3-pip \\
+  openjdk-25-jdk maven binutils file apitrace renderdoc
+# Si openjdk-25-jdk no está en tu repo, instalá Temurin 25 desde adoptium.net
+
+# 2. Node 24 (con nvm) y Codex CLI
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+source ~/.bashrc && nvm install 24
+npm i -g @openai/codex
+
+# 3. Emscripten (para Bullet)
+git clone https://github.com/emscripten-core/emsdk ~/emsdk
+cd ~/emsdk && ./emsdk install latest && ./emsdk activate latest
+echo 'source ~/emsdk/emsdk_env.sh' >> ~/.bashrc
+
+# 4. Chrome estable (WebAssembly GC; Firefox no compila un módulo así de grande)
+wget -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+sudo apt install -y /tmp/chrome.deb
+
+# 5. Ingeniería inversa: Ghidra + decompilador de Java
+#    Ghidra: github.com/NationalSecurityAgency/ghidra/releases (descomprimir en ~/tools/ghidra)
+#    Vineflower o Zomboid Decompiler para leer TU jar; la salida queda en ~/pz-decomp, fuera del repo
+
+# 6. Juego: instalar Project Zomboid (appid 108600) desde Steam, abrirlo una vez y fijar una copia
+steam steam://install/108600
+cp -a ~/.local/share/Steam/steamapps/common/ProjectZomboid ~/pz-pinned/42.x
+export PZ_HOME=~/pz-pinned/42.x   # ajustá a la carpeta que tenga ProjectZomboid64.json
+
+# 7. Repo privado
+mkdir -p ~/pz-port && cd ~/pz-port && git init
+printf 'target/\\nnode_modules/\\n*.jar\\n*.class\\n*.so\\n*.bank\\npacks/\\ninventory/raw/\\n' > .gitignore`;
+
+export default function App() {
+  const [phase, setPhase] = useState<PhaseId>("f0");
+  const p: Phase = PHASES.find((x: Phase) => x.id === phase) ?? PHASES[0];
+
+  return (
+    <Page
+      title="Project Zomboid en el navegador: roadmap del port personal"
+      summary="Cómo armar tu propio port de Build 42 que corra adentro de Chrome con tus archivos del juego: qué arquitectura elegir, las fases con prompts listos para Codex, cuánto lleva y dónde se puede trabar."
+      width="column"
+    >
+      <TableOfContents
+        items={[
+          { label: "Recomendación", id: "reco" },
+          { label: "Las tres opciones", id: "opciones" },
+          { label: "Qué trae tu instalación y con qué se reemplaza", id: "nativas" },
+          { label: "Arquitectura", id: "arquitectura" },
+          { label: "Preparar Ubuntu", id: "entorno" },
+          { label: "AGENTS.md para Codex", id: "agents" },
+          { label: "Fases y prompts", id: "fases" },
+          { label: "Dónde entra la ingeniería inversa", id: "re" },
+          { label: "Para qué sirve el modelo local", id: "local" },
+          { label: "Esfuerzo y riesgos", id: "esfuerzo" },
+          { label: "Nota legal", id: "legal" },
+          { label: "Fuentes", id: "fuentes" },
+        ]}
+      />
+
+      <Section heading="Recomendación" id="reco">
+        <Callout lead="Andá por TeaVM a WebAssembly GC, en un repo propio.">
+          Es el camino que ya demostró jugabilidad: ZomboidWeb pasó de 6 a 10 fps con CheerpJ a 57 fps con TeaVM, y la carga del mundo bajó de 240 a 85 segundos. Usá el repo de notmike101 solo como material de lectura sobre las trampas. No lo forkees: no tiene licencia, se arma solo en Windows y todavía no pasó de caminar en 9 chunks.
+        </Callout>
+        <Text>La idea central es no reescribir el juego. Tu código Java original se compila tal cual a WebAssembly, y vos solo reemplazás lo que toca el sistema: archivos, OpenGL, ventana, input, audio y las librerías nativas en C++.</Text>
+      </Section>
+
+      <Section heading="Las tres opciones" id="opciones">
+        <Table
+          columns={["Opción", "Velocidad", "Compatibilidad Java", "Veredicto"]}
+          rows={[
+            ["TeaVM 0.16 (Wasm GC, AOT)", "43 a 57 fps en ZomboidWeb", "Hilos como corrutinas; reflexión solo de lo declarado", { text: "Recomendada", tone: "success" }],
+            ["CheerpJ 4.3 (JVM en el navegador)", "6 a 10 fps en ZomboidWeb", "Casi completa; nativas fáciles de escribir en JS", { text: "Solo para prototipar", tone: "warning" }],
+            ["Fork de notmike101", "Sin medir en partida", "CheerpJ más pruebas con TeaVM", { text: "No conviene", tone: "danger" }],
+          ]}
+        />
+        <ProsCons
+          prosHeading="Por qué TeaVM"
+          consHeading="Lo que cuesta"
+          pros={[
+            "Compila el juego antes de tiempo: rinde unas 5 veces más que CheerpJ.",
+            "Desde la versión 0.13 soporta hilos, `synchronized` y `wait`/`notify` con corrutinas.",
+            "Desde la 0.14 a la 0.16 sumó reflexión completa y una API para sustituir clases.",
+            "Tiene licencia Apache 2.0 y no depende de un CDN externo.",
+          ]}
+          cons={[
+            "Todo corre en un solo hilo: los busy-wait del juego se cuelgan si no los parcheás.",
+            "La reflexión que usa Lua hay que declararla, y compilarla pide más de 8 GB de RAM.",
+            "El módulo pesa unos 184 MB y solo corre en Chrome o Edge de escritorio.",
+            "Los arrays no se comparten con JS por referencia, así que hay que usar buffers NIO directos.",
+          ]}
+        />
+      </Section>
+
+      <Section heading="Qué trae tu instalación y con qué se reemplaza" id="nativas">
+        <Table
+          columns={["Pieza del juego", "Funciones", "Reemplazo en el navegador"]}
+          rows={[
+            ["Código del juego (`projectzomboid.jar`, Java 25)", "-", "TeaVM a WebAssembly GC"],
+            ["Kahlua (Lua 5.1 en Java)", "-", "Compila tal cual; declarar la reflexión"],
+            ["LWJGL 3 OpenGL", "2.244", "Traducción a WebGL 2 más pipeline fijo emulado"],
+            ["GLFW y LWJGL system", "865", "Canvas, eventos DOM y Gamepad API"],
+            ["Lighting64", "50", "Port a Java o JS"],
+            ["PZBullet64 (Bullet)", "Wrapper propio", "Bullet con Emscripten y wrapper nuestro"],
+            ["PZPopMan64", "Wrapper propio", "Port a Java"],
+            ["PZPathFind64", "Wrapper propio", "El pathfinder en Java del propio juego"],
+            ["PZClipper64 (Clipper2, earcut)", "Wrapper propio", "clipper2-java y earcut"],
+            ["jassimp (modelos y animaciones)", "10", "Preconvertir en tu PC y leer el caché"],
+            ["sqlite-jdbc", "Driver", "sqlite-wasm oficial con IndexedDB"],
+            ["STB (imágenes)", "177", "Decodificación del navegador"],
+            ["FMOD Studio", "445", "SDK oficial de FMOD para HTML5"],
+            ["Bink (video del menú)", "11", "Imagen fija"],
+            ["RakNet, ZNet, Steam", "139", "Desactivado: solo un jugador"],
+            ["Dear ImGui (debug)", "1.687", "No hace falta"],
+          ]}
+        />
+        <Text>Los conteos de funciones son los que publicó ZomboidWeb para Build 42. En la Fase 0 sacás los tuyos exactos. En Linux, la instalación trae `ProjectZomboid64` y `ProjectZomboid64.json` (con el classpath y los argumentos de la JVM), `jre64/`, `java/` (con `projectzomboid.jar` y los jars de LWJGL), `linux64/` y `natives/` (los `.so`), `media/` y `stdlib.lua`.</Text>
+      </Section>
+
+      <Section heading="Arquitectura" id="arquitectura">
+        <Diagram
+          direction="vertical"
+          nodes={[
+            { id: "pc", label: "Tu copia fija del juego", detail: "~/pz-pinned, nunca en el repo", kind: "terminal" },
+            { id: "build", label: "Build en tu PC", detail: "TeaVM, generadores, paquetes de datos" },
+            { id: "srv", label: "Dev server local", detail: "127.0.0.1, COOP/COEP" },
+            { id: "wasm", label: "Juego en WebAssembly GC", detail: "Java original + sustituciones" },
+            { id: "gl", label: "WebGL 2", detail: "LWJGL/GLFW emulados" },
+            { id: "nat", label: "Nativas reemplazadas", detail: "Java, JS y Bullet en Emscripten" },
+            { id: "store", label: "IndexedDB / OPFS", detail: "Saves, opciones, caché" },
+            { id: "audio", label: "FMOD HTML5", detail: "Tus .bank originales" },
+          ]}
+          edges={[
+            { from: "pc", to: "build" },
+            { from: "build", to: "srv", label: "wasm + paquetes" },
+            { from: "srv", to: "wasm", label: "carga y streaming" },
+            { from: "wasm", to: "gl" },
+            { from: "wasm", to: "nat" },
+            { from: "wasm", to: "store" },
+            { from: "wasm", to: "audio" },
+          ]}
+        />
+        <BulletList
+          items={[
+            "Memoria: los objetos de Java en Wasm GC viven en el heap de JS de Chrome, de unos 4 GB por pestaña. Memory64 solo ayuda al módulo de Bullet, no al juego.",
+            "SharedArrayBuffer exige los headers COOP/COEP. Los dejás puestos desde el día uno, aunque al principio no uses hilos.",
+            "OPFS con acceso sincrónico solo funciona en Workers, así que SQLite corre en memoria y se exporta al guardar.",
+            "Los datos se cargan en paquetes cacheados al arrancar; el mapa se baja a medida que te movés.",
+          ]}
+        />
+      </Section>
+
+      <Section heading="Preparar Ubuntu" id="entorno">
+        <Code text={SETUP} label="Pegalo por partes en una terminal" />
+        <Text>Tu RTX 3090 y tus 30 GB de RAM alcanzan. El navegador con el mundo cargado puede usar entre 7 y 9 GB y el compilador de TeaVM hasta 20 GB, así que no corras las dos cosas a la vez.</Text>
+      </Section>
+
+      <Section heading="AGENTS.md para Codex" id="agents">
+        <Code text={AGENTS_MD} label="Guardalo en la raíz del repo: Codex lo lee en cada tarea" />
+      </Section>
+
+      <Section heading="Fases y prompts" id="fases">
+        <Segmented<PhaseId>
+          options={PHASES.map((x: Phase) => ({ value: x.id, label: x.short }))}
+          value={phase}
+          onChange={(v: PhaseId) => setPhase(v)}
+        />
+        <Properties
+          items={[
+            { label: "Fase", value: `${p.short}: ${p.name}` },
+            { label: "Duración estimada", value: p.weeks },
+            { label: "Hito", value: p.milestone },
+          ]}
+        />
+        <Section heading="Qué hace Codex">
+          <BulletList items={p.codex} />
+        </Section>
+        <Section heading="Qué hacés vos">
+          <BulletList items={p.you} />
+        </Section>
+        <Section heading="Prompts listos para pegar">
+          {p.prompts.map((pr: { label: string; text: string }) => (
+            <Code key={pr.label} label={pr.label} text={pr.text} />
+          ))}
+        </Section>
+      </Section>
+
+      <Section heading="Dónde entra la ingeniería inversa" id="re">
+        <Steps
+          steps={[
+            { title: "Leer el Java con un decompilador", detail: "Vineflower o Zomboid Decompiler sobre tu jar, con la salida en `~/pz-decomp`. Sirve para entender hilos, archivos y la exposición a Lua." },
+            { title: "Firmas JNI", detail: "Con `javap -p -s` y `nm -D` sabés exactamente qué recibe y devuelve cada nativa. Lo automatiza la Fase 0." },
+            { title: "Ghidra sobre los .so", detail: "Solo para Lighting64, PZPopMan64, el wrapper de Bullet y PathFind. Escribí lo que hace cada función en `docs/re/<lib>.md`, con tus palabras." },
+            { title: "Grabar la nativa real", detail: "Con el agente `jnitrace` grabás entradas y salidas mientras jugás en tu PC. Esos son los tests de oro." },
+            { title: "Implementar desde la especificación", detail: "Codex implementa a partir de tus notas y los tests, no copiando el desensamblado. Así es interoperabilidad y no una copia." },
+            { title: "RenderDoc o apitrace", detail: "Capturás un frame del juego real y lo comparás con el del navegador cuando algo se dibuja mal." },
+          ]}
+        />
+      </Section>
+
+      <Section heading="Para qué sirve el modelo local" id="local">
+        <BulletList
+          items={[
+            "Resumir clases decompiladas grandes sin subir nada a la nube.",
+            "Revisar miles de líneas de log del juego y del navegador, y marcar la primera diferencia.",
+            "Tareas mecánicas: tablas de firmas, renombrar variables en Ghidra, documentar funciones.",
+            "Primeros borradores de `docs/re/*.md` que después revisás vos.",
+            "El código principal, los generadores y la depuración difícil quedan en Codex, que rinde mucho más con repos grandes.",
+          ]}
+        />
+      </Section>
+
+      <Section heading="Esfuerzo y riesgos" id="esfuerzo">
+        <Bars
+          bars={[
+            { label: "F5 Nativas", value: 8, display: "6 a 10 sem" },
+            { label: "F3 Gráficos e input", value: 5, display: "4 a 6 sem" },
+            { label: "F7 Audio", value: 5, display: "4 a 6 sem" },
+            { label: "F8 Rendimiento", value: 3.5, display: "3 a 4 sem" },
+            { label: "F4 Lua", value: 3, display: "2 a 4 sem" },
+            { label: "F1 TeaVM", value: 2.5, display: "2 a 3 sem" },
+            { label: "F2 Plataforma", value: 2.5, display: "2 a 3 sem" },
+            { label: "F6 Saves", value: 2, display: "2 sem" },
+            { label: "F0 Inventario", value: 1, display: "1 sem" },
+          ]}
+          emphasis={0}
+        />
+        <Text>Estimación para 15 a 20 horas por semana con Codex: menú principal en 2 meses, mundo jugable sin sonido en 5 a 7 meses y con audio en 7 a 9 meses. ZomboidWeb muestra que se puede; notmike101 muestra que es fácil quedarse trabado meses en el medio.</Text>
+        <Table
+          columns={["Riesgo", "Impacto", "Cómo bajarlo"]}
+          rows={[
+            ["Actualización de Steam que cambia el jar", { text: "Alto", tone: "danger" }, "Copia fija en `~/pz-pinned` y parches en build time"],
+            ["Heap de 4 GB y fugas de memoria", { text: "Alto", tone: "danger" }, "Harness de memoria desde la Fase 2"],
+            ["Busy-wait entre hilos que cuelga todo", { text: "Alto", tone: "danger" }, "Inventario de hilos en la Fase 2"],
+            ["Reflexión de Lua demasiado grande", { text: "Medio", tone: "warning" }, "Manifiesto generado o dispatcher estático"],
+            ["Física o iluminación distintas al original", { text: "Medio", tone: "warning" }, "Tests de oro con `jnitrace`"],
+            ["Bugs del compilador TeaVM", { text: "Medio", tone: "warning" }, "Reproducir mínimo y reportar o parchear"],
+            ["Solo Chrome y Edge de escritorio", { text: "Bajo", tone: "warning" }, "Aceptarlo: es para vos"],
+          ]}
+        />
+      </Section>
+
+      <Section heading="Nota legal" id="legal">
+        <Text>Es para uso personal con tu copia comprada. No publiques archivos del juego, código decompilado ni código derivado de él, y no expongas el dev server a internet. El repo de notmike101 no tiene licencia, así que leelo pero no copies su código. El SDK de FMOD tampoco se redistribuye.</Text>
+      </Section>
+
+      <Section heading="Fuentes" id="fuentes">
+        <LinkCards
+          links={[
+            { title: "ZomboidWeb: cómo funciona", site: "nicholasjjenkins92.github.io", href: "https://nicholasjjenkins92.github.io/zomboidweb-site/" },
+            { title: "ZomboidWeb: progreso por subsistema", site: "nicholasjjenkins92.github.io", href: "https://nicholasjjenkins92.github.io/zomboidweb-site/progress.html" },
+            { title: "ZomboidWeb: historial de CheerpJ a TeaVM", site: "nicholasjjenkins92.github.io", href: "https://nicholasjjenkins92.github.io/zomboidweb-site/history.html" },
+            { title: "notmike101/project-zomboid-web-port", site: "github.com", href: "https://github.com/notmike101/project-zomboid-web-port" },
+            { title: "TeaVM 0.13: corrutinas en Wasm GC", site: "teavm.org", href: "https://teavm.org/docs/release-notes/0.13.0.html" },
+            { title: "TeaVM 0.16: reflexión y mejoras", site: "teavm.org", href: "https://teavm.org/docs/release-notes/0.16.0.html" },
+            { title: "TeaVM: corrutinas", site: "teavm.org", href: "https://teavm.org/docs/runtime/coroutines.html" },
+            { title: "CheerpJ: métodos nativos en JS", site: "cheerpj.com", href: "https://cheerpj.com/docs/guides/implementing-native-methods" },
+            { title: "PZwiki: Java y decompilación", site: "pzwiki.net", href: "https://pzwiki.net/wiki/Java" },
+            { title: "PZwiki: API de Lua (Kahlua)", site: "pzwiki.net", href: "https://pzwiki.net/wiki/Lua_(API)" },
+          ]}
+        />
+      </Section>
+    </Page>
+  );
+}
+
+
+</cursor_untrusted_data_1337>
