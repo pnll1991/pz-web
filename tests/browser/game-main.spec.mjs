@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 
 test('compiled real main is instantiated and its actual stop is recorded', async ({ page }, testInfo) => {
   test.setTimeout(90_000);
@@ -23,19 +23,25 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     // Resolve names/body boundaries only; never disassemble game code.
     symbols=execFileSync('python3',['scripts/wasm_stack.py','port/target/web/game/boot.wasm',...offsets],{encoding:'utf8'});
     await testInfo.attach('actual-main-symbols',{body:symbols,contentType:'text/plain'});
-    expect(state).toMatchObject({phase:'failed',error:'java.lang.UnsatisfiedLinkError: System.loadLibrary: browser implementation is missing for PZBullet64',menuRendered:false});
-    for(const name of ['zombie.gameStates.MainScreenState::main','zombie.core.physics.Bullet::init','zombie.core.physics.Bullet::loadLibrary'])expect(symbols).toContain(name);
+    expect(state).toMatchObject({phase:'failed',error:'java.lang.UnsupportedOperationException: Java_zombie_core_physics_Bullet_initPZBullet__',menuRendered:false});
+    const bullet = await page.evaluate(async()=>{const b=pzRuntime.bullet;return {loaded:!!b,loadedFor:b?.loadedFor,version:b?.version(),logging:b?.loggingInitialised(),world:b?.createWorld(0,-9.82,0),count:b?.bodyCount(),manifest:b?.manifest?.bullet?.version,wasmSha:b?.manifest?.module?.wasm_sha256};});
+    expect(bullet.loaded).toBe(true); expect(bullet.loadedFor).toContain('PZBullet64'); expect(bullet.manifest).toBe('2.83');
+    expect(bullet.version).toMatch(/^Bullet 283 \(upstream bullet3-2\.83, wasm32 port build\)$/);
+    expect(bullet.world).toBe(1); expect(bullet.count).toBe(0);
+    expect(bullet.wasmSha).toBe(JSON.parse(readFileSync('port/target/web/vendor/pzbullet/manifest.json','utf8')).module.wasm_sha256);
+    for(const name of ['zombie.gameStates.MainScreenState::main','zombie.core.physics.Bullet::init','zombie.core.physics.Bullet::initPZBullet'])expect(symbols).toContain(name);
     const progress=await page.evaluate(()=>pzGameProgress.map(event=>event.label));
     expect(progress).toContain('org.lwjglx.opengl.Display#init()V:returned');
     expect(progress).toContain('zombie.core.physics.Bullet#init()V:entered');
     expect(progress).not.toContain('zombie.core.physics.Bullet#init()V:returned');
+    expect(progress).not.toContain('zombie.core.physics.Bullet#initPZBullet()V:returned');
     expect(progress).not.toContain('zombie.Lua.LuaManager#init()V:returned');
     const windowSystem=await page.evaluate(()=>pzRuntime.window.events);
     expect(windowSystem).toHaveLength(1);
     expect(windowSystem[0]).toMatchObject({type:'initialized',backend:'browser',refreshRate:0});
     expect(pageErrors).toEqual([]);
   } finally {
-    const screenshot='test-results/game-main-round5.png';
+    const screenshot='test-results/game-main-round7.png';
     await page.screenshot({path:screenshot,fullPage:true});
     const windowSystem=await page.evaluate(()=>globalThis.pzRuntime?.window?.events || []);
     const progress=await page.evaluate(()=>globalThis.pzGameProgress || []);

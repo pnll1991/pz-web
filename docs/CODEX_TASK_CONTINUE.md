@@ -1,4 +1,4 @@
-# Tarea continua (ronda automática, modelo local Gyro-M vía OpenCode)
+# Tarea continua (ronda automática, modelo local Gyro-M vía Codex + OpenCodex)
 
 Leé STATUS.md, AGENTS.md, docs/ROADMAP-source.txt, la última tarea en docs/ (CODEX_TASK_4.md) y los reportes en port/target/reports/. PZ_HOME=/home/agente47/pz-pinned/25485521/projectzomboid (42.21). El trabajo previo ya está commiteado por el dueño.
 

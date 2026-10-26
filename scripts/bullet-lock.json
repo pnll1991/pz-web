@@ -1,0 +1,8 @@
+{
+  "version": "2.83",
+  "filename": "bullet3-2.83.tar.gz",
+  "url": "https://github.com/bulletphysics/bullet3/archive/refs/tags/2.83.tar.gz",
+  "sha256": "14a425225f96f4e16ccef8e4029622d6ceb363f98dc5463bb8126c21bf6fb17b",
+  "extraction": ".toolchain/bullet-src/bullet3-2.83",
+  "note": "Version chosen from symbol evidence in build/round7; see build/round7/bullet-version-decision.md"
+}

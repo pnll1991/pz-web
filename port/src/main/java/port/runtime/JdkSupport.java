@@ -73,7 +73,14 @@ public final class JdkSupport {
     public static Map<String, String> getenv() { return Collections.emptyMap(); }
     public static String mapLibraryName(String name) { return "lib" + Objects.requireNonNull(name) + ".so"; }
     public static void load(String filename) { throw new UnsatisfiedLinkError("System.load: native ELF cannot be loaded in WebAssembly GC: " + filename); }
-    public static void loadLibrary(String library) { throw new UnsatisfiedLinkError("System.loadLibrary: browser implementation is missing for " + library); }
+    // A library name is satisfied only when the runtime registered a module that honestly provides it.
+    public static void loadLibrary(String library) {
+        Objects.requireNonNull(library);
+        if (libraryRegistered(library)) return;
+        throw new UnsatisfiedLinkError("System.loadLibrary: browser implementation is missing for " + library);
+    }
+    @org.teavm.jso.JSBody(params="library",script="var names=globalThis.pzRuntime&&globalThis.pzRuntime.loadedLibraries;return !!names&&names.indexOf(library)>=0;")
+    private static native boolean libraryRegistered(String library);
     public static void exit(int status) { throw new UnsupportedOperationException("System.exit(" + status + "): a browser tab is not an OS process"); }
     public static void addShutdownHook(Runtime runtime, Thread thread) {
         Objects.requireNonNull(thread);

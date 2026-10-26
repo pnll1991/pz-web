@@ -1,4 +1,5 @@
 import { sqliteBridge } from '/runtime/sqlite.mjs';
+import { bulletBridge } from '/runtime/bullet.mjs';
 import { GLBridge } from '/runtime/gl.mjs';
 import { CanvasInput } from '/runtime/input.mjs';
 import { BrowserWindow } from '/runtime/window.mjs';
@@ -22,6 +23,9 @@ try {
   pzRuntime.window = new BrowserWindow(canvas,pzRuntime.gl,pzRuntime.input);
   await pzRuntime.window.prepare();
   pzRuntime.sqlite = await sqliteBridge(vfs);
+  // The wasm32 Bullet module is the only library this runtime honestly provides.
+  pzRuntime.bullet = await bulletBridge();
+  pzRuntime.loadedLibraries = pzRuntime.bullet.loadedFor;
   const runtime = await TeaVM.wasmGC.load('/game/boot.wasm');
   runtime.exports.main([]);
   const phases = { starting:'Arranque real en curso…', failed:'El arranque encontró un error.', 'main-returned':'El main retornó. Menú todavía no verificado.' };
