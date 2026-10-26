@@ -1,8 +1,63 @@
-# Evidencia de verificación — 2026-10-26, tarea 4
+# Evidencia de verificación — 2026-10-26, ronda 5
 
-**90 pruebas aprobadas:** 44 JVM, 10 Python, 17 Node, 14 Chrome de plataforma y 5 Chrome con la copia real. Cero fallos, omitidos o flaky en los reportes finales. **El Wasm del main real se ejecutó; el menú, LuaManager.init y una partida no están demostrados.** La prueba de arranque verifica la detención conocida, no éxito del juego.
+**94 pruebas aprobadas:** 45 JVM, 10 Python, 17 Node, 17 Chrome de plataforma y 5 Chrome con la copia real. Los reportes finales tienen cero fallos, omitidos y flaky. **El main real se ejecuta, termina Display.init y LoggerManager.init, y se detiene al cargar PZBullet64. No hay menú ni MENU_REACHED.**
 
-## Reproducción
+## Builds y entorno
+
+| Módulo | Clases / métodos | APIs / diagnósticos | Wasm | TeaVM | RSS pico Maven |
+|---|---:|---:|---:|---:|---:|
+| Main real, Lua completo | 10.279 / 73.003 | 0 / 0 | 144.676.333 bytes | 345.614 ms | 10.245.228 KiB |
+| Plataforma | 937 / 4.341 | 0 / 0 | 1.735.621 bytes | 5.353 ms | 1.174.168 KiB |
+
+Builds mediante `scripts/build.sh`, heap máximo 20 GiB y pila 16 MiB. No hubo navegador pesado ni juego nativo en paralelo con el build completo. Chrome usa perfil de prueba independiente y SwiftShader; no es una medición de la RTX 3090 ni de fps del juego.
+
+La exposición conserva 1.043 registros, 1.040 clases distintas, 1.123 clases del jar con jerarquías y 35 externas; cero registros no resueltos. El build vuelve a validar los hashes de los jars externos. No se redujo la exposición Lua.
+
+El SHA-256 del módulo ejecutado es `ca09a2d13ff22283736a0ac837b533df5c6a78bbdd841641ee1fcfeefab96ce2`. Las correcciones públicas de TeaVM se generan en target ignorado con hashes fijados; el campo compiler_patch identifica la caché de reflexión conservada, no enumera todos los parches. El alcance nuevo está en [round5-compatibility.md](round5-compatibility.md).
+
+## Pruebas de la ronda
+
+| Área | Evidencia |
+|---|---|
+| Inicialización de ventana | La JVM compila el transformador y el main real lo ejecuta en Chrome. El registro confirma Display.init retornado. La fixture Java/JS compara las métricas con Screen, llama dos veces para verificar idempotencia y comprueba los scancodes virtuales. |
+| Errores de plataforma | Chrome rechaza canvas desconectado y contexto perdido, y no marca initialized. El estado de ventana creada sigue false; consultas a un identificador inválido fallan. |
+| Etiquetas de teclado | Layout distinto de US, uso del scancode cuando key=-1, null si falta el layout y null para Enter aun si existe una etiqueta. La distribución real solo se consulta mediante KeyboardLayoutMap. |
+| Consola de TeaVM | La fixture previa falla en JsConsolePrintStream.flush. La final ejecuta bytes con offset no nulo y longitud mayor que 32, texto ñ/emoji partido byte a byte con flush, flush repetido, escritura posterior y stderr; exige contenido exacto. Una subclase propia verifica print(double) y slice char[] con inicio no nulo. |
+| Diagnóstico del juego | La excepción conserva frames fuera de System.err; Chrome amplía el límite de stack antes de cargar Wasm. La prueba resuelve offsets por metadata y exige MainScreenState.main, Bullet.init y Bullet.loadLibrary. |
+| Etapas reales | Display.init y LoggerManager.init entran y retornan. Bullet.init entra y no retorna. No hay entrada de LuaManager.init, Display.create ni render del menú en el registro observado. |
+
+La observación de etapas no cambia lógica ni atrapa errores del juego. El campo menuRendered permanece false y nunca se toma el dibujo de la demo como prueba del menú.
+
+## Cobertura previa conservada
+
+- JVM: memoria/arenas, handles, colecciones y concurrencia, archivos, FMA, digest, geometría, contratos JDK y regresiones del compilador.
+- Python: inventario determinista, modified UTF-8, firmas, exposición y jerarquías, fixtures y rechazo de hashes cambiados.
+- Node: servidor 127.0.0.1, Range/ETag, confinamiento, VFS, watchers, recursos ZIP/CRC y traducción de GLSL por AST.
+- Chrome: IO y persistencia IndexedDB, SQL real y recarga, XML, memoria, reflexión, concurrencia/corrutinas, monitores, primitivas WebGL, uniforms, input y paquetes cacheados.
+- Copia real: lectura Java de WorkshopTags, escritura Java persistente, comparación de los 4.194.304 bytes RGBA de Title.png y enlace de los pares default, blit y vboRenderer_PositionColorUV. No equivalen al renderer del juego.
+
+Los límites anteriores de compatibilidad siguen documentados en [task4-compatibility.md](task4-compatibility.md) y [task3-compatibility.md](task3-compatibility.md).
+
+## Arranque real y captura
+
+La corrida final, registrada en `chrome-startup.json` el **2026-10-26T16:03:58.994Z**, solicitó `/game/boot.wasm` y terminó con:
+
+```text
+java.lang.UnsatisfiedLinkError: System.loadLibrary: browser implementation is missing for PZBullet64
+```
+
+La traza resuelta es `MainScreenState.main → Bullet.init → Bullet.loadLibrary → System.loadLibrary → JdkSupport.loadLibrary`. Antes aparece una excepción de consulta de hardware OSHI (`Unsupported platform: UNSUPPORTED`) que el juego captura y tras la cual continúa. No hubo pageerror sin capturar. El reporte conserva consola, etapas, estado, símbolos y hashes de módulo/captura.
+
+La captura [game-main-round5.png](../test-results/game-main-round5.png) fue inspeccionada: canvas negro y mensaje de PZBullet64, sin menú. La prueba de arranque aprobada verifica esta detención y las etapas anteriores; no afirma éxito del juego. MENU_REACHED no se creó.
+
+## Artefactos y reproducción
+
+- `build-round5-pass3.log`: build final del main; `port/target/reports/game-main-lua/`: build, cero APIs, diagnósticos vacíos y chrome-startup.json.
+- `build-round5-platform-final.log`, `port/target/reports/platform-smoke-minimal/` y XML en `port/target/surefire-reports/` (45 JVM).
+- `verification-round5-python.log` (10), `verification-round5-node.log` (17), `verification-round5-browser.log` (17), `verification-round5-real-final.log` (5).
+- `test-results/browser-results.json` y `test-results/real-game-results.json`, con salidas separadas en platform/ y real/.
+- `verification-round5-console-before.log` conserva la regresión previa; `verification-round5-console-fixed.log` y la suite final conservan la verificación posterior. Los fallos intermedios no se cuentan como aprobados.
+- `build/round5/lwjgl-usage.tsv` y `bullet-signatures.json`: nombres, firmas y sitios de acceso, sin cuerpos del juego.
 
 ```bash
 source scripts/env.sh
@@ -13,57 +68,10 @@ python3 scripts/report_game.py --reports port/target/reports/game-main-lua
 npx playwright test --config playwright.game.config.mjs
 ```
 
-Las corridas se separaron por capas, sin navegador pesado ni juego nativo durante los builds completos. `build.sh` ejecuta JUnit. La fixture de membresía del hilo hijo se volvió a compilar/probar después de mover su aserción al padre para que un error no quedara solo en el handler. El entorno usa JDK Temurin 25.0.5+8, Node 24.22.1, Chrome 156.0.8078.47 y TeaVM 0.16.0. Chrome usa un perfil independiente y SwiftShader: no es una medición de la RTX 3090 ni de fps del juego.
+La prueba real vuelve a guardar el reporte con screenshot_visually_checked=false; solo una inspección posterior de esa captura autoriza marcarlo true. Al iniciar otra compilación se invalida la evidencia de ejecución anterior.
 
-## Cobertura comprobada
+## Auditoría y límites
 
-| Capa | Evidencia |
-|---|---|
-| JVM: memoria y handles | Límites, alineación, copia solapada, realloc/free, rechazo de vistas retiradas y tokens de campo. Arenas confinadas y vida de segmentos. Firmas polimórficas y lookup se ejercitan además en Wasm. |
-| JVM: concurrencia | Colas, futuros, interrupciones/plazos, equidad, ReadWriteLock, capacidad cero de SynchronousQueue, límites/rechazo/drenaje de ThreadPoolExecutor y tareas programadas. Conserva las pruebas anteriores de Condition y FMA. |
-| JVM: digest/geometría/contratos | Comparaciones con JDK 25, límites de bloques de digest, geometría y color; ObjectName, Formatter, jerarquías de excepciones y serialización rechazada. |
-| JVM: backend | Caché BitSet equivalente a HashSet, fusión de interfaces marker, compilación de fixtures reflectivas, tipos nullable para ramas/casts/bloques y módulo de grupos de hilos. |
-| Python | Inventario offline y exposición Lua mediante fixtures propias: firmas, modified UTF-8, seguimiento de registros/helpers, jerarquías, determinismo y rechazo de hashes cambiados. |
-| Node | Servidor local, ETag/Range/confinamiento, VFS y eventos WatchService, ZIP/classpath comprimido/vacío/duplicados, CRC y GLSL por AST. |
-| Chrome: APIs de tarea 4 | Memoria y handles tipados, productores bloqueados, transferencia directa, futures, scheduling, locks, watchers, recursos, digest, normalización y XML DOM/streams. Casos no soportados fallan explícitamente. |
-| Chrome: persistencia | SQL real con prepared statements, rollback, blobs, Unicode e int64 máximo; datos JDBC sobreviven a recarga. FileChannel.force conserva su prueba de transacción exitosa y rechazo propagado. |
-| Chrome: runtime/compilador | Metadata de campos raw anotados y parametrizados; vtable Object, intrinsics reflectivas Integer/Long, metadata de Class/Field/Method/Constructor, cierre suspendible por interfaz, recurso nulo, membresía del main y lifecycle del hijo. División unsigned por cero conserva una trampa Wasm documentada. |
-| Chrome: monitores | wait interrumpido recupera el monitor y limpia el flag; nanos submilisegundo terminan. La fixture pequeña de ThreadGroup no reprodujo el bootstrap asíncrono del juego; el módulo completo verificó esa corrección. |
-| Gráficos sintéticos | Píxeles leídos del framebuffer, uniforms, rechazo de shaders inválidos, input, pausas/yield y Cache Storage. No equivalen al renderer del juego. |
-| Recursos reales | WorkshopTags por Java NIO; Title.png 1024×1024 por PNG → ImageBitmap → WebGL2 → readPixels: los 4.194.304 bytes RGBA coinciden con Pillow. Pares default, blit y vboRenderer_PositionColorUV traducidos/compilados/enlazados con glGetError=0. |
-| Main real | HTTP solicita el módulo, Chrome lo valida y ejecuta. Estado `failed`, error `java.lang.LinkageError: Unknown platform: TeaVM`, menuRendered=false; sin pageerror sin capturar. Captura y consola conservadas. |
+277 archivos rastreados/candidatos auditados, sin binarios ni carpetas de recursos prohibidos. `git diff --check` pasó. HEAD permanece 054512f y .git es de solo lectura; no hubo commits, remotos, publicaciones, sudo ni cambios en aplicaciones del dueño.
 
-## Build real con Lua completo
-
-| Corrida | Clases / métodos | APIs ausentes / diagnósticos | Wasm |
-|---|---:|---:|---:|
-| Base a1d4963 | 10.021 / 71.178 | 82 / 825 | 0 bytes |
-| Final tarea 4 | 10.291 / 73.142 | **0 / 0** | **144.799.524 bytes** |
-
-Tiempo TeaVM: 340.793 ms; heap máximo 20 GiB; pila JVM 16 MiB; RSS pico de Maven 8.543.984 KiB. Los tiempos excluyen preparación/tests y las corridas alcanzan distinto código. El manifiesto conserva 1.043 registros, 1.040 clases expuestas, 1.123 clases del jar con jerarquías y 35 externas, sin registros no resueltos. No se recortó Lua.
-
-La emisión requirió corregir fallos del backend público fijado de TeaVM, además de las APIs: campo anotado raw, fusión de vtables marker, referencias reflectivas a intrinsics, jerarquías solo usadas en catch, exposición de helpers internos y referencias nullable en corrutinas. La inicialización de reflexión se dividió por clase conservando el orden: Chrome rechazaba una función de 9.245.402 bytes. El módulo final tiene 11.484 funciones de inicialización de reflexión y su función más grande mide 2.712.632 bytes (`teavm@initializer`). Ninguna supera el límite observado de 7.654.321 bytes. No se desensambló código del juego: estos tamaños/nombres proceden de secciones de metadata y límites de cuerpos.
-
-Las fuentes públicas Apache-2.0 se generan bajo target ignorado con hashes fijados; no se modifica el jar Maven ni herramientas globales. El campo `compiler_patch: compact-reflection-caches-v1` identifica la caché conservada de tarea 3; las correcciones adicionales están en prepare_teavm.py y [task4-compatibility.md](task4-compatibility.md).
-
-**Arranque:** La traza llega a `zombie.gameStates.MainScreenState.main → org.lwjglx.opengl.Display.init → org.lwjglx.LWJGLUtil.<clinit>`, donde falla con LinkageError: Unknown platform: TeaVM. La traza original de TeaVM usa offsets FakeClass. Se resolvieron contra nombres y límites del Wasm, sin desensamblar: `MainScreenState.main`, `Display.init` y `LWJGLUtil.<clinit>` están presentes. El error está atrapado por GameBoot; no hubo pageerror sin capturar. La detección de plataforma de LWJGLx requiere un puente real para navegador antes de continuar con GLFW/GL20; no se cambió os.name para simular un sistema soportado.
-
-**Plataforma:** 936 clases / 4.331 métodos, 1.734.303 bytes Wasm, cero diagnósticos, 5.405 ms y RSS pico 1.132.840 KiB. Sus resultados se conservan aparte del juego.
-
-## Artefactos locales
-
-- `port/target/reports/game-main-lua/`: build-report, missing-apis, diagnósticos vacíos, chrome-startup.json y wasm-functions.json; `build-task4-pass16.log`.
-- `port/target/web/game/boot.wasm`: módulo real. `port/target/web/boot.wasm`: módulo de plataforma.
-- `port/target/reports/task4-*`: referencias y errores intermedios, sin presentar fallos internos como conteo final. BuildCompiler invalida salidas al iniciar y elimina módulos con errores severos incluso si TeaVM alcanzó a escribirlos.
-- `port/target/reports/platform-smoke-minimal/`, `build-task4-platform-final.log`, `verification-task4-jvm-final.log` y XML de Surefire.
-- `verification-task4-python.log`, `verification-task4-node.log`, `verification-task4-browser.log`, `verification-task4-real-final.log`.
-- `test-results/browser-results.json` (14 aprobados) y `test-results/real-game-results.json` (5 aprobados), con resultados separados en platform/ y real/.
-- Capturas inspeccionadas: `test-results/task4-platform.png` y `test-results/game-main-task4.png`. La primera es la demo; la segunda muestra el error del arranque real. Ninguna muestra el menú.
-
-## Límites y auditoría
-
-No se demostró equivalencia del juego, carga de Lua, render del menú, física, audio ni guardado de partidas. Persisten GLFW/GL20/pipeline fijo/loop del renderer, el include util/math y nativas de PZ. Las limitaciones de memoria/FFM, reflexión, JMX, serialización, JDBC y concurrencia están detalladas en [task4-compatibility.md](task4-compatibility.md); un tipo presente no implica todas sus operaciones.
-
-La auditoría examinó 269 archivos rastreados/candidatos: cero binarios y cero directorios/recursos prohibidos. Las fuentes son propias o parches sobre fuentes públicas fijadas; ningún código del juego decompilado/derivado está versionado. `git diff --check` pasó. HEAD sigue en a1d4963; `.git` es de solo lectura. No hubo commits, remotos, publicación, sudo ni cambios globales.
-
-Los servidores de pruebas escucharon solo en 127.0.0.1:8091/8092 y terminaron con Playwright. No se alteraron aplicaciones del dueño ni se ejecutó el juego nativo.
+Los servidores de prueba se gestionaron en 127.0.0.1:8091/8092. No se lanzó el juego nativo ni se usaron datos privados del dueño. Faltan el módulo y contrato del wrapper Bullet, creación de ventana/GLFW, GL20/pipeline/loop del renderer, Lua ejecutado, otras nativas y FMOD. El siguiente paso concreto está en STATUS.md.

@@ -2,6 +2,16 @@
 
 Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoques mejores.
 
+## 2026-10-26 — Ronda 5
+- Error: la prueba real esperaba ver MainScreenState en una traza más profunda, pero Chrome recortaba los frames con el límite predeterminado. Mejor enfoque: conservar los frames fuera del logger y ampliar el límite de diagnóstico de V8 antes de cargar Wasm; verificar símbolos y registros de entrada/retorno juntos.
+- Error detectado en revisión: el nombre de tecla podía devolver una etiqueta para Enter si el layout la ofrecía. Mejor enfoque: aplicar el dominio de teclas imprimibles de GLFW antes de consultar KeyboardLayoutMap y probar una tecla no imprimible con etiqueta presente.
+- Error descubierto al ejecutar el juego: los logs no eran una traza fiable; JsConsolePrintStream repetía segmentos por no avanzar off, anulaba flushAction antes de invocarlo y finalizaba el decoder en cada flush. Mejor enfoque: reproducir con una fixture propia de bytes y UTF-8, corregir la fuente pública fijada y conservar además la traza Java por un canal independiente de System.err.
+- Error: asumí `build-state.json` en reports, una clase Drawable ausente y el source jar dentro de Maven; las rutas reales eran web/game y .toolchain/downloads. Mejor enfoque: listar y reutilizar las rutas y tipos confirmados antes de consultarlos.
+- Error: usé ProgramEmitter.constant(boolean), overload inexistente. Mejor enfoque: consultar la API fijada; emitir un entero convertido a BOOLEAN y preservar la guarda idempotente de inicialización.
+- Error: la lectura inicial volvió a usar `rg` ausente y agrupó documentos hasta truncar la salida, pese a los aprendizajes existentes.
+- Causa y patrón a evitar: iniciar exploración antes de recuperar las restricciones locales y sumar límites de salida individuales como si fueran independientes.
+- Mejor enfoque: usar Python para búsquedas en este entorno, leer por rangos acotados y recuperar todos los tramos omitidos antes de implementar.
+
 ## 2026-10-26 — Tarea 4
 - Error: coloqué @JSBody y @JSFunctor dentro de clases sustituidas con nombres java.*; TeaVM no generó sus imports.
 - Mejor enfoque: dejar los puentes JSO en port.shim y llamarlos desde wrappers Java normales de las sustituciones.

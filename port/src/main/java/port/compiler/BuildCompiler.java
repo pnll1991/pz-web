@@ -29,7 +29,7 @@ public final class BuildCompiler {
         Path reports = port.resolve("target/reports/" + mode + "-" + entrypoint.getProperty("reflection"));
         Files.createDirectories(reports);
         // Derived diagnostics must never survive a failed/restarted analysis.
-        for (String name : List.of("missing-apis.json", "missing-apis.md", "teavm-diagnostics.txt", "jdk-api-report.txt")) {
+        for (String name : List.of("missing-apis.json", "missing-apis.md", "teavm-diagnostics.txt", "jdk-api-report.txt", "chrome-startup.json", "wasm-functions.json")) {
             Files.deleteIfExists(reports.resolve(name));
             Files.deleteIfExists(port.resolve("target").resolve(name));
         }
@@ -79,8 +79,12 @@ public final class BuildCompiler {
             tool.getTransformers().add(JdkCompatibility.class.getName());
             tool.getTransformers().add(PolymorphicCalls.class.getName());
             tool.getTransformers().add(MemoryCompatibility.class.getName());
+            tool.getTransformers().add(WindowCompatibility.class.getName());
             tool.getTransformers().add(OptionalTelemetry.class.getName());
-            if (game) tool.getTransformers().add(GameEntryTransformer.class.getName());
+            if (game) {
+                tool.getTransformers().add(GameEntryTransformer.class.getName());
+                tool.getTransformers().add(StartupProgress.class.getName());
+            }
             try {
                 verifyCompilerPatch();
                 tool.generate();

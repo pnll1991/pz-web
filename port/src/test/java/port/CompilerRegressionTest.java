@@ -9,6 +9,33 @@ import org.teavm.tooling.*;
 import org.teavm.vm.TeaVMOptimizationLevel;
 
 class CompilerRegressionTest {
+    public static final class CapturedConsole extends org.teavm.classlib.impl.console.JsConsolePrintStream {
+        final StringBuilder text=new StringBuilder();
+        @Override public void print(String value){text.append(value);}
+        public void slice(char[] text,int begin,int end){super.print(text,begin,end);}
+    }
+    public static final class ConsoleUtf8Probe {
+        public static void main(String[] args) {
+            try {
+                var captured=new CapturedConsole();
+                captured.print(1.5d);captured.slice("startpieceend".toCharArray(),5,10);
+                if(!captured.text.toString().equals("1.5piece"))throw new AssertionError("Console double/char slice");
+                String payload="ROUND5:"+"abcdefghijklmnopqrstuvwxyz".repeat(4)+":ñ😀:end\n";
+                byte[] padded=("SKIP!"+payload+"IGNORE").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                System.out.write(padded,5,padded.length-11);
+                System.out.flush();System.out.flush();
+                byte[] utf8="ROUND5:ñ😀:split\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                for(byte b:utf8){System.out.write(b);System.out.flush();}
+                System.out.write("ROUND5:after-flush\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                System.out.flush();
+                System.err.write("ROUND5:stderr-complete\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                System.err.flush();
+                done("passed");
+            } catch(Throwable error) {done(error.toString());}
+        }
+        @org.teavm.jso.JSBody(params="result",script="globalThis.pzConsoleUtf8Probe=result;")
+        private static native void done(String result);
+    }
     public interface Marker {}
     public interface Nontrivial {void action();}
     public interface Orphan extends Nontrivial,Marker {}
@@ -103,6 +130,9 @@ class CompilerRegressionTest {
     }
     @Test void markerHierarchyCompilesToExecutableMetadata()throws Exception{
         compile(RootMetadataProbe.class,"object-metadata",List.of(RootMetadataProbe.class.getName()));
+    }
+    @Test void consoleByteWritesCompile()throws Exception{
+        compile(ConsoleUtf8Probe.class,"console-utf8",List.of());
     }
     @Test void nativeIntrinsicsCompileForReflection()throws Exception{
         compile(IntrinsicMetadataProbe.class,"intrinsic-metadata",List.of(IntrinsicMetadataProbe.class.getName(),"java.lang.Object","java.lang.Integer","java.lang.Long","java.lang.Class","java.lang.reflect.Field","java.lang.reflect.Method","java.lang.reflect.Constructor"));

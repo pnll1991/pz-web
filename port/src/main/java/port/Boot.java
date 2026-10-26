@@ -46,6 +46,14 @@ public final class Boot {
     @JSExport public static int frame(double timestamp) { return ++frames; }
     @JSExport public static int frameCount() { return frames; }
     @JSExport public static int glError() { return GL11.glGetError(); }
+    @JSExport public static String windowSystemProbe() {
+        port.shim.BrowserWindow.init();
+        if (port.shim.BrowserWindow.glfwGetKeyScancode(65) != 65 ||
+                port.shim.BrowserWindow.glfwGetKeyScancode(-1) != -1)
+            throw new AssertionError("Browser scancode domain");
+        return port.shim.BrowserWindow.desktopWidth() + ":" + port.shim.BrowserWindow.desktopHeight()
+                + ":" + port.shim.BrowserWindow.colorBits();
+    }
     @JSExport public static void checkTask4() {
         task4Result("running", "starting");
         new Thread(() -> {try {port.runtime.Task4Checks.run();task4Result("passed", "memory,handles,concurrency,resources,xml,watchers,jdbc,digest");}catch(Throwable error){task4Result("failed",error.toString());error.printStackTrace();}},"task4-checks").start();

@@ -77,6 +77,46 @@ def patch_monitor():
     print(f"TeaVM {VERSION}: interrupted wait monitor restoration; source SHA-256 {digest}")
 
 
+def patch_console():
+    """Preserve byte slices and nonterminal UTF-8 decoding across console flushes."""
+    archive = ROOT / f".toolchain/downloads/teavm-classlib-{VERSION}-sources.jar"
+    digest = "da6f83c1436c87a9ad683b6143aaa9c172b08c3974c9a7d5741a479d0d60092e"
+    if hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
+        raise RuntimeError("TeaVM console source digest mismatch")
+    path = "org/teavm/classlib/impl/console/JsConsolePrintStream.java"
+    with zipfile.ZipFile(archive) as package:
+        source = package.read(path).decode("utf-8")
+    edits = [
+        ("""            flushAction = null;
+            flushAction.run();""", """            Runnable action = flushAction;
+            flushAction = null;
+            action.run();"""),
+        ("""                buffer.put(b, off, count);
+                len -= count;""", """                buffer.put(b, off, count);
+                off += count;
+                len -= count;"""),
+        ("""        void write(byte[] b, int off, int len) {
+            postponeFlush();""", """        void write(byte[] b, int off, int len) {
+            Objects.checkFromIndexSize(off, len, b.length);
+            postponeFlush();"""),
+        ("""            buffer.put((byte) b);
+        }""", """            buffer.put((byte) b);
+            output();
+        }"""),
+        ("                output(true);", "                output(false);"),
+        ("print(new String(s, begin, end));", "print(new String(s, begin, end - begin));"),
+        ("        super.print(d);", "        print(Double.toString(d));"),
+    ]
+    for old,new in edits:
+        if source.count(old) != 1:
+            raise RuntimeError("Unexpected TeaVM console source shape")
+        source = source.replace(old,new)
+    destination = ROOT / "port/target/generated-sources/teavm" / path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("// Local changes: byte slice advancement, flush action and streaming UTF-8.\n" + source)
+    print(f"TeaVM {VERSION}: console byte slices and streaming UTF-8; source SHA-256 {digest}")
+
+
 def patch_backend(package):
     path = "org/teavm/backend/wasm/intrinsics/reflection/ReflectionMetadataGenerator.java"
     source = package.read(path).decode("utf-8")
@@ -237,6 +277,7 @@ def main():
     destination.write_text(patched, encoding="utf-8")
     print(f"TeaVM {VERSION}: compact reflection caches (3); source SHA-256 {SHA256}")
     patch_monitor()
+    patch_console()
 
 
 if __name__ == "__main__":
