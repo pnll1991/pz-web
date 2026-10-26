@@ -1,3 +1,4 @@
+import { sqliteBridge } from '/runtime/sqlite.mjs';
 import { GLBridge } from '/runtime/gl.mjs';
 import { CanvasInput } from '/runtime/input.mjs';
 import { VirtualFileSystem, normalizePath } from '/runtime/vfs.mjs';
@@ -24,6 +25,7 @@ try {
   el('vfs').textContent = 'OK';
   globalThis.pzRuntime = { gl, vfs, input, normalizePath };
   if (!globalThis.TeaVM) throw new Error('Falta el runtime de TeaVM: ejecutá scripts/build.sh');
+  pzRuntime.sqlite = await sqliteBridge(vfs);
   const teavm = await TeaVM.wasmGC.load('/boot.wasm');
   teavm.exports.main([]);
   if (!globalThis.pzBoot?.ready) throw new Error('El entrypoint Java no terminó');

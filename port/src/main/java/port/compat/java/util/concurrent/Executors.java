@@ -20,12 +20,14 @@ public final class Executors {
     public static ExecutorService newFixedThreadPool(int count, ThreadFactory factory) { return new Pool(count, factory); }
     public static ExecutorService newSingleThreadExecutor() { return newFixedThreadPool(1); }
     public static ExecutorService newSingleThreadExecutor(ThreadFactory factory) { return newFixedThreadPool(1, factory); }
+    public static ScheduledExecutorService newSingleThreadScheduledExecutor() { return newSingleThreadScheduledExecutor(defaultThreadFactory()); }
+    public static ScheduledExecutorService newSingleThreadScheduledExecutor(ThreadFactory factory) { return new ScheduledPool(factory); }
     public static <T> Callable<T> callable(Runnable task, T value) { Objects.requireNonNull(task); return () -> { task.run(); return value; }; }
     public static Callable<Object> callable(Runnable task) { return callable(task, null); }
 
-    private static final class Pool implements ExecutorService {
+    static class Pool implements ExecutorService {
         final int limit;
-        final ThreadFactory factory;
+        ThreadFactory factory;
         final ArrayDeque<Runnable> queue = new ArrayDeque<>();
         final Set<Thread> workers = new HashSet<>();
         boolean stopped, immediate;

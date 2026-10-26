@@ -31,7 +31,10 @@ export class VirtualFileSystem {
     this.files = new Map(); this.database = null; this.pending = Promise.resolve();
     this.directories = new Set(['/', '/media', '/Zomboid']);
     this.metadata = new Map();
+    this.listeners = new Set();
   }
+  onChange(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
+  changed(path, operation) { for (const listener of [...this.listeners]) listener(path, operation); }
   async open() {
     const request = indexedDB.open(this.name, 2);
     request.onupgradeneeded = () => {
@@ -75,6 +78,7 @@ export class VirtualFileSystem {
     for (const directory of missing.reverse()) {
       this.directories.add(directory);
       this.metadata.set(directory, { directory:true, modified:Date.now(), readOnly:!writable(directory) });
+      this.changed(directory, 'create');
     }
   }
   store(path, data) {
@@ -82,9 +86,11 @@ export class VirtualFileSystem {
     const size = this.byteLength - (this.files.get(path)?.byteLength || 0) + data.byteLength;
     if (size > this.maxBytes) throw new Error('VFS memory budget exceeded');
     if (this.directories.has(path)) throw new Error(`EISDIR: ${path}`);
+    const existed = this.files.has(path);
     this.ensureParents(path);
     this.files.set(path, data.slice());
     this.metadata.set(path, { directory:false, modified:Date.now(), readOnly:!writable(path) });
+    this.changed(path, existed ? 'modify' : 'create');
   }
   mount(path, data) {
     path = normalizePath(path);
@@ -102,6 +108,7 @@ export class VirtualFileSystem {
     if (this.exists(path) || !writable(path) || !this.canWrite(parent(path)) || !this.isDirectory(parent(path))) return false;
     this.directories.add(path);
     this.metadata.set(path, { directory:true, modified:Date.now(), readOnly:false });
+    this.changed(path, 'create');
     return true;
   }
   createFile(path) {
@@ -169,6 +176,7 @@ export class VirtualFileSystem {
       this.directories.delete(path);
     } else if (!this.files.delete(path)) throw new Error(`ENOENT: ${path}`);
     this.metadata.delete(path);
+    this.changed(path, 'delete');
   }
   rename(from, to) {
     from = normalizePath(from); to = normalizePath(to);
@@ -186,6 +194,7 @@ export class VirtualFileSystem {
       if (this.directories.delete(old)) this.directories.add(destination);
       else { this.files.set(destination, this.files.get(old)); this.files.delete(old); }
       if (this.metadata.has(old)) { this.metadata.set(destination, this.metadata.get(old)); this.metadata.delete(old); }
+      this.changed(old, 'delete'); this.changed(destination, 'create');
     }
   }
   list(prefix = '/') {

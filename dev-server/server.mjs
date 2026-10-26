@@ -1,5 +1,7 @@
 import http from 'node:http';
-import { realpath, stat, open } from 'node:fs/promises';
+import { classpathResources } from './classpath.mjs';
+import { createHash } from 'node:crypto';
+import { realpath, stat, open, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
@@ -42,7 +44,7 @@ function inside(parent, child) {
 }
 
 export async function createDevServer({ webRoot = path.join(root, 'port/target/web'),
-  pzHome = process.env.PZ_HOME, packsRoot = process.env.PZ_PACKS || path.join(root, 'packs') } = {}) {
+  resourceRoots = [], pzHome = process.env.PZ_HOME, packsRoot = process.env.PZ_PACKS || path.join(root, 'packs') } = {}) {
   webRoot = await realpath(webRoot).catch(() => { throw new Error('Build missing. Run scripts/build.sh first.'); });
   let mediaRoot;
   if (pzHome) {
@@ -55,9 +57,16 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
       if (!inside(requestedHome, home)) throw new Error('Nested game directory escapes PZ_HOME');
     }
     await stat(path.join(home, 'ProjectZomboid64.json'));
+    const launcher = JSON.parse(await readFile(path.join(home, 'ProjectZomboid64.json'), 'utf8'));
+    for (const entry of launcher.classpath || []) {
+      const candidate = await realpath(path.resolve(home, entry));
+      if (!inside(home, candidate)) throw new Error('Classpath escapes pinned copy');
+      resourceRoots.push(candidate);
+    }
     mediaRoot = await realpath(path.join(home, 'media'));
     if (!inside(home, mediaRoot)) throw new Error('PZ_HOME/media must stay inside the pinned copy');
   }
+  const resources = await classpathResources(resourceRoots);
   const server = http.createServer(async (req, res) => {
     const respond = (status, message = '', extra = {}) => {
       res.writeHead(status, { ...headers, 'Content-Type': 'text/plain; charset=utf-8', ...extra });
@@ -80,6 +89,24 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
         res.writeHead(200, { ...headers, 'Content-Type': 'application/json' });
         res.end(req.method === 'HEAD' ? undefined : JSON.stringify({ mode: 'platform-smoke', gameMounted: !!mediaRoot }));
         return;
+      }
+      if (pathname === '/classpath/lookup') {
+        const name = new URL(req.url, `http://${authority}`).searchParams.get('name');
+        const found = await resources.lookup(name);
+        res.writeHead(200, { ...headers, 'Content-Type':'application/json' });
+        res.end(req.method === 'HEAD' ? undefined : JSON.stringify(found.map(url => `http://${authority}${url}`))); return;
+      }
+      if (pathname.startsWith('/classpath/resource/')) {
+        const match = /^\/classpath\/resource\/(\d+)\/(.+)$/.exec(pathname);
+        const bytes = match ? await resources.read(Number(match[1]), match[2]) : null;
+        if (!bytes) { respond(404, 'Classpath resource not found'); return; }
+        const etag = '"' + createHash('sha256').update(bytes).digest('hex') + '"';
+        if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ...headers, ETag:etag }); res.end(); return; }
+        const range = req.headers.range && (!req.headers['if-range'] || req.headers['if-range'] === etag) ? parseRange(req.headers.range, bytes.length) : undefined;
+        if (range === null) { respond(416, 'Unsatisfiable byte range', { 'Content-Range':`bytes */${bytes.length}` }); return; }
+        const content = range ? bytes.subarray(range.start, range.end+1) : bytes;
+        res.writeHead(range ? 206 : 200, { ...headers, 'Content-Type':'application/octet-stream', 'Content-Length':content.length, 'Accept-Ranges':'bytes', ETag:etag, ...(range ? {'Content-Range':`bytes ${range.start}-${range.end}/${bytes.length}`} : {}) });
+        res.end(req.method === 'HEAD' ? undefined : content); return;
       }
       let base = webRoot, relative = pathname === '/' ? 'index.html' : pathname.slice(1);
       if (pathname === '/media' || pathname.startsWith('/media/')) {

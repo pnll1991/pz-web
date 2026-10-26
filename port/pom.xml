@@ -8,6 +8,7 @@
     <teavm.version>0.16.0</teavm.version>
   </properties>
   <dependencies>
+    <dependency><groupId>org.teavm</groupId><artifactId>teavm-relocated-libs-hppc</artifactId><version>${teavm.version}</version></dependency>
     <dependency><groupId>org.teavm</groupId><artifactId>teavm-classlib</artifactId><version>${teavm.version}</version></dependency>
     <dependency><groupId>org.teavm</groupId><artifactId>teavm-jso-apis</artifactId><version>${teavm.version}</version></dependency>
     <dependency><groupId>org.teavm</groupId><artifactId>teavm-extension-spi</artifactId><version>${teavm.version}</version></dependency>
@@ -18,7 +19,7 @@
     <plugins>
       <plugin><groupId>org.codehaus.mojo</groupId><artifactId>build-helper-maven-plugin</artifactId><version>3.6.2</version>
         <executions><execution><id>teavm-memory-patch</id><phase>generate-sources</phase><goals><goal>add-source</goal></goals>
-          <configuration><sources><source>${project.build.directory}/generated-sources/teavm</source></sources></configuration>
+          <configuration><sources><source>${project.build.directory}/generated-sources/teavm</source><source>${project.build.directory}/generated-sources/contracts</source></sources></configuration>
         </execution></executions>
       </plugin>
       <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.14.1</version></plugin>

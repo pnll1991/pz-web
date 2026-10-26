@@ -46,6 +46,15 @@ public final class Boot {
     @JSExport public static int frame(double timestamp) { return ++frames; }
     @JSExport public static int frameCount() { return frames; }
     @JSExport public static int glError() { return GL11.glGetError(); }
+    @JSExport public static void checkTask4() {
+        task4Result("running", "starting");
+        new Thread(() -> {try {port.runtime.Task4Checks.run();task4Result("passed", "memory,handles,concurrency,resources,xml,watchers,jdbc,digest");}catch(Throwable error){task4Result("failed",error.toString());error.printStackTrace();}},"task4-checks").start();
+    }
+    @JSExport public static void checkSavedSql() {
+        task4Result("running", "sql-reload");
+        new Thread(() -> {try {task4Result("passed",port.runtime.Task4Checks.readSavedSql());}catch(Throwable error){task4Result("failed",error.toString());error.printStackTrace();}},"sql-reload").start();
+    }
+    @JSBody(params={"status","detail"},script="globalThis.pzTask4={status:status,detail:detail};")private static native void task4Result(String status,String detail);
     @JSExport public static void checkCompatibility() {
         compatibilityResult("running", "");
         new Thread(() -> {

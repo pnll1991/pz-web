@@ -1,3 +1,4 @@
+import { sqliteBridge } from '/runtime/sqlite.mjs';
 import { GLBridge } from '/runtime/gl.mjs';
 import { CanvasInput } from '/runtime/input.mjs';
 import { VirtualFileSystem, normalizePath } from '/runtime/vfs.mjs';
@@ -15,6 +16,7 @@ try {
   const vfs = await new VirtualFileSystem().open();
   await preloadPacks(vfs);
   globalThis.pzRuntime = { vfs, normalizePath, gl:new GLBridge(canvas), input:new CanvasInput(canvas) };
+  pzRuntime.sqlite = await sqliteBridge(vfs);
   const runtime = await TeaVM.wasmGC.load('/game/boot.wasm');
   runtime.exports.main([]);
   const phases = { starting:'Arranque real en curso…', failed:'El arranque encontró un error.', 'main-returned':'El main retornó. Menú todavía no verificado.' };
@@ -25,6 +27,8 @@ try {
   };
   update();
 } catch (error) {
+  globalThis.pzGame = { phase:'loader-failed', error:`${error.name}: ${error.message}`, menuRendered:false };
   status.textContent = 'Juego pendiente de integración';
   document.getElementById('game-error').textContent = error.message;
+  console.error(error);
 }

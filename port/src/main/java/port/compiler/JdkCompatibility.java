@@ -20,6 +20,7 @@ import org.teavm.model.instructions.InvokeInstruction;
 /** Adds narrowly implemented JDK APIs; never replaces missing APIs with success. */
 public final class JdkCompatibility implements ClassHolderTransformer {
     @Override public void transformClass(ClassHolder cls, ClassHolderTransformerContext context) {
+        Task4Compatibility.apply(cls, context);
         switch (cls.getName()) {
             case "java.lang.Math" -> {
                 forward(cls, context, "fma(FFF)F", true);
@@ -165,9 +166,12 @@ public final class JdkCompatibility implements ClassHolderTransformer {
         self.setField("browserChannel", result); result.returnValue();
     }
 
-    private static void forward(ClassHolder cls, ClassHolderTransformerContext context, String signature, boolean isStatic) {
+    static void forward(ClassHolder cls, ClassHolderTransformerContext context, String signature, boolean isStatic) {
+        forwardTo(cls,context,signature,isStatic,"port.runtime.JdkSupport",false);
+    }
+    static void forwardTo(ClassHolder cls, ClassHolderTransformerContext context, String signature, boolean isStatic, String target, boolean replace) {
         MethodDescriptor descriptor = MethodDescriptor.parse(signature);
-        if (cls.getMethod(descriptor) != null) return;
+        if (cls.getMethod(descriptor) != null) { if (!replace) return; cls.removeMethod(cls.getMethod(descriptor)); }
         var method = new MethodHolder(descriptor);
         method.setLevel(AccessLevel.PUBLIC);
         if (isStatic) method.getModifiers().add(ElementModifier.STATIC);
@@ -183,7 +187,7 @@ public final class JdkCompatibility implements ClassHolderTransformer {
             types.add(method.parameterType(i)); values.add(emitter.var(i + 1, method.parameterType(i)));
         }
         types.add(method.getResultType());
-        var result = emitter.invoke(new MethodReference("port.runtime.JdkSupport",
+        var result = emitter.invoke(new MethodReference(target,
                 new MethodDescriptor(descriptor.getName(), types.toArray(ValueType[]::new))), values.toArray(ValueEmitter[]::new));
         if (method.getResultType().equals(ValueType.VOID)) emitter.exit(); else result.returnValue();
     }

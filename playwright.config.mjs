@@ -4,7 +4,7 @@ const port = process.env.PZ_TEST_PORT || '8091';
 export default defineConfig({
   testDir:'tests/browser', timeout:30_000, workers:1, fullyParallel:false,
   outputDir:'test-results/platform',
-  testIgnore:'real-game.spec.mjs',
+  testIgnore:['real-game.spec.mjs','game-main.spec.mjs'],
   reporter:[['list'],['json',{outputFile:'test-results/browser-results.json'}]],
   use:{baseURL:`http://127.0.0.1:${port}`,viewport:{width:1365,height:1100},
     launchOptions:{executablePath:process.env.CHROME_PATH || '/usr/bin/google-chrome',

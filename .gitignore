@@ -26,3 +26,4 @@ __pycache__/
 /.aws/
 /pz-decomp/
 /sdk/
+supervisor.log

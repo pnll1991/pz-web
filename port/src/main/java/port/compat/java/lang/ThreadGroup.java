@@ -29,10 +29,19 @@ public class ThreadGroup implements Thread.UncaughtExceptionHandler {
         for (; other != null; other = other.parent) if (other == this) return true;
         return false;
     }
-    public static synchronized void registerDefault(Thread thread) {
+    public static void registerDefault(Thread thread) {
         Thread current = Thread.currentThread();
-        ThreadGroup group = current == null ? ROOT : groupOf(current);
-        MEMBERS.put(thread,new Member(group == null ? ROOT : group,current == null));
+        // TThread creates main before assigning its static currentThread field.
+        // No thread can contend yet, and an asynchronous monitor cannot have a
+        // null owner. Keep this bootstrap path outside the normal monitor.
+        if (current == null) {
+            MEMBERS.put(thread,new Member(ROOT,true));
+            return;
+        }
+        synchronized (ThreadGroup.class) {
+            ThreadGroup group = groupOf(current);
+            MEMBERS.put(thread,new Member(group == null ? ROOT : group,false));
+        }
     }
     public static synchronized void assign(Thread thread, ThreadGroup group) {
         if (group != null) MEMBERS.put(thread,new Member(group,false));
@@ -64,6 +73,11 @@ public class ThreadGroup implements Thread.UncaughtExceptionHandler {
             }
         }
         return result;
+    }
+    public static synchronized Map<Thread,StackTraceElement[]> stackTraces() {
+        var result = new HashMap<Thread,StackTraceElement[]>();
+        for(var entry:MEMBERS.entrySet())if(entry.getValue().started && entry.getKey().isAlive())result.put(entry.getKey(),entry.getKey().getStackTrace());
+        Thread current=Thread.currentThread();result.put(current,current.getStackTrace());return result;
     }
     public int activeCount() { return threads(true).size(); }
     public int activeGroupCount() { int count = children.size(); for (var child : new ArrayList<>(children)) count += child.activeGroupCount(); return count; }

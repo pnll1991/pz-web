@@ -1,12 +1,12 @@
-# Commits locales sugeridos — tarea 3
+# Commits locales sugeridos — tarea 4
 
-HEAD al comenzar: **649b950**, tarea 2. `.git` está montado en solo lectura en esta sesión; no se intentó eludir esa restricción ni se crearon remotos. Las modificaciones quedan en el árbol de trabajo.
+HEAD al comenzar: **a1d4963**, tarea 3. `.git` es de solo lectura en esta sesión; los cambios quedan en el árbol de trabajo. No se crearon commits ni remotos.
 
-Desde una terminal con escritura en `.git`, revisar los cambios y separar estos grupos:
+Grupos para revisar desde una terminal con escritura en `.git`:
 
-1. `port/src/`: sustituciones JDK, concurrencia, ciclo de vida de hilos, FileChannel, persistencia y pruebas JVM; ajustes de sus probes en `tests/browser/platform.spec.mjs`.
-2. `port/runtime/`, `port/web/`, dependencia fijada en `package*.json`, `scripts/copy_web_vendor.py`, `scripts/build.sh`, tests GLSL Node/Chrome y separación de outputDir de Playwright.
-3. Parche de memoria del compilador: `scripts/prepare_teavm.py`, `port/pom.xml`, `CompactTypeSet` y su prueba; fixture de reflexión y BuildCompiler.
-4. Reporte de APIs, límites del generador GL, README, STATUS, decisiones, verificación y aprendizajes.
+1. Compatibilidad Java y pruebas: memoria, handles, concurrencia, geometría, digest, management, contratos generados y errores explícitos. Incluir los transformadores y los probes JVM/Chrome correspondientes.
+2. Recursos del classpath, WatchService, XML y SQLite: servidor local, puentes Java/JS, dependencia fijada de SQLite, preparación y pruebas de persistencia.
+3. Backend TeaVM: parches de metadata/vtables/intrinsics/corrutinas, policy de APIs públicas JDK, inicializadores de reflexión por clase, pila local y regresiones JVM/Chrome. Mantener las fuentes públicas generadas solo en target ignorado.
+4. Observación del main real, estados/artefactos de fallo, captura local, documentación de alcance, decisiones y aprendizajes.
 
-No usar `git add -f`: inventarios, builds, binarios, recursos, capturas, paquetes y resultados de pruebas continúan ignorados. `docs/CODEX_TASK_3.md` y `run-task3.sh` ya estaban sin seguimiento al comenzar y no fueron modificados; decidir su inclusión al revisar el commit. El script del dueño puede realizar acciones adicionales y no fue ejecutado por este agente.
+No usar `git add -f`: inventarios, builds, binarios, recursos, capturas, paquetes y resultados siguen ignorados. `docs/CODEX_TASK_4.md`, `docs/CODEX_TASK_CONTINUE.md`, `supervise-codex.sh` y el agregado de `supervisor.log` a `.gitignore` ya estaban presentes; no se ejecutó ni modificó el supervisor. El dueño decide su inclusión al revisar.

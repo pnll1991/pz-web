@@ -47,6 +47,7 @@ public final class BuildCompiler {
             }
         }
         int externalCount = classPath.size() - 1;
+        PolymorphicCalls.scan(classPath);
         for (String entry : Files.readString(port.resolve("target/dependency-classpath.txt")).strip().split(File.pathSeparator)) {
             classPath.add(Path.of(entry).toFile());
         }
@@ -68,8 +69,17 @@ public final class BuildCompiler {
             tool.setOptimizationLevel(TeaVMOptimizationLevel.SIMPLE);
             tool.setObfuscated(false);
             tool.setLog(new ConsoleTeaVMToolLog(true));
+            tool.setProgressListener(new org.teavm.vm.TeaVMProgressListener(){
+                private long last;
+                public org.teavm.vm.TeaVMProgressFeedback phaseStarted(org.teavm.vm.TeaVMPhase phase,int count){System.out.println("TeaVM phase "+phase+", work units="+count);last=System.nanoTime();return org.teavm.vm.TeaVMProgressFeedback.CONTINUE;}
+                public org.teavm.vm.TeaVMProgressFeedback progressReached(int progress){long now=System.nanoTime();if(now-last>30_000_000_000L){System.out.println("TeaVM progress="+progress);last=now;}return org.teavm.vm.TeaVMProgressFeedback.CONTINUE;}
+            });
+            tool.getTransformers().add(CompatReferences.class.getName());
             tool.getTransformers().add(FailFastNatives.class.getName());
             tool.getTransformers().add(JdkCompatibility.class.getName());
+            tool.getTransformers().add(PolymorphicCalls.class.getName());
+            tool.getTransformers().add(MemoryCompatibility.class.getName());
+            tool.getTransformers().add(OptionalTelemetry.class.getName());
             if (game) tool.getTransformers().add(GameEntryTransformer.class.getName());
             try {
                 verifyCompilerPatch();
@@ -104,6 +114,9 @@ public final class BuildCompiler {
             }
             write(port, reports, "jdk-api-report.txt", jdkProblems.toString());
             boolean success = tool.getProblemProvider().getSevereProblems().isEmpty();
+            // A backend may write a module and still report severe diagnostics.
+            // Such an output is not a usable build artifact.
+            if (!success) Files.deleteIfExists(output.resolve("boot.wasm"));
             long bytes = success && Files.exists(output.resolve("boot.wasm")) ? Files.size(output.resolve("boot.wasm")) : 0;
             long elapsed = (System.nanoTime() - started) / 1_000_000;
             var dependencies = tool.getDependencyInfo();

@@ -26,6 +26,12 @@ public class FutureTask<V> implements RunnableFuture<V> {
         try { set(callable.call()); } catch (Throwable error) { setException(error); }
         finally { synchronized (this) { runner = null; } }
     }
+    protected boolean runAndReset() {
+        synchronized(this) { if(complete || started)return false;started=true;runner=Thread.currentThread(); }
+        try { callable.call(); } catch(Throwable error) { setException(error); }
+        finally { synchronized(this) { runner=null;started=false; } }
+        synchronized(this) { return !complete; }
+    }
     protected void set(V value) {
         synchronized (this) { if (complete) return; result = value; complete = true; notifyAll(); }
         done();
