@@ -23,6 +23,35 @@ public final class BrowserPlatform {
         int dash = value.indexOf('-');
         return dash < 0 ? "" : value.substring(dash + 1).toUpperCase(java.util.Locale.ROOT);
     }
+    /**
+     * The browser is the only locale source of this port. Java's {@code user.language} and
+     * {@code user.country} come from {@code navigator.language}; nothing is invented and no
+     * host OS locale is imitated. Without a browser tag both properties stay unset.
+     */
+    public static void installLocale(){
+        String tag = localeTag();
+        if (tag.isEmpty()) return;
+        String language = localeLanguage(tag);
+        if (!isAlpha(language, true)) return;
+        System.setProperty("user.language", language);
+        String region = localeRegion(tag);
+        // Only a plain ISO region subtag is usable as user.country; extensions are ignored.
+        String country = isAlpha(region, false) && region.length() == 2 ? region : "";
+        if (!country.isEmpty()) System.setProperty("user.country", country);
+        recordLocale(tag, language, country);
+    }
+    /** All-lowercase (or all-uppercase) ASCII letters, at least two of them. */
+    public static boolean isAlpha(String value, boolean lowercase){
+        if (value.length() < 2 || value.length() > 8) return false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (lowercase ? c < 'a' || c > 'z' : c < 'A' || c > 'Z') return false;
+        }
+        return true;
+    }
+    @JSBody(params={"tag","language","country"},
+        script="globalThis.pzLocale={source:'navigator.language',tag:tag,language:language,country:country};")
+    private static native void recordLocale(String tag, String language, String country);
     public static String agent(){return agentNative();}public static int processors(){return processorsNative();}
     @JSBody(script="return navigator.userAgent;")private static native String agentNative();
     @JSBody(script="return navigator.hardwareConcurrency || 1;")private static native int processorsNative();

@@ -10,11 +10,13 @@ import port.runtime.CoreChecks;
 import port.demo.lwjgl.GL11;
 import port.shim.BrowserFiles;
 import port.shim.BrowserFileSystem;
+import port.shim.BrowserPlatform;
 
 public final class Boot {
     private static int frames;
     public static void main(String[] args) throws Exception {
         BrowserFileSystem.install();
+        BrowserPlatform.installLocale();
         CoreChecks.run();
         String missing;
         try {
@@ -53,6 +55,10 @@ public final class Boot {
             throw new AssertionError("Browser scancode domain");
         return port.shim.BrowserWindow.desktopWidth() + ":" + port.shim.BrowserWindow.desktopHeight()
                 + ":" + port.shim.BrowserWindow.colorBits();
+    }
+    /** Properties as Java actually sees them after the browser locale was installed. */
+    @JSExport public static String localeProperties() {
+        return String.valueOf(System.getProperty("user.language")) + ":" + String.valueOf(System.getProperty("user.country"));
     }
     @JSExport public static void checkTask4() {
         task4Result("running", "starting");

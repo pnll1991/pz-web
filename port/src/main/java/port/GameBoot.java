@@ -6,6 +6,8 @@ import org.teavm.jso.JSBody;
 public final class GameBoot {
     public static void main(String[] args) {
         port.shim.BrowserFileSystem.install();
+        // The game reads System.getProperty("user.language"); the browser supplies it here.
+        port.shim.BrowserPlatform.installLocale();
         state("starting", "", "");
         try {
             launch(args);

@@ -9,3 +9,13 @@ Mismas reglas de AGENTS.md: nada de archivos del juego ni código decompilado en
 
 Cuando, y solo cuando, el menú principal real se vea renderizado en Chrome y esté verificado con una captura en test-results/ y una prueba Playwright que pase, creá el archivo MENU_REACHED en la raíz del repo con la ruta de la captura y la prueba. No lo crees en ningún otro caso.
 Al terminar la ronda actualizá STATUS.md con el avance, los bloqueos y el siguiente paso concreto. No hagas commits ni toques .git: el vigilante commitea al final de cada ronda. Trabajá en pasos chicos y verificables; si el contexto se llena, dejá STATUS.md actualizado para que la siguiente ronda continúe.
+
+## OBLIGATORIO al terminar cada ronda: actualizar STATUS.md
+
+Antes de dar la ronda por terminada, reescribí `STATUS.md` para que refleje el estado REAL actual (no el de rondas anteriores):
+- Número de ronda y fecha/hora.
+- Qué se cambió en esta ronda (archivos y funcionalidad).
+- Hasta dónde llega hoy el arranque en Chrome (última etapa alcanzada y el error exacto donde se detiene), verificado con la prueba/captura de esta ronda.
+- El bloqueo actual y los siguientes pasos concretos, en orden.
+- Resultado de las pruebas de esta ronda.
+La siguiente ronda arranca leyendo este archivo: si queda viejo, se pierde el trabajo. No termines la ronda sin actualizarlo.
