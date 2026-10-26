@@ -33,7 +33,7 @@ def generate(inventory, output):
     rows = [signatures[key] for key in sorted(signatures)]
     output.mkdir(parents=True, exist_ok=True)
     (output/'coverage.json').write_text(json.dumps({'schema_version':1,'signatures':rows,
-        'limits':['No real-game shader or texture validation yet.', 'Fixed pipeline, pointer functions and GLSL conversion are not mapped.']},indent=2)+'\n')
+        'limits':['Coverage describes compiler mappings; standalone shader/texture tests do not prove game rendering.', 'Fixed pipeline, pointer functions and LWJGL shader entrypoints are not mapped.']},indent=2)+'\n')
     (output/'gl-overrides.tsv').write_text(''.join('\t'.join([r['class'],r['method'],r['descriptor'],r['target']])+'\n' for r in rows if r['target']))
     print(f"GL signatures: {len(rows)}, verified scalar mappings: {sum(r['status']=='direct' for r in rows)}")
 

@@ -28,6 +28,11 @@ public final class BuildCompiler {
         Path output = port.resolve(game ? "target/web/game" : "target/web");
         Path reports = port.resolve("target/reports/" + mode + "-" + entrypoint.getProperty("reflection"));
         Files.createDirectories(reports);
+        // Derived diagnostics must never survive a failed/restarted analysis.
+        for (String name : List.of("missing-apis.json", "missing-apis.md", "teavm-diagnostics.txt", "jdk-api-report.txt")) {
+            Files.deleteIfExists(reports.resolve(name));
+            Files.deleteIfExists(port.resolve("target").resolve(name));
+        }
         write(port, reports, "build-report.json", "{\"success\":false,\"status\":\"running\",\"mode\":\"" + mode + "\"}\n");
         Files.createDirectories(output);
         Files.writeString(output.resolve("build-state.json"), "{\"success\":false,\"status\":\"running\",\"mode\":\"" + mode + "\"}\n");
@@ -67,11 +72,19 @@ public final class BuildCompiler {
             tool.getTransformers().add(JdkCompatibility.class.getName());
             if (game) tool.getTransformers().add(GameEntryTransformer.class.getName());
             try {
+                verifyCompilerPatch();
                 tool.generate();
             } catch (Throwable error) {
                 Files.deleteIfExists(output.resolve("boot.wasm"));
                 write(port, reports, "teavm-diagnostics.txt", error.toString());
-                write(port, reports, "build-report.json", "{\"success\":false,\"status\":\"compiler-failed\",\"mode\":\"" + mode + "\",\"failure_type\":\"" + error.getClass().getName() + "\",\"game_initialized\":false}\n");
+                String failure = """
+                        {"success":false,"status":"compiler-failed","mode":"%s","reflection":"%s",
+                         "failure_type":"%s","game_initialized":false,"wasm_bytes":0,
+                         "teavm":"0.16.0","compiler_patch":"compact-reflection-caches-v1",
+                         "compile_ms":%d,"jvm_heap_limit_bytes":%d,"process_peak_rss_kib":%d}
+                        """.formatted(mode, entrypoint.getProperty("reflection"), error.getClass().getName(),
+                        (System.nanoTime() - started) / 1_000_000, heapLimit, peakRss());
+                write(port, reports, "build-report.json", failure);
                 Files.copy(reports.resolve("build-report.json"), output.resolve("build-state.json"), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                 throw error;
             }
@@ -96,7 +109,7 @@ public final class BuildCompiler {
             var dependencies = tool.getDependencyInfo();
             String report = """
                     {"mode":"%s","game_main":"%s","reflection":"%s","game_initialized":false,"success":%s,
-                     "teavm":"0.16.0","target":"WEBASSEMBLY_GC",
+                     "teavm":"0.16.0","compiler_patch":"compact-reflection-caches-v1","target":"WEBASSEMBLY_GC",
                      "reachable_classes":%d,"reachable_methods":%d,
                      "wasm_bytes":%d,"compile_ms":%d,"external_classpath_entries":%d,
                      "jvm_heap_limit_bytes":%d,"process_peak_rss_kib":%d,
@@ -108,6 +121,18 @@ public final class BuildCompiler {
             System.out.println(report);
             if (!success) throw new IllegalStateException("TeaVM compilation failed:\n" + problems);
         }
+    }
+
+    private static void verifyCompilerPatch() throws Exception {
+        Class<?> listener = Class.forName("org.teavm.reflection.ReflectionDependencyListener");
+        int patched = 0;
+        for (var nested : listener.getDeclaredClasses()) {
+            for (var field : nested.getDeclaredFields()) {
+                if (field.getName().equals("knownTypes") &&
+                        field.getType() == org.teavm.dependency.CompactTypeSet.class) patched++;
+            }
+        }
+        if (patched != 3) throw new IllegalStateException("TeaVM memory patch is not active; use scripts/build.sh");
     }
 
     private static void write(Path port, Path reports, String name, String value) throws Exception {

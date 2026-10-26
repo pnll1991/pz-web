@@ -11,6 +11,8 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--reports', type=Path, default=ROOT / 'port/target/reports/game-main-minimal')
 args = parser.parse_args()
 report = json.loads((args.reports / 'build-report.json').read_text())
+if report.get('status') in ('running', 'compiler-failed'):
+    raise SystemExit(f"No complete dependency analysis: {report['status']}; missing APIs cannot be counted")
 lines = (args.reports / 'teavm-diagnostics.txt').read_text().splitlines()
 missing, other = defaultdict(set), []
 for line in lines:
@@ -23,7 +25,9 @@ result = {'build':report, 'missing_api_count':len(missing), 'diagnostic_count':l
 (args.reports / 'missing-apis.json').write_text(json.dumps(result, indent=2) + '\n')
 table = ['# APIs pendientes de la compilación real', '',
          f"Modo: `{report['mode']}`; reflexión: `{report.get('reflection', 'no completada')}`. Compilación exitosa: {report['success']}.",
-         f'{len(missing)} APIs distintas, {len(lines)} diagnósticos. El análisis mínimo no cubre toda la reflexión Lua.', '',
+         f'{len(missing)} APIs distintas, {len(lines)} diagnósticos.',
+         ('Manifiesto Lua habilitado. Alcance de compilación; no es evidencia de ejecución del juego.'
+          if report.get('reflection') == 'lua' else 'El análisis mínimo no cubre toda la reflexión Lua.'), '',
          '| API ausente | Lugares que la usan |', '|---|---:|']
 table += [f'| `{name}` | {len(callers)} |' for name, callers in sorted(missing.items())]
 table += ['', '## Otros diagnósticos', ''] + ['- ' + x for x in other]

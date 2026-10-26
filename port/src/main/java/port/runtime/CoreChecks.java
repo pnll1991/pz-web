@@ -15,5 +15,14 @@ public final class CoreChecks {
             throw new AssertionError("Quad indices");
         Object result = ReflectionProbe.class.getMethod("value").invoke(new ReflectionProbe());
         if (!"reflection-ok".equals(result)) throw new AssertionError("Reflection policy");
+        var child = new ReflectionProbe.Child();
+        if (!"reflection-child-ok".equals(ReflectionProbe.class.getMethod("value").invoke(child)))
+            throw new AssertionError("Reflective virtual dispatch");
+        var label = ReflectionProbe.class.getField("label");
+        label.set(child, "updated");
+        if (!"updated".equals(label.get(child))) throw new AssertionError("Reflective object field");
+        var number = ReflectionProbe.class.getField("number");
+        number.setInt(child, 7429);
+        if (number.getInt(child) != 7429) throw new AssertionError("Reflective primitive field");
     }
 }

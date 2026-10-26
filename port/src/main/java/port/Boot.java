@@ -46,6 +46,15 @@ public final class Boot {
     @JSExport public static int frame(double timestamp) { return ++frames; }
     @JSExport public static int frameCount() { return frames; }
     @JSExport public static int glError() { return GL11.glGetError(); }
+    @JSExport public static void checkCompatibility() {
+        compatibilityResult("running", "");
+        new Thread(() -> {
+            try { compatibilityResult("passed", port.runtime.CompatibilityChecks.concurrency() + ";" + port.runtime.CompatibilityChecks.filesAndMath()); }
+            catch (Throwable error) { compatibilityResult("failed", error.toString()); error.printStackTrace(); }
+        }, "compatibility-checks").start();
+    }
+    @JSBody(params={"status","detail"}, script="globalThis.pzCompatibility={status:status,detail:detail};")
+    private static native void compatibilityResult(String status, String detail);
     @JSExport public static String readJavaFile(String path) throws Exception {
         return java.nio.file.Files.readString(new java.io.File(path).toPath());
     }

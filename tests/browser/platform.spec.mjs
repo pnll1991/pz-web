@@ -1,5 +1,17 @@
 import { test, expect } from '@playwright/test';
 
+test('substituted Java concurrency yields, preserves order and wakes conditions', async ({ page }) => {
+  await page.goto('/'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  await page.evaluate(() => pzLab.teavm.exports.checkCompatibility());
+  await expect.poll(() => page.evaluate(() => pzCompatibility.status)).toBe('passed');
+  expect(await page.evaluate(() => pzCompatibility.detail)).toBe('queues,futures,executor,condition:OK;channels,force,printstream,fma,matcher,crc:OK');
+  await page.reload(); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  expect(await page.evaluate(() => [...pzLab.vfs.readFile('/Zomboid/channel-check.bin')])).toEqual([1,9]);
+  await page.evaluate(() => { pzLab.vfs.flush = () => Promise.reject(new Error('fixture-durability-failure')); pzLab.teavm.exports.checkCompatibility(); });
+  await expect.poll(() => page.evaluate(() => pzCompatibility.status)).toBe('failed');
+  expect(await page.evaluate(() => pzCompatibility.detail)).toContain('fixture-durability-failure');
+});
+
 test('Java actually executes in Wasm GC and renders a WebGL2 shader', async ({ page }, testInfo) => {
   const errors = []; page.on('pageerror',error=>errors.push(error.message));
   await page.goto('/');
@@ -62,6 +74,25 @@ test('missing graphics and invalid shaders report failure', async ({ page }) => 
     pzLab.gl.context.enable(0); // Deliberately invalid enum in our local test context.
     return [pzLab.teavm.exports.glError(), pzLab.teavm.exports.glError()];
   })).toEqual([1280,0]);
+});
+
+test('translated desktop uniforms and shader output preserve their values', async ({ page }) => {
+  await page.goto('/'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  const result = await page.evaluate(() => {
+    const bridge = pzLab.gl, gl = bridge.context;
+    const vertex = '#version 330 core\nconst vec2 p[3]=vec2[3](vec2(-1.,-1.),vec2(1.,-1.),vec2(0.,1.));void main(){gl_Position=vec4(p[gl_VertexID],0.,1.);}';
+    const fragment = '#version 120\nuniform vec4 tint=vec4(.25,.5,.75,1.);void main(){gl_FragColor=tint;}';
+    const linked = bridge.desktopProgram(vertex,fragment);
+    const vao = gl.createVertexArray();
+    try {
+      gl.bindVertexArray(vao); gl.useProgram(linked.program); gl.drawArrays(gl.TRIANGLES,0,3);
+      const pixel = new Uint8Array(4);
+      gl.readPixels(gl.drawingBufferWidth>>1,gl.drawingBufferHeight>>1,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);
+      return {pixel:[...pixel],uniform:[...gl.getUniform(linked.program,gl.getUniformLocation(linked.program,'tint'))],error:gl.getError()};
+    } finally { gl.bindVertexArray(null); gl.useProgram(null); gl.deleteVertexArray(vao); gl.deleteProgram(linked.program); }
+  });
+  expect(result).toEqual({pixel:[64,128,191,255],uniform:[.25,.5,.75,1],error:0});
+  await page.screenshot({path:'test-results/task3-shader-compatibility.png',fullPage:true});
 });
 
 test('generated resource packs load, verify hashes and reuse Cache Storage', async ({ page }) => {

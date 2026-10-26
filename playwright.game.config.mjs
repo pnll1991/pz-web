@@ -5,6 +5,7 @@ if (!process.env.PZ_HOME) throw new Error('PZ_HOME is required for real-copy tes
 const port = process.env.PZ_REAL_TEST_PORT || '8092';
 export default defineConfig({
   ...base, testMatch:'real-game.spec.mjs', testIgnore:[],
+  outputDir:'test-results/real',
   reporter:[['list'], ['json', { outputFile:'test-results/real-game-results.json' }]],
   use:{ ...base.use, baseURL:`http://127.0.0.1:${port}` },
   webServer:{ command:'python3 tests/prepare_real.py && node dev-server/server.mjs',

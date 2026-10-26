@@ -1,3 +1,5 @@
+import { translateShader } from './glsl.mjs';
+
 /** WebGL2 context and object handles; unsupported entrypoints must throw. */
 export class GLBridge {
   constructor(canvas) {
@@ -74,6 +76,42 @@ export class GLBridge {
       throw new Error(`Shader compilation failed: ${log}`);
     }
     return shader;
+  }
+  desktopProgram(vertexSource, fragmentSource) {
+    const gl = this.context;
+    const vertex = translateShader(vertexSource, 'vertex');
+    const fragment = translateShader(fragmentSource, 'fragment');
+    let vs, fs, program;
+    try {
+      vs = this.shader(gl.VERTEX_SHADER, vertex.source);
+      fs = this.shader(gl.FRAGMENT_SHADER, fragment.source);
+      program = this.call('createProgram');
+      this.call('attachShader', program, vs); this.call('attachShader', program, fs); this.call('linkProgram', program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(`Program link failed: ${gl.getProgramInfoLog(program)}`);
+      const defaults = new Map();
+      for (const entry of [...vertex.uniformDefaults,...fragment.uniformDefaults]) {
+        if (defaults.has(entry.name) && JSON.stringify(defaults.get(entry.name)) !== JSON.stringify(entry))
+          throw new Error(`Conflicting uniform defaults: ${entry.name}`);
+        defaults.set(entry.name,entry);
+      }
+      const previous = gl.getParameter(gl.CURRENT_PROGRAM);
+      try {
+        this.call('useProgram',program);
+        for (const entry of defaults.values()) this.uniformDefault(program,entry);
+      } finally { this.call('useProgram',previous); }
+      return {program,vertex,fragment};
+    } catch (error) { if (program) gl.deleteProgram(program); throw error; }
+    finally { if (vs) gl.deleteShader(vs); if (fs) gl.deleteShader(fs); }
+  }
+  uniformDefault(program, {name,type,value}) {
+    const gl = this.context, location = gl.getUniformLocation(program,name);
+    if (location === null) return;
+    if (type === 'float') this.call('uniform1f',location,value);
+    else if (type === 'int' || type === 'bool') this.call('uniform1i',location,value);
+    else if (['vec2','vec3','vec4'].includes(type)) this.call(`uniform${type.at(-1)}fv`,location,new Float32Array(value));
+    else if (['ivec2','ivec3','ivec4','bvec2','bvec3','bvec4'].includes(type)) this.call(`uniform${type.at(-1)}iv`,location,new Int32Array(value));
+    else if (['mat2','mat3','mat4'].includes(type)) this.call(`uniformMatrix${type.at(-1)}fv`,location,false,new Float32Array(value));
+    else throw new Error(`Unsupported uniform default type: ${type}`);
   }
   drawProbe() {
     const gl = this.context;

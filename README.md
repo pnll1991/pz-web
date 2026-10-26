@@ -64,7 +64,7 @@ export PZ_HOME="$HOME/pz-pinned/25485521"
 npx playwright test --config playwright.game.config.mjs
 ```
 
-Estos tests leen `media/WorkshopTags.txt` mediante Java, comprueban persistencia y comparan todos los bytes RGBA de `media/ui/Title.png` contra su decodificación local con Pillow. No ejecutan el menú. Usan el puerto 8092; los tests sintéticos usan 8091 y el servidor de desarrollo 8090.
+Estos tests leen `media/WorkshopTags.txt` mediante Java, comprueban persistencia y comparan todos los bytes RGBA de `media/ui/Title.png` contra su decodificación local con Pillow. También traducen, compilan y enlazan tres pares de shaders originales (`default`, `blit`, `vboRenderer_PositionColorUV`). No ejecutan el menú. Usan el puerto 8092; los tests sintéticos usan 8091 y el servidor de desarrollo 8090. Los artefactos de ambas suites se guardan en subdirectorios separados de `test-results/`.
 
 ## Paquetes de recursos
 
@@ -81,14 +81,15 @@ El servidor monta `/packs` y `/media` en modo lectura, sirve ETag y rangos, y es
 ## Compilador y límites actuales
 
 - `port.compiler.BuildCompiler` usa la API de TeaVM desde Maven para referenciar el classpath externo y registrar clases/métodos alcanzados, diagnósticos y tamaño Wasm. `MAVEN_OPTS` vale `-Xmx20g` por defecto, sin reservar 20 GiB al iniciar.
+- `scripts/prepare_teavm.py` aplica un parche local y fijado de memoria a tres cachés de reflexión de TeaVM 0.16.0. Mantiene la exposición Lua completa; el reporte identifica el parche. Fuente pública generada únicamente bajo `target/`, sin modificar herramientas globales.
 - `FailFastNatives` genera cuerpos que lanzan `UnsupportedOperationException` con el símbolo JNI largo. Solo transforma firmas del inventario y fixtures propias; no sustituye nativas internas de TeaVM indiscriminadamente.
-- `PlatformSubstitutions` prueba la API `SubstitutionPolicy` con nuestra API gráfica sintética. `tools/glgen/generate.py` clasifica las firmas reales y genera cuatro mapeos escalares exactos para GL11/GL11C. El resto conserva su wrapper o falla explícitamente si es nativo.
+- `PlatformSubstitutions` registra las implementaciones propias de concurrencia, grupos de hilos, contratos de IO y FileChannel, incluyendo sus clases anidadas. `JdkCompatibility` agrega operaciones estándar concretas sin alterar el juego. `tools/glgen/generate.py` mantiene cuatro mapeos escalares exactos para GL11/GL11C; los métodos GL20 del juego aún no usan el traductor de shaders.
 - `tools/exposure/generate.py` analiza el bytecode sin cargar clases del juego: registros literales, helpers, miembros públicos y jerarquías. Produce `exposure.json` y `reflection-lua.txt` en `port/target/config`. Los registros dinámicos que no se puedan resolver se informan explícitamente; no se afirma que `LuaManager.init` termine.
-- `BrowserFileSystem` instala el SPI de archivos de TeaVM para que `File`, streams, `RandomAccessFile`, `Files` y `Paths` compartan el VFS de JS. Se verificaron lecturas, escrituras, directorios, offsets y recarga. La persistencia sigue requiriendo `await vfs.flush()`; FileChannel, watchers y sincronización durable `rws/rwd` siguen pendientes.
-- Matrices y triangulación de quads tienen pruebas compartidas JVM/Wasm; aún no forman un pipeline fijo compatible con PZ. Tampoco hay traductor GLSL, MemoryUtil completo, física, SQLite, audio FMOD ni multijugador.
+- `BrowserFileSystem` instala el SPI de archivos de TeaVM para que `File`, streams, `RandomAccessFile`, `Files` y `Paths` compartan el VFS de JS. FileChannel comparte posición/cierre con el stream, admite IO posicional y transferencias; `force()` suspende su corrutina hasta completar IndexedDB y propaga las fallas. Se puede persistir también con `await vfs.flush()`. Watchers, mapeo de archivos y sincronización automática `rws/rwd` siguen pendientes; los locks del SO fallan explícitamente.
+- `glsl.mjs` usa `@shaderfrog/glsl-parser` 7.0.1 local para transformar ASTs, conservar defaults de uniforms e insertar promociones escalares de GLSL. Es un subconjunto comprobado; los includes propios de PZ, GLSL restante, pipeline fijo completo, callbacks GLFW y MemoryUtil siguen pendientes. Matrices y quads de la base todavía no están conectados al renderer del juego. No hay física, SQLite ni FMOD implementados.
 
-Reportes locales: `port/target/build-report.json`, `port/target/teavm-diagnostics.txt`, `port/target/jdk-api-report.txt`, `.toolchain/doctor.json`, `test-results/browser-results.json`. Los reportes indican el modo y la reflexión: el diagnóstico mínimo del juego no cubre toda la exposición Lua. `python3 scripts/report_game.py` agrupa las APIs faltantes y conserva sus call sites.
+Reportes locales: `port/target/build-report.json`, `port/target/teavm-diagnostics.txt`, `port/target/jdk-api-report.txt`, `.toolchain/doctor.json`, `test-results/browser-results.json`. Los reportes indican el modo y la reflexión: el diagnóstico mínimo del juego no cubre toda la exposición Lua. `python3 scripts/report_game.py --reports port/target/reports/game-main-lua` agrupa las APIs faltantes del análisis completo y conserva sus call sites.
 
 ## Reglas de colaboración
 
-Leer [AGENTS.md](AGENTS.md) y [AGENT_LEARNINGS.md](AGENT_LEARNINGS.md). No publicar ni agregar archivos del juego, fuentes derivadas, SDKs privados, resultados de builds o capturas privadas. No hay repositorios remotos configurados por este trabajo. La base está en el commit local `ba29078`; esta sesión conserva `.git` en solo lectura. Ver `docs/local-commits.md` para los nuevos commits sugeridos.
+Leer [AGENTS.md](AGENTS.md) y [AGENT_LEARNINGS.md](AGENT_LEARNINGS.md). No publicar ni agregar archivos del juego, fuentes derivadas, SDKs privados, resultados de builds o capturas privadas. No se crean remotos. La tarea 2 está en el commit local `649b950`; esta sesión conserva `.git` en solo lectura. Ver `docs/local-commits.md` para los nuevos commits sugeridos.

@@ -3,11 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": "24.x" },
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "dev": "node dev-server/server.mjs",
     "test": "node --test tests/node/*.test.mjs",
     "test:browser": "playwright test"
   },
-  "devDependencies": { "@playwright/test": "1.56.1" }
+  "devDependencies": {
+    "@playwright/test": "1.56.1"
+  },
+  "dependencies": {
+    "@shaderfrog/glsl-parser": "7.0.1"
+  }
 }
