@@ -4,7 +4,7 @@ cd /home/agente47/Projects/pz-web
 CODEX=/usr/lib/chatgpt/resources/codex
 LOG=supervisor.log
 MAX_USED=95
-round=5; fails=0
+round=6; fails=0
 say(){ echo "$(date '+%F %T') $*" >> "$LOG"; }
 usage(){ f=$(ls -t ~/.codex/sessions/*/*/*/*.jsonl 2>/dev/null | head -1); grep -o '"used_percent":[0-9.]*' "$f" | tail -1 | cut -d: -f2 | cut -d. -f1; }
 commit(){ git add -A && git -c user.name=Paolozky -c user.email=paolozky@local commit -q -m "$1" && say "commit: $(git log --oneline -1)"; }

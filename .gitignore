@@ -27,3 +27,4 @@ __pycache__/
 /pz-decomp/
 /sdk/
 supervisor.log
+local-run-*.log
