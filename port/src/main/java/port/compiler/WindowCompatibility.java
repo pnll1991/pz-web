@@ -29,7 +29,9 @@ public final class WindowCompatibility implements ClassHolderTransformer {
             var bits = e.invoke(new MethodReference(BRIDGE,"colorBits",ValueType.INTEGER));
             // The browser exposes no monitor refresh rate; preserve an unknown frequency.
             e.setField(cls.getName(),"desktopDisplayMode",e.construct("org.lwjglx.opengl.DisplayMode",width,height,bits,e.constant(0)));
-            e.setField(cls.getName(),"monitor",e.constant(1L));
+            // Display.monitor holds a monitor handle, not the window handle: this backend's
+            // single display is BrowserWindow.MONITOR_HANDLE. The window handle stays 0 until created.
+            e.setField(cls.getName(),"monitor",e.constant(2L));
             e.invoke(new MethodReference("org.lwjglx.input.Keyboard","create",ValueType.VOID));
             e.setField(cls.getName(),"isInitialized",e.constant(1).cast(ValueType.BOOLEAN));
             e.exit();
@@ -37,6 +39,26 @@ public final class WindowCompatibility implements ClassHolderTransformer {
         if (!cls.getName().equals("org.lwjgl.glfw.GLFW")) return;
         var bridge = context.getHierarchy().getClassSource().get(BRIDGE);
         for (var method : cls.getMethods()) {
+            // The monitor structs are built in IR: the bridge cannot import org.lwjgl types,
+            // so a real GLFWVidMode/Buffer is constructed over one arena address holding the
+            // single mode the page can present (the canvas drawing buffer).
+            if (method.getDescriptor().equals(new MethodDescriptor("glfwGetVideoModes",
+                    ValueType.object("org.lwjgl.glfw.GLFWVidMode$Buffer"), ValueType.LONG))) {
+                var e = ProgramEmitter.create(method,context.getHierarchy());
+                e.invoke(new MethodReference(BRIDGE,"checkMonitor",ValueType.VOID,ValueType.LONG),e.var(1,ValueType.LONG));
+                var address = e.invoke(new MethodReference(BRIDGE,"videoModeAddress",ValueType.LONG));
+                e.construct("org.lwjgl.glfw.GLFWVidMode$Buffer",address,e.constant(1)).returnValue();
+                continue;
+            }
+            if (method.getDescriptor().equals(new MethodDescriptor("glfwGetVideoMode",
+                    ValueType.object("org.lwjgl.glfw.GLFWVidMode"), ValueType.LONG))) {
+                var e = ProgramEmitter.create(method,context.getHierarchy());
+                e.invoke(new MethodReference(BRIDGE,"checkMonitor",ValueType.VOID,ValueType.LONG),e.var(1,ValueType.LONG));
+                var address = e.invoke(new MethodReference(BRIDGE,"videoModeAddress",ValueType.LONG));
+                e.construct("org.lwjgl.glfw.GLFWVidMode",address,
+                    e.constantNull(java.nio.ByteBuffer.class)).returnValue();
+                continue;
+            }
             if (method.getName().equals("<clinit>")) {
                 // The browser owns the backend; there is no host dynamic library.
                 var e = ProgramEmitter.create(method,context.getHierarchy());

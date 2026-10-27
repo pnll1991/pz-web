@@ -42,6 +42,15 @@ export class BrowserWindow {
   desktopWidth() { return window.screen.width; }
   desktopHeight() { return window.screen.height; }
   colorBits() { return window.screen.colorDepth; }
+  // The page sees exactly one display: screen geometry is the monitor geometry.
+  // OS panels are invisible to a browser tab, so the work area is the whole screen.
+  monitorX() { this.requireInit(); return 0; }
+  monitorY() { this.requireInit(); return 0; }
+  monitorWorkareaWidth() { this.requireInit(); return window.screen.width; }
+  monitorWorkareaHeight() { this.requireInit(); return window.screen.height; }
+  // The canvas drawing buffer is the real drawable surface this page can present.
+  bufferWidth() { this.requireInit(); return this.canvas.width; }
+  bufferHeight() { this.requireInit(); return this.canvas.height; }
   keyScancode(key) { this.requireInit(); return this.keyCodes.has(key) ? key : -1; }
   keyName(key, scancode) {
     this.requireInit();

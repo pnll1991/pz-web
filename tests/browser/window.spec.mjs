@@ -9,6 +9,8 @@ test('Java window initialization uses actual browser metrics and is idempotent',
     const bridge=runtime.window=new BrowserWindow(runtime.input.canvas,runtime.gl,runtime.input);
     await bridge.prepare();
     const before=bridge.initialized;
+    const canvasWidth=pzRuntime.input.canvas.width;
+    const canvasHeight=pzRuntime.input.canvas.height;
     const first=pzLab.teavm.exports.windowSystemProbe();
     const second=pzLab.teavm.exports.windowSystemProbe();
     // Missing layout information must stay unavailable, never invent US labels.
@@ -19,11 +21,33 @@ test('Java window initialization uses actual browser metrics and is idempotent',
     const nonPrintable=bridge.keyName(257,257);
     let invalid;
     try { bridge.key(1,65); } catch(error) { invalid=error.message; }
+    const metrics = {monitorX:bridge.monitorX(),monitorY:bridge.monitorY(),
+      workareaWidth:bridge.monitorWorkareaWidth(),workareaHeight:bridge.monitorWorkareaHeight(),
+      bufferWidth:bridge.bufferWidth(),bufferHeight:bridge.bufferHeight()};
+    let uninit;
+    try { new BrowserWindow(runtime.input.canvas,runtime.gl,runtime.input).monitorX(); }
+    catch (error) { uninit = error.message; }
     return {before,first,second,expected:`${screen.width}:${screen.height}:${screen.colorDepth}`,
+      metrics,uninit,
+      canvasWidth,canvasHeight,screen:{width:screen.width,height:screen.height,depth:screen.colorDepth},
       events:bridge.events,unavailable,layoutLabel,nonPrintable,invalid};
   });
   expect(result.before).toBe(false);
-  expect(result.first).toBe(result.expected);expect(result.second).toBe(result.first);
+  expect(result.first).toContain(result.expected);expect(result.second).toContain(result.first);
+  // The page's single display: own handle (never the window handle 1), origin (0,0),
+  // work area = the whole screen, and the mode = the canvas drawing buffer.
+  const [display,monitor,mode,invalidMonitor] = result.first.split('|');
+  expect(display).toBe(result.expected);
+  const [handle,workarea] = monitor.split(':');
+  expect(Number(handle)).toBe(2);
+  expect(Number(handle)).not.toBe(1);
+  expect(workarea).toBe(`0,0,${result.screen.width},${result.screen.height}`);
+  expect(result.metrics).toEqual({monitorX:0,monitorY:0,workareaWidth:result.screen.width,
+    workareaHeight:result.screen.height,bufferWidth:result.canvasWidth,bufferHeight:result.canvasHeight});
+  expect(result.uninit).toContain('is not initialized');
+  const bits = result.screen.depth >= 3 ? Math.trunc(result.screen.depth / 3) * 3 : 0;
+  expect(mode).toBe(`${result.canvasWidth}x${result.canvasHeight}:${bits}:0`);
+  expect(invalidMonitor).toContain('Invalid browser monitor handle');
   expect(result.events).toHaveLength(1);
   expect(result.events[0]).toMatchObject({type:'initialized',backend:'browser',refreshRate:0});
   expect(result.events[0].renderer).toContain('WebGL 2.0');

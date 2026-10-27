@@ -53,8 +53,38 @@ public final class Boot {
         if (port.shim.BrowserWindow.glfwGetKeyScancode(65) != 65 ||
                 port.shim.BrowserWindow.glfwGetKeyScancode(-1) != -1)
             throw new AssertionError("Browser scancode domain");
+        // The page's single display: its own handle, origin and work area, never a host monitor.
+        long monitor = port.shim.BrowserWindow.glfwGetPrimaryMonitor();
+        if (monitor == 1L || monitor == 0L) throw new AssertionError("Monitor handle collides with the window handle");
+        int[] x = new int[1]; int[] y = new int[1]; int[] width = new int[1]; int[] height = new int[1];
+        port.shim.BrowserWindow.glfwGetMonitorWorkarea(monitor, x, y, width, height);
+        java.nio.IntBuffer bx = java.nio.IntBuffer.allocate(1);
+        java.nio.IntBuffer by = java.nio.IntBuffer.allocate(1);
+        java.nio.IntBuffer bw = java.nio.IntBuffer.allocate(1);
+        java.nio.IntBuffer bh = java.nio.IntBuffer.allocate(1);
+        port.shim.BrowserWindow.glfwGetMonitorWorkarea(monitor, bx, by, bw, bh);
+        if (x[0] != bx.get(0) || y[0] != by.get(0) || width[0] != bw.get(0) || height[0] != bh.get(0))
+            throw new AssertionError("Monitor work area differs between the array and buffer overloads");
+        // One arena address with the single mode the page can present; stable across calls.
+        long mode = port.shim.BrowserWindow.videoModeAddress();
+        if (mode == 0 || mode != port.shim.BrowserWindow.videoModeAddress())
+            throw new AssertionError("Video mode address is unstable");
+        int modeWidth = port.runtime.memory.NativeMemory.memGetInt(mode);
+        int modeHeight = port.runtime.memory.NativeMemory.memGetInt(mode + 4);
+        int modeBits = port.runtime.memory.NativeMemory.memGetInt(mode + 8)
+                + port.runtime.memory.NativeMemory.memGetInt(mode + 12)
+                + port.runtime.memory.NativeMemory.memGetInt(mode + 16);
+        int modeRefresh = port.runtime.memory.NativeMemory.memGetInt(mode + 20);
+        if (modeWidth != port.shim.BrowserWindow.bufferWidth() || modeHeight != port.shim.BrowserWindow.bufferHeight())
+            throw new AssertionError("Video mode does not match the canvas drawing buffer");
+        String invalidMonitor;
+        try { port.shim.BrowserWindow.checkMonitor(monitor + 1); invalidMonitor = "unexpected success"; }
+        catch (IllegalArgumentException error) { invalidMonitor = error.getMessage(); }
         return port.shim.BrowserWindow.desktopWidth() + ":" + port.shim.BrowserWindow.desktopHeight()
-                + ":" + port.shim.BrowserWindow.colorBits();
+                + ":" + port.shim.BrowserWindow.colorBits()
+                + "|" + monitor + ":" + x[0] + "," + y[0] + "," + width[0] + "," + height[0]
+                + "|" + modeWidth + "x" + modeHeight + ":" + modeBits + ":" + modeRefresh
+                + "|" + invalidMonitor;
     }
     /** Properties as Java actually sees them after the browser locale was installed. */
     @JSExport public static String localeProperties() {
