@@ -1,5 +1,16 @@
 import { translateShader } from './glsl.mjs';
 
+/**
+ * GL entrypoints this backend implements beyond raw WebGL2. Keep in sync with the mappings in
+ * tools/glgen/generate.py and the wrappers in port.shim.GL11: an address is only handed out for
+ * a name that can actually be called.
+ */
+const PORT_PROVIDED = new Set([
+  'glClearColor', 'glClear', 'glViewport', 'glGetError', 'glEnable', 'glDisable', 'glScissor',
+  'glDepthMask', 'glDepthFunc', 'glCullFace', 'glFrontFace', 'glPixelStorei', 'glLineWidth',
+  'glBlendFunc', 'glBlendFuncSeparate', 'glClearDepthf', 'glStencilMask', 'glClearStencil',
+]);
+
 /** WebGL2 context and object handles; unsupported entrypoints must throw. */
 export class GLBridge {
   constructor(canvas) {
@@ -26,6 +37,23 @@ export class GLBridge {
   viewport(...args) { this.call('viewport', ...args); }
   getError() { return this.call('getError'); }
   unsupported(jniName) { throw new Error(`Unsupported native: ${jniName}`); }
+  /**
+   * WebGL2 exposes no desktop OpenGL version. This backend presents the API version 3.3 with the
+   * WebGL 2.0 renderer comment, because WebGL2 has no fixed-function pipeline and the game's
+   * modern shader path is the only one that can run (docs/decisions.md).
+   */
+  apiVersion() { return '3.3 (WebGL 2.0)'; }
+  extensions() { return this.context.getSupportedExtensions() || []; }
+  /**
+   * Honest entrypoint probe for the capability bridge: a GL name exists only when WebGL2 has the
+   * method (GL names map to WebGL by lower-casing the first two letters) or when this bridge
+   * implements an explicit equivalent in PORT_PROVIDED. Everything else reports address 0.
+   */
+  hasEntrypoint(name) {
+    if (PORT_PROVIDED.has(name)) return true;
+    if (!name.startsWith('gl') || name.length < 3) return false;
+    return typeof this.context[name[2].toLowerCase() + name.slice(3)] === 'function';
+  }
   async loadTexture(url) {
     const location = new URL(url, globalThis.location.href);
     if (location.origin !== globalThis.location.origin) throw new Error('Texture must be local');
