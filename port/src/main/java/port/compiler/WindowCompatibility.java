@@ -204,9 +204,9 @@ public final class WindowCompatibility implements ClassHolderTransformer {
         e.enter(loop);
         var event = e.invoke(new MethodReference(CALLBACKS,"pollEvent",STRING));
         e.when(event.isNull()).thenDo(e::exit);
-        var callback = e.invoke(new MethodReference(CALLBACKS,"eventCallback",OBJECT),event);
+        var callback = e.invoke(new MethodReference(CALLBACKS,"eventCallback",STRING,OBJECT),event);
         e.when(callback.isNull()).thenDo(() -> e.jump(loop));
-        var arguments = e.invoke(new MethodReference(CALLBACKS,"eventArguments",ValueType.LONG),event);
+        var arguments = e.invoke(new MethodReference(CALLBACKS,"eventArguments",STRING,ValueType.LONG),event);
         callback.cast(ValueType.object(CALLBACK_I))
             .invoke(InvocationType.VIRTUAL,new MethodReference(CALLBACK_I,"callback",ValueType.LONG,ValueType.LONG,ValueType.VOID),
                 e.constant(0L), arguments);
