@@ -111,7 +111,13 @@ public final class BrowserWindow {
     public static void glfwGetWindowFrameSize(long window,int[] left,int[] top,int[] right,int[] bottom) { frame(checkedHandle(window),left,top,right,bottom); }
     public static void glfwGetWindowFrameSize(long window,IntBuffer left,IntBuffer top,IntBuffer right,IntBuffer bottom) {
         int handle=checkedHandle(window);
-        left.put(0,frameMetric(0,handle)); top.put(0,frameMetric(1,handle)); right.put(0,frameMetric(2,handle)); bottom.put(0,frameMetric(3,handle));
+        // LWJGL's own wrapper accepts null out-parameters (Checks.checkSafe + memAddressSafe) and
+        // Display.calcWindowPos really passes null for right and bottom, so skip those cells
+        // instead of dereferencing them.
+        if (left != null) left.put(0,frameMetric(0,handle));
+        if (top != null) top.put(0,frameMetric(1,handle));
+        if (right != null) right.put(0,frameMetric(2,handle));
+        if (bottom != null) bottom.put(0,frameMetric(3,handle));
     }
     public static void glfwGetWindowContentScale(long window,float[] x,float[] y) { float scale=contentScaleNative(checkedHandle(window)); x[0]=scale; y[0]=scale; }
     public static void glfwGetWindowContentScale(long window,FloatBuffer x,FloatBuffer y) { float scale=contentScaleNative(checkedHandle(window)); x.put(0,scale); y.put(0,scale); }

@@ -9,6 +9,7 @@ public final class WindowCompatibility implements ClassHolderTransformer {
     private static final String BRIDGE = "port.shim.BrowserWindow";
     private static final String CALLBACKS = "port.shim.BrowserCallbacks";
     private static final String LIBFFI_BRIDGE = "port.shim.BrowserLibFFI";
+    private static final String STB_BRIDGE = "port.shim.BrowserStb";
     private static final String MEMORY_STACK = "org.lwjgl.system.MemoryStack";
     private static final String POINTER_DEFAULT = "org.lwjgl.system.Pointer$Default";
     private static final String CALLBACK_I = "org.lwjgl.system.CallbackI";
@@ -139,10 +140,20 @@ public final class WindowCompatibility implements ClassHolderTransformer {
                 var icons = e.var(2,ValueType.object("org.lwjgl.glfw.GLFWImage$Buffer"));
                 e.when(icons.isNull()).thenDo(e::exit);
                 e.invoke(new MethodReference(BRIDGE,"checkWindow",ValueType.LONG,ValueType.VOID),e.var(1,ValueType.LONG));
-                // Reaching this branch means the game really built icon images: forwarding them to
-                // a DOM favicon would need the STB pixel bridge, so refuse instead of ignoring them.
-                e.construct(UnsupportedOperationException.class, e.constant(
-                    "Browser window icon requires the STB pixel bridge: org.lwjgl.glfw.GLFW#glfwSetWindowIcon(JLorg/lwjgl/glfw/GLFWImage$Buffer;)V")).raise();
+                // The pixel bridge is port.shim.BrowserStb: each GLFWImage entry is
+                // __struct(member(4),member(4),POINTER_SIZE) = 16 bytes (width, height, pixels),
+                // and the buffer's element count is its remaining() (limit - position, both ints).
+                var count = icons.invoke(InvocationType.VIRTUAL,
+                    new MethodReference("org.lwjgl.system.CustomBuffer","remaining",ValueType.INTEGER));
+                e.when(count.isLessOrEqualTo(e.constant(0))).thenDo(e::exit);
+                var entries = icons.invoke(InvocationType.VIRTUAL,
+                    new MethodReference("org.lwjgl.system.CustomBuffer","address",ValueType.LONG));
+                e.invoke(new MethodReference(STB_BRIDGE,"uploadIcon",ValueType.LONG,ValueType.INTEGER,
+                    ValueType.INTEGER,ValueType.VOID),entries,count,e.constant(16));
+                // A void body must end with an explicit terminator: the join block would
+                // otherwise have no last instruction and TeaVM's unreachable-block eliminator
+                // fails with a NullPointerException while optimizing it.
+                e.exit();
                 continue;
             }
             if (method.getDescriptor().equals(new MethodDescriptor("glfwPollEvents",ValueType.VOID))) {
@@ -342,7 +353,7 @@ public final class WindowCompatibility implements ClassHolderTransformer {
         var eGet = ProgramEmitter.create(get,hierarchy);
         eGet.invoke(new MethodReference(CALLBACKS,"instanceOf",ValueType.LONG,OBJECT),eGet.var(1,ValueType.LONG))
             .cast(ValueType.object(CALLBACK_I)).returnValue();
-        var free = cls.getMethod(new MethodDescriptor("upcallFree",ValueType.VOID,ValueType.LONG));
+        var free = cls.getMethod(new MethodDescriptor("upcallFree",ValueType.LONG,ValueType.VOID));
         if (free == null) throw new IllegalStateException("Inventoried Upcalls.upcallFree is missing");
         var eFree = ProgramEmitter.create(free,hierarchy);
         eFree.invoke(new MethodReference(CALLBACKS,"forget",ValueType.LONG,ValueType.VOID),eFree.var(1,ValueType.LONG));

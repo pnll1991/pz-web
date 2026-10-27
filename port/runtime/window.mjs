@@ -160,6 +160,34 @@ export class BrowserWindow {
     this.events.push({type:'swap_interval',interval});
   }
   title(handle,value) { this.requireWindow(handle); this.title = value; this.events.push({type:'title',value}); }
+  // glfwSetWindowIcon pixels arrive through port.shim.BrowserStb as RGBA8 bytes. The tab's
+  // favicon is the only icon surface a page has, so it is set (or replaced) with a Blob URL.
+  setIcon(bytes,width,height) {
+    if (!(bytes instanceof Uint8Array)) throw new Error('Browser window icon requires a Uint8Array of RGBA pixels');
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0)
+      throw new Error(`Invalid browser window icon size: ${width}x${height}`);
+    if (bytes.length !== width * height * 4)
+      throw new Error(`Browser window icon byte count mismatch: ${bytes.length} != ${width * height * 4}`);
+    // Copy: the bytes come from the wasm heap, whose view may be detached later.
+    const copy = new Uint8Array(bytes);
+    const canvas = document.createElement('canvas');
+    canvas.width = width; canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Cannot rasterize the window icon: no 2D context');
+    const image = context.createImageData(width,height);
+    image.data.set(copy);
+    context.putImageData(image,0,0);
+    const url = canvas.toDataURL('image/png');
+    let link = document.querySelector('link[rel="icon"]');
+    if (!link) {
+      link = document.createElement('link');
+      link.rel = 'icon';
+      document.head.appendChild(link);
+    }
+    link.href = url;
+    this.lastIcon = {width,height,bytes:copy.length};
+    this.events.push({type:'icon_set',backend:'browser',width,height,bytes:copy.length});
+  }
   setWindowPos(handle,x,y) { this.requireWindow(handle); this.windowPos = [x, y]; }
   setWindowSize(handle,width,height) {
     this.requireWindow(handle);

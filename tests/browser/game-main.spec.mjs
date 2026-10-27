@@ -23,16 +23,21 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     // Resolve names/body boundaries only; never disassemble game code.
     symbols=execFileSync('python3',['scripts/wasm_stack.py','port/target/web/game/boot.wasm',...offsets],{encoding:'utf8'});
     await testInfo.attach('actual-main-symbols',{body:symbols,contentType:'text/plain'});
-    // Actual stop of this round: the window lifecycle runs on the canvas (create window,
-    // register callbacks, show window, make context current) and the main returns because
-    // the WebGL2 GL capability bridge is not implemented yet; the menu is still not rendered.
+    // Actual stop of round 21 (verified in chrome-startup.json): the STB bridge loads the real
+    // PNG icon and glfwSetWindowIcon uploads it to the page, Display.showWindow and
+    // glfwMakeContextCurrent run, and Display.create then stops in GL.createCapabilities because
+    // the WebGL2 GLCapabilities bridge is not implemented yet. The menu is not rendered.
     expect(state).toMatchObject({phase:'main-returned',error:'',menuRendered:false});
     const bullet = await page.evaluate(async()=>{const b=pzRuntime.bullet;return {loaded:!!b,loadedFor:b?.loadedFor,version:b?.version(),logging:b?.loggingInitialised(),world:b?.createWorld(0,-9.82,0),count:b?.bodyCount(),manifest:b?.manifest?.bullet?.version,wasmSha:b?.manifest?.module?.wasm_sha256};});
     expect(bullet.loaded).toBe(true); expect(bullet.loadedFor).toContain('PZBullet64'); expect(bullet.manifest).toBe('2.83');
     expect(bullet.version).toMatch(/^Bullet 283 \(upstream bullet3-2\.83, wasm32 port build\)$/);
     expect(bullet.world).toBe(1); expect(bullet.count).toBe(0);
     expect(bullet.wasmSha).toBe(JSON.parse(readFileSync('port/target/web/vendor/pzbullet/manifest.json','utf8')).module.wasm_sha256);
-    for(const name of ['zombie.gameStates.MainScreenState::main','zombie.core.physics.Bullet::init','zombie.core.physics.Bullet::initPZBullet'])expect(symbols).toContain(name);
+    // Frames of the actual stop path, resolved from the offsets this round's trace reports.
+    for(const name of ['zombie.gameStates.MainScreenState::main','zombie.core.opengl.RenderThread::init',
+        'zombie.GameWindow::InitDisplay','zombie.core.Core::init','org.lwjglx.opengl.Display::create',
+        'org.lwjgl.opengl.GL::createCapabilities','java.lang.IllegalStateException::<init>'])
+        expect(symbols).toContain(name);
     const progress=await page.evaluate(()=>pzGameProgress.map(event=>event.label));
     expect(progress).toContain('org.lwjglx.opengl.Display#init()V:returned');
     expect(progress).toContain('zombie.core.physics.Bullet#init()V:entered');
@@ -42,19 +47,28 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     const windowSystem=await page.evaluate(()=>pzRuntime.window.events);
     const types=windowSystem.map(event=>event.type);
     // Window lifecycle actually reached this round (verified against window.mjs events).
+    expect(types).toContain('initialized');
     expect(types).toContain('created');
+    expect(types.filter(type=>type==='created').length).toBe(1);
+    // Display$Callbacks.initCallbacks installs 10 kinds plus the error callback installed earlier.
+    expect(types.filter(type=>type==='callback_registered').length).toBe(11);
     const created=windowSystem.find(event=>event.type==='created');
-    expect(created).toMatchObject({handle:1});
-    expect(types.filter(type=>type==='callback_registered').length).toBeGreaterThanOrEqual(10);
+    expect(created).toMatchObject({backend:'browser',title:'Project Zomboid'});
+    // The STB pixel bridge really decoded media/ui/zomboidIcon32.png and uploaded RGBA8 pixels.
+    const icon=windowSystem.find(event=>event.type==='icon_set');
+    expect(icon).toMatchObject({backend:'browser',width:32,height:32,bytes:4096});
+    expect(await page.evaluate(()=>pzRuntime.window.lastIcon)).toMatchObject({width:32,height:32,bytes:4096});
+    expect(await page.evaluate(()=>document.querySelector('link[rel="icon"]')?.href?.startsWith('data:image/png') ?? false)).toBe(true);
+    // Display.showWindow and glfwMakeContextCurrent run before the GL capability stop.
     expect(types).toContain('shown');
     expect(types).toContain('context_current');
-    // The honest stop: WebGL2 capability bridge is not implemented, so GL.createCapabilities
-    // raises with the exact operation name instead of pretending a GL context exists.
+    // The honest stop: the missing WebGL2 capability bridge is named exactly.
     expect(trace).toContain('Browser WebGL2 GL capability bridge is not implemented: org.lwjgl.opengl.GL#createCapabilities()Lorg/lwjgl/opengl/GLCapabilities;');
+    expect(trace).not.toContain('failed to read image');
     expect(trace).toContain('Exception thrown during MainScreenState.main');
     expect(pageErrors).toEqual([]);
   } finally {
-    const screenshot='test-results/game-main-round19.png';
+    const screenshot='test-results/game-main-round21b.png';
     await page.screenshot({path:screenshot,fullPage:true});
     const windowSystem=await page.evaluate(()=>globalThis.pzRuntime?.window?.events || []);
     const progress=await page.evaluate(()=>globalThis.pzGameProgress || []);

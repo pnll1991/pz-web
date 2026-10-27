@@ -1,66 +1,76 @@
 # Estado del port personal
 
-Actualizado: **2026-10-27 09:11 (-03), ronda 19**, Linux x86_64. Repositorio real `/datos/Projects/pz-web` (`~/Projects/pz-web` es el enlace de compatibilidad). HEAD del vigilante al empezar la ronda: **d64ddfd** ("Ronda 18"). Esta ronda **no hizo commits** (regla: el vigilante commitea al cerrar la ronda).
+Actualizado: **2026-10-27 12:12 (-03), ronda 21**, Linux x86_64. Repositorio real `/datos/Projects/pz-web` (`~/Projects/pz-web` es el enlace de compatibilidad). HEAD del vigilante al empezar la ronda: **f68aef9** ("Ronda 20"). Esta ronda **no hizo commits** (regla: el vigilante commitea al cerrar la ronda) y **no tocó `.git`**.
 
-⚠️ **Advertencia de estado**: el corte de 4 horas de la ronda (inicio 05:12, límite 09:12) llegó antes de poder compilar y probar el código de esta ronda. Este archivo se actualiza primero, como exige `docs/CODEX_TASK_CONTINUE.md`. Nada de lo de abajo está verificado en Chrome todavía; el avance real verificado sigue siendo el de la ronda 14/18.
+La ronda 20 quedó sin build ni prueba (corte de 4 h). Esta ronda completó ese trabajo: el build Wasm del main real **compila** y el arranque en Chrome **avanza más allá del icono**. El stop real de hoy está verificado con Playwright y captura.
 
-## Cambios de esta ronda (sin commit, sin build completado)
+## Cambios de esta ronda (sin commit)
+
+Objetivo: eliminar el stop de `Display.create` en `loadIcons` (lectura del ícono vía libSTB nativo) y subir el ícono real al DOM del navegador.
+
+Archivos nuevos:
+- `port/src/main/java/port/shim/BrowserStb.java` — puente STB en el navegador:
+  - `stbiLoad(...)`: lee el archivo desde el filesystem persistente del navegador (`readOptional` devuelve `Uint8Array`; se copia a `byte[]` con `getLength()/get(i)`), decodifica **PNG propio** (colortype 2/6, bit depth 8, interlace 0) con `java.util.zip.Inflater` (existe en TeaVM: el classlib tiene `TInflater`), aplica el flip vertical y entrega un buffer RGBA nativo del arena.
+  - `setFlip(...)`, `failureReason()`, `stbiImageFree(...)`.
+  - `resize(...)`: reescala sRGB con muestreo bilineal de 4 esquinas. Índices corregidos: destino `to[y*destStride + x*channels + channel]` con `destStride = destW*channels`, origen con `sourceStride`, lecturas `& 0xFF`.
+  - `uploadIcon(entries,count,size)`: copia el RGBA desde el arena y lo manda a JS.
+- `port/src/main/java/port/compiler/StbCompatibility.java` — `ClassHolderTransformer` nuevo, registrado en `BuildCompiler` después de `WindowCompatibility`. Sustituye solo lo necesario y deja el resto en FailFast honesto:
+  - `org.lwjgl.system.libstb.LibSTB.<clinit>` → no-op (ya no carga la librería nativa).
+  - `STBImage.stbi_load(CharSequence,int[],int[],int[],int)`, `stbi_set_flip_vertically_on_load(Z)V`, `nstbi_set_flip_vertically_on_load(I)V`, `stbi_failure_reason()String`, `stbi_image_free(ByteBuffer)`.
+  - `STBImageResize.stbir_resize_uint8_srgb(ByteBuffer,IIILByteBuffer,IIII)ByteBuffer`.
+  - Helper `argument()` convierte `BOOLEAN`→`INTEGER` para el flip.
 
 Archivos modificados:
-- `port/src/main/java/port/compiler/WindowCompatibility.java` — reescritado con ramas nuevas:
-  - `org.lwjglx.LWJGLUtil.<clinit>`: `DEBUG=false`, `CHECKS=true`, `PLATFORM=1` (Linux) → evita el `LinkageError` por `os.name="TeaVM"`.
-  - `org.lwjgl.system.Checks.<clinit>`: `CHECKS=true`, `DEBUG=false`, `DEBUG_FUNCTIONS=false`.
-  - `org.lwjgl.system.libffi.LibFFI.<clinit>`: `FFI_TYPE_LONGDOUBLE=(short)3` (igual que el bytecode real, coincide con `FFI_TYPE_DOUBLE`) y los 21 `ffi_type_X` como `FFIType` construidos sobre registros del arena de `BrowserLibFFI`; los 15 enteros de ABI en 0.
-  - `FFICIF.<clinit>`: constantes del `ffi_cif` x86_64 (`SIZEOF=40, ALIGNOF=8, ABI=0, NARGS=4, ARG_TYPES=16, RTYPE=8, BYTES=24, FLAGS=28`). **Duda registrada**: nadie las lee en este backend y no se verificaron contra un `ffi_cif` real.
-  - `APIUtil`: ambos `apiCreateCIF` devuelven un `FFICIF` sobre un registro zeroed del arena; ambos `apiCreateCIFVar` lanzan honestamente; `apiLog` queda original (no-op porque `Checks.DEBUG=false`).
-  - `Upcalls`: `<clinit>` sin allocator ni closure registry; `upcallCreate` → handle propio, `upcallGet` → instancia cast a `CallbackI`, `upcallFree` → olvido. No se toca el path nativo `ffi_get_closure_alloc`.
-  - `MemoryStack`: `<clinit>` con `DEFAULT_STACK_SIZE=65536`, `DEFAULT_STACK_FRAMES=8`, `TLS=new ThreadLocal()`; `stackGet` crea el stack perezosamente (arriba usa un lambda `invokedynamic` que el IR no expresa); ctor y `nmalloc(II)` con la misma aritmética del bytecode (`(address+pointer-bytes) & ~(align-1)`, `OutOfMemoryError "Out of stack space."` con CHECKS). `malloc/calloc/mallocInt/callocInt/nmalloc(I)/ncalloc` quedan originales.
-  - `GLFW`: `glfwInit()Z`→true; `glfwInitHint` sale, `glfwPlatformSupported`→false; **11 setters de callback** (key, button, cursor, scroll, char, windowpos, windowsize, refresh, framebuffer, iconify, error) validan la ventana, registran el handler y devuelven `null` como callback previo (el backend nunca instaló uno nativo); `glfwSetWindowIcon` sale si `icons` es null y si no lanza honestamente (falta el puente de píxeles STB); `glfwPollEvents` reescrito como bucle `pollEvent/eventCallback/eventArguments` → `CallbackI.callback(0,args)` (dispatch `VIRTUAL`). Todo lo demás conserva el forward genérico al bridge o el raise con el nombre exacto de la operación.
-  - `org.lwjgl.opengl.GL`: `<clinit>` solo crea `capabilitiesTLS`; las 4 variantes de `createCapabilities` lanzan `IllegalStateException("Browser WebGL2 GL capability bridge is not implemented: org.lwjgl.opengl.GL#createCapabilities()Lorg/lwjgl/opengl/GLCapabilities;")`. `setCapabilities/getCapabilities` quedan originales.
-- `port/src/main/java/port/shim/BrowserCallbacks.java` — reescrito: registros `IdentityHashMap` de instancia↔handle, `newHandle/instanceOf/forget/setHandler(kind,instance)`, y `pollEvent/eventKind/eventCallback/eventArguments` que exponen las celdas de argumentos estilo libffi (`void**`; la celda 0 apunta a la celda que contiene el handle de ventana, leída por los cuerpos de interfaz con dos lecturas de puntero).
-- `port/src/main/java/port/shim/BrowserWindow.java` — puente `glfwCreateWindow(IILjava/lang/CharSequence;JJ)J` y `checkWindow(long)` (valida handle==1).
-- `port/src/main/java/port/shim/BrowserLibFFI.java` (nuevo) — 21 registros `ffi_type` en el arena (`size@0, align@8, type@10, elements@12`, códigos libffi void=0…pointer=14 obtenidos de `javap` de LWJGL 3.4.1), `typeAddress(kind)`, `newCIFAddress()`. **Duda**: el código de `FFI_TYPE_LONGDOUBLE` (4) no se pudo contrastar con libffi; nadie lo usa en este camino.
-- `port/runtime/window.mjs` — backend con forma de GLFW sobre el canvas: `hint()` solo lanza para `GLFW_FULLSCREEN` (los hints que usa `Display.create` pasan), `getPlatform()=393221`, `poll()` serializa `kind<TAB>handle(1)<TAB>campos` (key 4 campos con scancode duplicado, button 3, cursor/scroll dos doubles, char 1), `registerCallback(kind,handle)` emite `callback_registered`, y eventos `created`, `shown`, `context_current`, `initialized`. `node --check` OK.
-- `tests/browser/game-main.spec.mjs` — las aserciones de ventana pasan del stop viejo de ronda 14 (`windowSystem` longitud 1 + `glfwWindowHint` no implementado) al nuevo stop esperado: `created` con `handle:1`, ≥10 `callback_registered`, `shown`, `context_current`, y la traza debe contener el raise de `GL#createCapabilities`. Captura nueva: `test-results/game-main-round19.png`. Las aserciones de Bullet y de progreso se conservan (verificaban bien).
+- `port/src/main/java/port/compiler/WindowCompatibility.java` — el bloque `glfwSetWindowIcon` **ya no lanza**: lee `count` con `CustomBuffer.remaining()I` y `entries` con `CustomBuffer.address()J`, llama `BrowserStb.uploadIcon(entries,count,16)` y termina con `e.exit()` explícito.
+- `port/src/main/java/port/compiler/BuildCompiler.java` — agrega `StbCompatibility.class.getName()` a los transformers.
+- `port/src/main/java/port/shim/BrowserWindow.java` — `glfwGetWindowFrameSize(J,IntBuffer,IntBuffer,IntBuffer,IntBuffer)` valida cada buffer (acepta `null`) en lugar de desreferenciarlo.
+- `port/runtime/window.mjs` — método `setIcon(bytes,width,height)`: valida `Uint8Array`, dimensiones y `bytes.length === w*h*4`, rasteriza en un canvas 2D y crea/actualiza un `<link rel="icon">` con data URL PNG; guarda `lastIcon` y emite `icon_set`. `node --check` OK.
+- `tests/prepare_real.py` — agrega `media/ui/zomboidIcon32.png` a `startup.txt` y su metadata (`url,width,height,rgba_sha256`) a `assets.json`.
+- `tests/browser/game-main.spec.mjs` — aserciones adaptadas al stop real nuevo (ver abajo) y captura `test-results/game-main-round21b.png`.
 
-## Estado REAL verificado del arranque en Chrome (lo único confirmado hoy)
+## Estado REAL verificado del arranque en Chrome (hoy, build 21d)
 
-Desde la última prueba verde (rondas previas, build `d64ddfd`):
-- Build del main real: `success`, 10.246 clases / 72.764 métodos alcanzados, 0 diagnósticos, `boot.wasm` **144.409.580 bytes**.
-- Chrome: `phase:'main-returned'`, `error:''`, `menuRendered:false`. `Display.init` y `LoggerManager.init` terminan; `Bullet.init` entra y retorna cargando el wasm32 de Bullet 2.83; el stop es `Browser GLFW operation unavailable: org.lwjgl.glfw.GLFW#glfwWindowHint(II)V`, capturado por `MainScreenState.main`. `windowSystem` = 1 evento (`initialized`). `oshi` reporta "Unsupported platform: UNSUPPORTED" (capturado) y la traza muestra `Library::loadSystem`.
-- Pruebas completas verdes antes de esta ronda: **94 tests** (45 JVM, 10 Python, 17 Node, 17 Chrome plataforma, 5 Chrome real). En esta ronda los **45 tests JVM vuelven a pasar** con el código nuevo (`mvn compile` también BUILD SUCCESS).
+Build: `port/target/reports/game-main-lua/build-report.json` → `success:true`, 10.228 clases / 72.540 métodos, `teavm-diagnostics.txt` **vacío**, `boot.wasm` **143.584.379 bytes**, pico RSS 7,02 GiB, `compile_ms` 361.984. Log: `build-round21d-game.log` (EXIT=0, BUILD SUCCESS).
+
+Chrome (`port/target/reports/game-main-lua/chrome-startup.json`, `observedAt` 2026-10-27T15:09:14Z):
+- `phase:'main-returned'`, `menuRendered:false`, `error:''`, sin errores de página no capturados.
+- Etapas alcanzadas: `Display#init` entra y retorna → `LoggerManager#init` entra y retorna → `Bullet#init` entra y retorna (carga el wasm32 de Bullet) → `Display#create` entra.
+- Eventos de ventana (backend `browser`): `initialized` (1365×1100, renderer `WebGL 2.0 (OpenGL ES 3.0 Chromium)`), `created` (640×480, título `Project Zomboid`), **`icon_set` width 32 / height 32 / bytes 4096**, `callback_registered` **11** (10 kinds de `initCallbacks` + 1 kind 10), `shown`, `context_current`.
+- El ícono real quedó en el DOM: `link[rel=icon]` con data URL `image/png`. **Ya no aparece** `failed to read image`.
+- Excepciones capturadas por el propio PZ, en orden:
+  1. `java.lang.UnsupportedOperationException: Unsupported platform: UNSUPPORTED` (oshi, harmless, capturado).
+  2. **Stop actual**: `java.lang.IllegalStateException: Browser WebGL2 GL capability bridge is not implemented: org.lwjgl.opengl.GL#createCapabilities()Lorg/lwjgl/opengl/GLCapabilities;` con `Message: Exception thrown during MainScreenState.main.`
+
+`test-results/game-main-round21b.png` (1365×1100) existe y se analizó por histograma: `rgb(0,0,0)` sobre el área del canvas (640×480 = 307.200 px, exactamente el `created`) y el resto en `rgb(11,17,22)` con texto de consola en `rgb(233,238,236)`. **No hay tool de inspección de imágenes en este entorno** (`view_image` deshabilitado), por eso `screenshot_visually_checked` sigue en `false`: no se puede afirmar una revisión visual humana, solo el análisis por píxeles.
 
 **El menú principal real sigue sin verse. `MENU_REACHED` no existe y no se creó.**
 
+## Pruebas de esta ronda
+
+- `bash scripts/test.sh` (suite completa, `verification-round21-full.log`, EXIT=0): **94 tests verdes** → 45 JVM (surefire), 10 Python (unittest), 19 Node (`npm test`; el conteo histórico decía 17: la suite Node creció a 19), 17 Chrome plataforma (`npm run test:browser`). El `build.sh` de esta suite es el de plataforma, sin `--with-game`.
+- `npx playwright test --config playwright.game.config.mjs` con `PZ_HOME` exportado (`verification-round21-real.log`): **5 passed (10.1s)**, incluido el spec del main real con el nuevo stop y la prueba del PNG real subido a WebGL2.
+- `mvn -f port/pom.xml compile` (chequeo JVM): BUILD SUCCESS.
+
 ## Bloqueo actual
 
-El `scripts/build.sh --with-game` de esta ronda **falló** en `compile-wasm-gc`:
+`Display.create` necesita capacidades GL de LWJGL. `org.lwjgl.opengl.GL#createCapabilities()` (y sus 3 variantes delegadas) sigue lanzando el raise honesto porque falta el puente `GLCapabilities` sobre WebGL2. Todo lo posterior (GL11, shaders del renderer, `LuaManager.init`, loop, menú) está detrás de ese paso.
 
-```
-org.teavm.model.emit.EmitException: Argument 0 of type I is not compatible with method
-port.shim.BrowserCallbacks.setHandler(VI)Ljava/lang/Object;
-  at org.teavm.dependency.DependencyClassSource.lambda$transformClass$0 (DependencyClassSource.java:135)
-```
+## Siguientes pasos concretos, en orden (ronda 22)
 
-Causa raíz (diagnosticada y verificada con un programa mínimo contra `teavm-core-0.16.0.jar`): los varargs de `MethodDescriptor`/`MethodReference` son `nombre, parámetros…, resultado`, y yo los había escrito al revés en ~26 sitios. Corregido en `WindowCompatibility.java`; `mvn -f port/pom.xml compile` da **BUILD SUCCESS** a las 09:10. El build Wasm del main completo **no llegó a ejecutarse** por el corte de la ronda.
-
-## Siguientes pasos concretos, en orden (ronda 20)
-
-1. Verificar la convención de varargs en todos los demás transformadores propios (`grep -n 'new MethodReference\|new MethodDescriptor' port/src/main/java/port/compiler/*.java`) — el mismo error puede existir en otros archivos y el analizador de dependencias solo reporta el primero.
-2. Correr el build completo secuencial, sin Chrome en paralelo:
-   ```bash
-   cd /home/agente47/Projects/pz-web && source scripts/env.sh
-   export MAVEN_OPTS="-Xmx8g -Xss16m"
-   export PZ_HOME="$HOME/pz-pinned/25485521/projectzomboid"
-   bash scripts/build.sh --with-game > build-round20-game.log 2>&1   # correr en la sesión en primer plano, NO con nohup
-   ```
-   Revisar `port/target/reports/game-main-lua/build-report.json` (success) y que `teavm-diagnostics.txt` quede vacío; anotar los bytes del wasm. Si aparece otro `EmitException`, corregir la identidad de la IR nombrada.
-3. `npx playwright test --config playwright.game.config.mjs`; leer `port/target/reports/game-main-lua/chrome-startup.json` y **adaptar las aserciones de `tests/browser/game-main.spec.mjs` a lo que realmente observe** (los eventos y el raise exactos). Inspeccionar visualmente `test-results/game-main-round19.png` y recién entonces poner `screenshot_visually_checked:true`.
-4. `bash scripts/test.sh` y registrar el conteo.
-5. Después de eso, el camino hacia el menú, en orden probable: **puente real WebGL2 para `GL#createCapabilities()` → `GLCapabilities`** (el stop actual), luego el subconjunto GL11 que usa el renderer (los overrides existentes en `port/target/config/gl-overrides.tsv` mapean `glClear/glClearColor/glGetError/glViewport` a `port.shim.GL11`), puente de píxeles STB para los iconos de `Display.create`, cursor/pointer lock, `LuaManager.init`, loop de render y el menú.
+1. **Puente `GLCapabilities`.** Verificar **antes** de escribir IR el body de `GL#createCapabilities(boolean,IntFunction)` y las 4 variantes delegadas con `javap -p -c -cp "$PZ_HOME/projectzomboid.jar" org.lwjgl.opengl.GL` (el body exige `GL.functionProvider != null`). Implementación prevista:
+   - un `FunctionProvider` propio: `getFunctionAddress(name)` → dirección no nula estable en el arena, `destroy()` no-op;
+   - `IntFunction` → `PointerBuffer` sobre `memAlloc(2236*8)` (una entrada por enum GL);
+   - conjunto de extensiones obtenido de WebGL2 en JS (o vacío, anotando la duda en `docs/decisions.md`);
+   - `forwardCompatible=false`.
+2. GL11 sobre WebGL2: el subset ya mapeado en `port/target/config/gl-overrides.tsv` (`glClear`, `glClearColor`, `glGetError`, `glViewport` → `port.shim.GL11`) y ampliar según el stop siguiente. Los shaders del juego ya compilan/linkan en WebGL2 (prueba verde).
+3. Cursor/pointer lock y el resto del loop de `Display`.
+4. `LuaManager.init`, loop de render y el menú. `MENU_REACHED` **solo** cuando el menú principal real se vea en Chrome, con captura en `test-results/` y su prueba Playwright verde.
+5. Cada ronda: `bash scripts/test.sh`, `npx playwright test --config playwright.game.config.mjs` y `STATUS.md` actualizado antes del cierre.
 
 ## Notas de operación
 
-- Servidores solo en `127.0.0.1`. **Strata y el puerto 8083 no se tocaron** (es este agente). No se corrió el juego nativo ni Chrome en paralelo con el build.
-- RAM: 31 GiB total; el build usa `MAVEN_OPTS=-Xmx8g -Xss16m` y `source scripts/env.sh` en **cada** comando (mvn/javap/node solo están en el PATH después de sourcear).
-- Sin `sudo`, sin cambios en herramientas globales, sin archivos del juego en git, sin stubs que simulen éxito: cada operación no implementada lanza con su identidad exacta.
+- `source scripts/env.sh` en **cada** comando (mvn/javap/node/playwright solo están en el PATH después de sourcear). `MAVEN_OPTS="-Xmx8g -Xss16m"`; mvn necesita `-Dmaven.repo.local="$PZ_WEB_ROOT/.toolchain/m2"`.
+- `bash scripts/build.sh --with-game` se corrió **en primer plano** (~7 min), nunca con `nohup`, y nunca con Chrome en paralelo. Pico RSS medido: 7,02 GiB.
+- **Strata y el puerto 8083 no se tocaron** (es este agente). No se corrió el juego nativo. Servidores solo en `127.0.0.1`.
+- Sin `sudo`, sin herramientas globales modificadas, sin archivos del juego ni código decompilado en git, sin stubs que simulen éxito: cada operación no implementada lanza con su identidad exacta.
+- `rg` **no existe** en este entorno (usar `grep` o Python). `view_image` está deshabilitado: las capturas solo pueden analizarse programáticamente.
