@@ -16,6 +16,9 @@ import port.runtime.memory.NativeArena;
 public final class BrowserGL {
     /** Stable non-zero handle per supported entrypoint: one arena slot holding the name's hash. */
     private static final Map<String, Long> HANDLES = new HashMap<>();
+    /** LWJGL's {@code GLCapabilities.ADDRESS_BUFFER_SIZE}: one 8-byte cell per entrypoint. */
+    private static final int ADDRESS_BUFFER_SLOTS = 2236;
+    private static long addressBuffer = 0L;
 
     private BrowserGL() { }
 
@@ -71,6 +74,20 @@ public final class BrowserGL {
         String names = extensionNames();
         if (!names.isEmpty()) for (String name : names.split(",")) if (!name.isEmpty()) tags.add(name);
         return tags;
+    }
+
+    /**
+     * The address cell array {@code GLCapabilities} fills from the provider. It is one arena
+     * block of 2236 zeroed cells: an entrypoint the WebGL2 context does not expose stays 0, so
+     * the corresponding capability is reported as missing instead of being pretended.
+     */
+    public static long addressBufferAddress() {
+        if (addressBuffer == 0L) {
+            long address = NativeArena.allocate(ADDRESS_BUFFER_SLOTS * 8L, 8L);
+            NativeArena.fill(address, ADDRESS_BUFFER_SLOTS * 8L, (byte) 0);
+            addressBuffer = address;
+        }
+        return addressBuffer;
     }
 
     /** Address of a WebGL2 entrypoint, or 0 when the context does not expose it. */

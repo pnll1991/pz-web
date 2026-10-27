@@ -174,6 +174,18 @@ public final class NativeMemory {
     public static DoubleBuffer memSlice(DoubleBuffer buffer,int offset,int length){Objects.checkFromIndexSize(offset,length,buffer.capacity());return memDoubleBuffer(NativeArena.address(buffer,offset),length);}
     public static DoubleBuffer memDuplicate(DoubleBuffer buffer){return memDoubleBuffer(NativeArena.address(buffer,0),buffer.capacity()).limit(buffer.limit()).position(buffer.position());}
     private static byte[] encodeASCII(CharSequence text){Objects.requireNonNull(text);byte[] bytes=new byte[text.length()];for(int i=0;i<bytes.length;i++)bytes[i]=(byte)text.charAt(i);return bytes;}
+    /**
+     * Same layout contract as {@code MemoryUtil.encodeASCIIUnsafe}: the bytes are written
+     * directly at the arena address, optionally NUL terminated, and the written length is
+     * returned. {@code MemoryStack.ASCII} (and therefore {@code FunctionProvider
+     * .getFunctionAddress(CharSequence)}) calls this, so the browser provider can resolve names.
+     */
+    public static int encodeASCIIUnsafe(CharSequence text, boolean terminate, long address){
+        Objects.requireNonNull(text);
+        for(int i=0;i<text.length();i++)NativeArena.putByte(address+(long)i,(byte)text.charAt(i));
+        if(terminate)NativeArena.putByte(address+text.length(),(byte)0);
+        return text.length()+(terminate?1:0);
+    }
     public static ByteBuffer memASCII(CharSequence text){return memASCII(text,true);}
     public static ByteBuffer memASCII(CharSequence text,boolean terminate){byte[] bytes=encodeASCII(text);var out=memAlloc(bytes.length+(terminate?1:0));out.put(bytes).clear();return out;}
     public static ByteBuffer memASCIISafe(CharSequence text){return text==null?null:memASCII(text);}
