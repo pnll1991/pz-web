@@ -1,103 +1,66 @@
 # Estado del port personal
 
-Actualizado: **2026-10-26, ronda 5**, Linux x86_64. Repositorio: `/datos/Projects/pz-web` (`~/Projects/pz-web` es el enlace de compatibilidad). HEAD del dueño: **054512f**.
+Actualizado: **2026-10-27 09:11 (-03), ronda 19**, Linux x86_64. Repositorio real `/datos/Projects/pz-web` (`~/Projects/pz-web` es el enlace de compatibilidad). HEAD del vigilante al empezar la ronda: **d64ddfd** ("Ronda 18"). Esta ronda **no hizo commits** (regla: el vigilante commitea al cerrar la ronda).
 
-**El main real mantiene cero APIs ausentes y cero diagnósticos, y Chrome ejecuta el Wasm de 144.676.333 bytes. `Display.init` y `LoggerManager.init` terminan; el arranque se detiene en `Bullet.init` al cargar `PZBullet64`. El menú todavía no se renderiza. `MENU_REACHED` no existe.**
+⚠️ **Advertencia de estado**: el corte de 4 horas de la ronda (inicio 05:12, límite 09:12) llegó antes de poder compilar y probar el código de esta ronda. Este archivo se actualiza primero, como exige `docs/CODEX_TASK_CONTINUE.md`. Nada de lo de abajo está verificado en Chrome todavía; el avance real verificado sigue siendo el de la ronda 14/18.
 
-F0 conserva su inventario y el build contrasta los hashes externos. F1 mantiene la compilación y ejecución inicial del main con reflexión Lua completa. F2 avanza hasta el logger real, con salida de consola corregida. F3 inicializa la plataforma de ventana del navegador; crear la ventana del juego e integrar su renderer siguen pendientes. La carga temprana de Bullet requiere trabajo de F5 antes de continuar el arranque.
+## Cambios de esta ronda (sin commit, sin build completado)
 
-## Copia e inventario reales
+Archivos modificados:
+- `port/src/main/java/port/compiler/WindowCompatibility.java` — reescritado con ramas nuevas:
+  - `org.lwjglx.LWJGLUtil.<clinit>`: `DEBUG=false`, `CHECKS=true`, `PLATFORM=1` (Linux) → evita el `LinkageError` por `os.name="TeaVM"`.
+  - `org.lwjgl.system.Checks.<clinit>`: `CHECKS=true`, `DEBUG=false`, `DEBUG_FUNCTIONS=false`.
+  - `org.lwjgl.system.libffi.LibFFI.<clinit>`: `FFI_TYPE_LONGDOUBLE=(short)3` (igual que el bytecode real, coincide con `FFI_TYPE_DOUBLE`) y los 21 `ffi_type_X` como `FFIType` construidos sobre registros del arena de `BrowserLibFFI`; los 15 enteros de ABI en 0.
+  - `FFICIF.<clinit>`: constantes del `ffi_cif` x86_64 (`SIZEOF=40, ALIGNOF=8, ABI=0, NARGS=4, ARG_TYPES=16, RTYPE=8, BYTES=24, FLAGS=28`). **Duda registrada**: nadie las lee en este backend y no se verificaron contra un `ffi_cif` real.
+  - `APIUtil`: ambos `apiCreateCIF` devuelven un `FFICIF` sobre un registro zeroed del arena; ambos `apiCreateCIFVar` lanzan honestamente; `apiLog` queda original (no-op porque `Checks.DEBUG=false`).
+  - `Upcalls`: `<clinit>` sin allocator ni closure registry; `upcallCreate` → handle propio, `upcallGet` → instancia cast a `CallbackI`, `upcallFree` → olvido. No se toca el path nativo `ffi_get_closure_alloc`.
+  - `MemoryStack`: `<clinit>` con `DEFAULT_STACK_SIZE=65536`, `DEFAULT_STACK_FRAMES=8`, `TLS=new ThreadLocal()`; `stackGet` crea el stack perezosamente (arriba usa un lambda `invokedynamic` que el IR no expresa); ctor y `nmalloc(II)` con la misma aritmética del bytecode (`(address+pointer-bytes) & ~(align-1)`, `OutOfMemoryError "Out of stack space."` con CHECKS). `malloc/calloc/mallocInt/callocInt/nmalloc(I)/ncalloc` quedan originales.
+  - `GLFW`: `glfwInit()Z`→true; `glfwInitHint` sale, `glfwPlatformSupported`→false; **11 setters de callback** (key, button, cursor, scroll, char, windowpos, windowsize, refresh, framebuffer, iconify, error) validan la ventana, registran el handler y devuelven `null` como callback previo (el backend nunca instaló uno nativo); `glfwSetWindowIcon` sale si `icons` es null y si no lanza honestamente (falta el puente de píxeles STB); `glfwPollEvents` reescrito como bucle `pollEvent/eventCallback/eventArguments` → `CallbackI.callback(0,args)` (dispatch `VIRTUAL`). Todo lo demás conserva el forward genérico al bridge o el raise con el nombre exacto de la operación.
+  - `org.lwjgl.opengl.GL`: `<clinit>` solo crea `capabilitiesTLS`; las 4 variantes de `createCapabilities` lanzan `IllegalStateException("Browser WebGL2 GL capability bridge is not implemented: org.lwjgl.opengl.GL#createCapabilities()Lorg/lwjgl/opengl/GLCapabilities;")`. `setCapabilities/getCapabilities` quedan originales.
+- `port/src/main/java/port/shim/BrowserCallbacks.java` — reescrito: registros `IdentityHashMap` de instancia↔handle, `newHandle/instanceOf/forget/setHandler(kind,instance)`, y `pollEvent/eventKind/eventCallback/eventArguments` que exponen las celdas de argumentos estilo libffi (`void**`; la celda 0 apunta a la celda que contiene el handle de ventana, leída por los cuerpos de interfaz con dos lecturas de puntero).
+- `port/src/main/java/port/shim/BrowserWindow.java` — puente `glfwCreateWindow(IILjava/lang/CharSequence;JJ)J` y `checkWindow(long)` (valida handle==1).
+- `port/src/main/java/port/shim/BrowserLibFFI.java` (nuevo) — 21 registros `ffi_type` en el arena (`size@0, align@8, type@10, elements@12`, códigos libffi void=0…pointer=14 obtenidos de `javap` de LWJGL 3.4.1), `typeAddress(kind)`, `newCIFAddress()`. **Duda**: el código de `FFI_TYPE_LONGDOUBLE` (4) no se pudo contrastar con libffi; nadie lo usa en este camino.
+- `port/runtime/window.mjs` — backend con forma de GLFW sobre el canvas: `hint()` solo lanza para `GLFW_FULLSCREEN` (los hints que usa `Display.create` pasan), `getPlatform()=393221`, `poll()` serializa `kind<TAB>handle(1)<TAB>campos` (key 4 campos con scancode duplicado, button 3, cursor/scroll dos doubles, char 1), `registerCallback(kind,handle)` emite `callback_registered`, y eventos `created`, `shown`, `context_current`, `initialized`. `node --check` OK.
+- `tests/browser/game-main.spec.mjs` — las aserciones de ventana pasan del stop viejo de ronda 14 (`windowSystem` longitud 1 + `glfwWindowHint` no implementado) al nuevo stop esperado: `created` con `handle:1`, ≥10 `callback_registered`, `shown`, `context_current`, y la traza debe contener el raise de `GL#createCapabilities`. Captura nueva: `test-results/game-main-round19.png`. Las aserciones de Bullet y de progreso se conservan (verificaban bien).
 
-- `PZ_HOME` canónico: `/home/agente47/pz-pinned/25485521/projectzomboid`. Los scripts aceptan también el padre `25485521`. El log inicial fallaba porque buscaba el launcher un nivel más arriba.
-- Steam appid **108600** y build id **25485521** confirmados en `/datos/SteamLibrary/steamapps/appmanifest_108600.acf`. El SHA-256 del jar instalado coincide con el de la copia fijada. Esta verificación adicional cubre el jar principal; el inventario determinista de la copia conserva como procedencia del build id el nombre de su directorio.
-- Versión **42.21**, obtenida de los argumentos literales de `GameVersion` en `Core.<clinit>` sin ejecutar clases del juego; revisión `4a0e9546ec` en `GitVersion.REVISION`.
-- Launcher real: `zombie.gameStates.MainScreenState`, classpath `.` y `projectzomboid.jar`. La clave del JSON es `classpath`, en minúsculas.
-- Fat jar: **65.682.033 bytes**, **23.829 entradas de clase**, de ellas 6.462 con major 69 (Java 25). SHA-256: `e1a69eb743ede60b213a0fe7f8b83d4fcab773036d256cc4543a336f3b058a33`. El runtime incluido es Zulu 25.0.1; el compilador del proyecto usa el JDK 25 local de `.toolchain`.
-- **LWJGL 3.4.1** integrado en el fat jar: core, GLFW, OpenGL, STB, system y util. La versión se obtiene de `org.lwjgl.Version`, ya que no hay jars LWJGL separados con manifests propios.
-- **88 clases Kahlua** integradas. Su clase `Version` contiene placeholders; no se inventó una versión de release.
-- **8.284 declaraciones native / 7.799 firmas distintas** en los tres jars inventariados: 8.281 declaraciones en el fat jar, 2 en pzexe y 1 en jrt-fs. Se distinguen variantes multi-release, duplicados, JRE y plataformas. Quedan 88 declaraciones sin export identificado; `nm` no resuelve registro JNI dinámico.
-- Se inspeccionan también ELF empaquetados dentro del jar mediante archivos anónimos en memoria, sin extraer binarios al repositorio. Dos inventarios consecutivos produjeron JSON idéntico. Salidas locales: `inventory/report.md`, `inventory/inventory.json`, `inventory-run.log`.
+## Estado REAL verificado del arranque en Chrome (lo único confirmado hoy)
 
-Exports JNI Linux relevantes: Lighting 50; Bullet 98 (variante NoOpenGL 93); Clipper 19; PathFind 13; PopMan 59; ZNetJNI 139; Bink 11; FMOD integration 437; jassimp 10; ImGui 2.129; LWJGL core 2.150; OpenGL 2.236; STB 224; tinyfd 11; SQLite 61. Son exports, no implementaciones del port ni conteos sumables entre variantes.
+Desde la última prueba verde (rondas previas, build `d64ddfd`):
+- Build del main real: `success`, 10.246 clases / 72.764 métodos alcanzados, 0 diagnósticos, `boot.wasm` **144.409.580 bytes**.
+- Chrome: `phase:'main-returned'`, `error:''`, `menuRendered:false`. `Display.init` y `LoggerManager.init` terminan; `Bullet.init` entra y retorna cargando el wasm32 de Bullet 2.83; el stop es `Browser GLFW operation unavailable: org.lwjgl.glfw.GLFW#glfwWindowHint(II)V`, capturado por `MainScreenState.main`. `windowSystem` = 1 evento (`initialized`). `oshi` reporta "Unsupported platform: UNSUPPORTED" (capturado) y la traza muestra `Library::loadSystem`.
+- Pruebas completas verdes antes de esta ronda: **94 tests** (45 JVM, 10 Python, 17 Node, 17 Chrome plataforma, 5 Chrome real). En esta ronda los **45 tests JVM vuelven a pasar** con el código nuevo (`mvn compile` también BUILD SUCCESS).
 
-## Implementación de la ronda 5
+**El menú principal real sigue sin verse. `MENU_REACHED` no existe y no se creó.**
 
-- `Display.init` consulta el canvas, WebGL2, el teclado DOM y las métricas del navegador; conserva la inicialización original del teclado y su guarda idempotente. No se modificó `os.name`. Las funciones GLFW sin soporte fallan explícitamente; las nativas conservan su nombre JNI.
-- Etiquetas de teclas desde KeyboardLayoutMap cuando está disponible, con rechazo de teclas no imprimibles y scancodes virtuales propios del backend. No hay una ventana GLFW del juego creada ni callbacks del renderer conectados.
-- Corrección local de la consola de TeaVM: escrituras largas con offsets correctos, UTF-8 fragmentado, flush repetido y escrituras posteriores. La fixture propia falla antes del parche y pasa después; también comprueba double y slices de caracteres.
-- Registros de entrada/retorno de inicializadores, traza independiente del logger del juego y mayor profundidad de stack en Chrome. Los reportes de ejecución anteriores se invalidan al recompilar; la prueba guarda automáticamente la evidencia nueva.
+## Bloqueo actual
 
-Alcance y fuentes en [docs/round5-compatibility.md](docs/round5-compatibility.md). Las implementaciones y límites anteriores se conservan en [docs/task4-compatibility.md](docs/task4-compatibility.md) y [docs/task3-compatibility.md](docs/task3-compatibility.md). No se cambiaron reglas del juego.
+El `scripts/build.sh --with-game` de esta ronda **falló** en `compile-wasm-gc`:
 
-## Compilación y arranque observados
-
-| Compilación | Clases / métodos alcanzados | Resultado |
-|---|---:|---|
-| Final tarea 4, Lua completo | 10.291 / 73.142 | 0 APIs, 0 diagnósticos, 144.799.524 bytes Wasm; detenía en LWJGLUtil. |
-| **Final ronda 5, Lua completo** | **10.279 / 73.003** | **0 APIs, 0 diagnósticos, 144.676.333 bytes Wasm; llega a Bullet.init.** |
-| Plataforma de prueba | 937 / 4.341 | 1.735.621 bytes Wasm, cero diagnósticos. |
-
-TeaVM del main: **345.614 ms**; heap máximo **20 GiB**, pila **16 MiB**, RSS pico de Maven **10.245.228 KiB (9,77 GiB)**. La plataforma tarda 5.353 ms con RSS pico 1.174.168 KiB. Son métricas de compilación, no del rendimiento del juego.
-
-Se mantienen **1.043 registros literales, 1.040 clases expuestas distintas, 1.123 clases del jar con jerarquías y 35 tipos externos**, sin registros no resueltos. No se recortó la exposición Lua. El cambio de alcance corresponde a los puentes de plataforma y guardas GLFW. Resolver firmas no implica implementar todo GLFW ni ejecutar Lua.
-
-La última prueba real registra estos límites, en orden:
-
-```text
-org.lwjglx.opengl.Display#init()V:entered
-org.lwjglx.opengl.Display#init()V:returned
-zombie.core.logger.LoggerManager#init()V:entered
-zombie.core.logger.LoggerManager#init()V:returned
-zombie.core.physics.Bullet#init()V:entered
+```
+org.teavm.model.emit.EmitException: Argument 0 of type I is not compatible with method
+port.shim.BrowserCallbacks.setHandler(VI)Ljava/lang/Object;
+  at org.teavm.dependency.DependencyClassSource.lambda$transformClass$0 (DependencyClassSource.java:135)
 ```
 
-El estado final es:
+Causa raíz (diagnosticada y verificada con un programa mínimo contra `teavm-core-0.16.0.jar`): los varargs de `MethodDescriptor`/`MethodReference` son `nombre, parámetros…, resultado`, y yo los había escrito al revés en ~26 sitios. Corregido en `WindowCompatibility.java`; `mvn -f port/pom.xml compile` da **BUILD SUCCESS** a las 09:10. El build Wasm del main completo **no llegó a ejecutarse** por el corte de la ronda.
 
-```text
-phase: failed
-error: java.lang.UnsatisfiedLinkError: System.loadLibrary: browser implementation is missing for PZBullet64
-menuRendered: false
-```
+## Siguientes pasos concretos, en orden (ronda 20)
 
-La traza resuelta confirma `MainScreenState.main → Bullet.init → Bullet.loadLibrary → System.loadLibrary`. La consulta de hardware de OSHI también registra `Unsupported platform: UNSUPPORTED`; el juego la captura y continúa. No se inventa hardware del anfitrión. No hubo pageerror sin capturar en la prueba.
+1. Verificar la convención de varargs en todos los demás transformadores propios (`grep -n 'new MethodReference\|new MethodDescriptor' port/src/main/java/port/compiler/*.java`) — el mismo error puede existir en otros archivos y el analizador de dependencias solo reporta el primero.
+2. Correr el build completo secuencial, sin Chrome en paralelo:
+   ```bash
+   cd /home/agente47/Projects/pz-web && source scripts/env.sh
+   export MAVEN_OPTS="-Xmx8g -Xss16m"
+   export PZ_HOME="$HOME/pz-pinned/25485521/projectzomboid"
+   bash scripts/build.sh --with-game > build-round20-game.log 2>&1   # correr en la sesión en primer plano, NO con nohup
+   ```
+   Revisar `port/target/reports/game-main-lua/build-report.json` (success) y que `teavm-diagnostics.txt` quede vacío; anotar los bytes del wasm. Si aparece otro `EmitException`, corregir la identidad de la IR nombrada.
+3. `npx playwright test --config playwright.game.config.mjs`; leer `port/target/reports/game-main-lua/chrome-startup.json` y **adaptar las aserciones de `tests/browser/game-main.spec.mjs` a lo que realmente observe** (los eventos y el raise exactos). Inspeccionar visualmente `test-results/game-main-round19.png` y recién entonces poner `screenshot_visually_checked:true`.
+4. `bash scripts/test.sh` y registrar el conteo.
+5. Después de eso, el camino hacia el menú, en orden probable: **puente real WebGL2 para `GL#createCapabilities()` → `GLCapabilities`** (el stop actual), luego el subconjunto GL11 que usa el renderer (los overrides existentes en `port/target/config/gl-overrides.tsv` mapean `glClear/glClearColor/glGetError/glViewport` a `port.shim.GL11`), puente de píxeles STB para los iconos de `Display.create`, cursor/pointer lock, `LuaManager.init`, loop de render y el menú.
 
-La captura `test-results/game-main-round5.png` fue inspeccionada: muestra canvas negro y la detención de Bullet, sin menú. No hay registros de entrada/retorno de LuaManager.init ni del render del menú. `game_initialized:false` sigue siendo un campo del reporte de compilación; los límites ejecutados se registran aparte en `chrome-startup.json`.
+## Notas de operación
 
-## Pruebas y evidencia
-
-**94 pruebas aprobadas: 45 JVM, 10 Python, 17 Node, 17 Chrome de plataforma y 5 Chrome con la copia real.** Cero fallos, omitidos o flaky en los reportes finales. La prueba de arranque exige la detención concreta de Bullet y las etapas previas terminadas; no cuenta eso como un menú funcionando.
-
-- Build real: `port/target/web/game/boot.wasm`, `port/target/reports/game-main-lua/`, `build-round5-pass3.log`.
-- Plataforma: `port/target/web/boot.wasm`, `port/target/reports/platform-smoke-minimal/`, `build-round5-platform-final.log`.
-- Verificación: `docs/verification.md`, XML de Surefire, `verification-round5-python.log`, `verification-round5-node.log`, `verification-round5-browser.log`, `verification-round5-real-final.log`.
-- Navegador: `test-results/browser-results.json`, `test-results/real-game-results.json`, `test-results/game-main-round5.png`, `port/target/reports/game-main-lua/chrome-startup.json` con traza, etapas, consola y hashes de módulo/captura.
-- Regresión de consola: `verification-round5-console-before.log` conserva el fallo previo en flush; `verification-round5-console-fixed.log` y la suite final verifican la corrección.
-- Se mantienen la lectura Java de WorkshopTags, persistencia bajo /Zomboid, comparación de los 4.194.304 bytes RGBA de Title.png y compilación/enlace de tres pares de shaders originales. Esos recursos no demuestran el renderer del juego.
-
-## Bloqueo y siguiente paso concreto
-
-1. **Resolver PZBullet64 con una implementación real.** La clase Bullet declara 93 métodos native en esta copia; el inventario y `build/round5/bullet-signatures.json` conservan sus firmas. No hay aún módulo wasm32, especificación del wrapper ni grabaciones de referencia bajo docs/re. El siguiente trabajo debe obtener/verificar primero el contrato de inicialización y versionado, identificar la versión de Bullet y construir el módulo separado con Emscripten. Las firmas solas no describen buffers, unidades, ownership ni efectos de cada llamada. No convertir System.loadLibrary en un no-op ni registrar una biblioteca vacía.
-2. Repetir el main real tras esa integración para descubrir la siguiente detención. Conservar errores JNI de las operaciones aún ausentes. Para implementar comportamiento de física se necesitan las notas y capturas locales previstas por el roadmap; no se generaron en esta ronda y no se ejecutó el juego nativo.
-3. Continuar `Display.create`, GLFW/callbacks, GL20, pipeline fijo y loop cooperativo del renderer. LWJGLUtil sigue original y deberá adaptarse con esas rutas; el puente de esta ronda cubre la inicialización, no todos los usos de LWJGL.
-4. Resolver el include `util/math` de `screen.frag` según las lecturas originales y completar las demás nativas, incluyendo FMOD. JDBC con SQLite Wasm no demuestra compatibilidad con partidas reales.
-
-También siguen pendientes FileChannel.map, durabilidad automática rws/rwd, invalidación de vistas ByteBuffer al cerrar arenas y traducción de trampas unsigned por cero a ArithmeticException Java. Los límites de reflexión/StackWalker, JMX y serialización están documentados en compatibilidad.
-
-No se necesita reinstalar la copia ni tocar Strata para reproducir el estado actual. Para continuar la física falta información de interoperabilidad y pruebas de referencia; no es un problema de instalación de Steam ni de memoria disponible.
-
-## Reproducción y trabajo local
-
-```bash
-source scripts/env.sh
-export PZ_HOME="$HOME/pz-pinned/25485521/projectzomboid"
-bash scripts/test.sh
-bash scripts/build.sh --with-game
-python3 scripts/report_game.py --reports port/target/reports/game-main-lua
-npx playwright test --config playwright.game.config.mjs
-```
-
-El entorno fija por defecto `MAVEN_OPTS="-Xmx20g -Xss16m"`. No ejecutar el juego nativo ni pruebas pesadas de navegador durante el build completo. `/` conserva la demo de plataforma; `/game.html` ejecuta el main real y muestra su detención.
-
-`.git` es de solo lectura; HEAD sigue en **054512f** y el dueño commitea. No se crearon commits, remotos ni publicaciones, no se usó sudo ni se tocaron aplicaciones del dueño. La auditoría de **277 archivos rastreados/candidatos** no encontró binarios ni recursos prohibidos. Los inventarios, fuentes públicas generadas, Wasm, capturas y recursos permanecen ignorados. `git diff --check` pasó.
-
-Los servidores de prueba se gestionaron exclusivamente en **127.0.0.1:8091/8092**. Para abrirlo: `PZ_HOME="$HOME/pz-pinned/25485521/projectzomboid" bash scripts/dev.sh`, exclusivamente en **127.0.0.1:8090**. No se afirma que quede un servidor activo de esta sesión.
+- Servidores solo en `127.0.0.1`. **Strata y el puerto 8083 no se tocaron** (es este agente). No se corrió el juego nativo ni Chrome en paralelo con el build.
+- RAM: 31 GiB total; el build usa `MAVEN_OPTS=-Xmx8g -Xss16m` y `source scripts/env.sh` en **cada** comando (mvn/javap/node solo están en el PATH después de sourcear).
+- Sin `sudo`, sin cambios en herramientas globales, sin archivos del juego en git, sin stubs que simulen éxito: cada operación no implementada lanza con su identidad exacta.

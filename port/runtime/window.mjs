@@ -14,6 +14,9 @@ export class BrowserWindow {
     this.size = [0, 0]; // requested window size (CSS pixels)
     this.windowPos = [0, 0];
     this.cursor = [0, 0];
+    this.title = '';
+    this.focused = true;
+    this.swapCount = 0;
     this.inputMode = { 212993: 208896, 212994: 1, 212995: 0 }; // cursor/sticky-buttons/sticky-keys
     this.hints = new Map();
     this.vsync = 1;
@@ -87,7 +90,7 @@ export class BrowserWindow {
   // --- GLFW window lifecycle (browser backend) ---
   // The requested size is the CSS size; the drawing buffer multiplies by devicePixelRatio,
   // which is what window/framebuffer size queries report back to the game.
-  create(width,height,monitor) {
+  create(width,height,monitor,title) {
     this.requireInit();
     if (monitor !== 0 && monitor !== 2) throw new Error(`Invalid browser monitor handle: ${monitor}`);
     if (width <= 0 || height <= 0) throw new Error(`Invalid browser window size: ${width}x${height}`);
@@ -101,9 +104,11 @@ export class BrowserWindow {
     this.visible = !hidden;
     this.canvas.style.visibility = hidden ? 'hidden' : '';
     this.created = true;
+    this.title = title ?? '';
     this.cursor = [width / 2, height / 2];
     this.events.push({type:'created',backend:'browser',width,height,
-      drawingBufferWidth:this.canvas.width,drawingBufferHeight:this.canvas.height,devicePixelRatio:ratio});
+      drawingBufferWidth:this.canvas.width,drawingBufferHeight:this.canvas.height,devicePixelRatio:ratio,
+      title:this.title});
     return 1;
   }
   destroy(handle) {
@@ -114,7 +119,7 @@ export class BrowserWindow {
     this.events.push({type:'destroyed',backend:'browser'});
   }
   shouldClose(handle) { this.requireWindow(handle); return this.input.closeRequested ? 1 : 0; }
-  setShouldClose(handle,value) { this.requireWindow(handle); this.input.closeRequested = value === 1; }
+  setShouldClose(handle,value) { this.requireWindow(handle); this.input.closeRequested = value === true; }
   show(handle) {
     this.requireWindow(handle);
     this.visible = true;
@@ -127,15 +132,26 @@ export class BrowserWindow {
     this.canvas.style.visibility = 'hidden';
     this.events.push({type:'hidden',backend:'browser'});
   }
+  focus(handle) {
+    this.requireWindow(handle);
+    this.focused = true;
+    this.canvas.focus();
+    this.events.push({type:'focused',backend:'browser'});
+  }
   makeContextCurrent(handle) {
     this.requireWindow(handle);
     if (!this.gl.context || this.gl.lost || this.gl.context.isContextLost())
       throw new Error('Browser WebGL2 context is lost; cannot make it current');
+    this.events.push({type:'context_current',backend:'browser'});
     return 1;
   }
+  // The page has one WebGL2 context, which is current while its window is used.
+  getCurrentContext() { this.requireWindow(1); return this.gl.context ? 1 : 0; }
   swapBuffers(handle) {
     this.requireWindow(handle);
     // WebGL presents implicitly at the end of the task; nothing to flush or blit.
+    this.swapCount++;
+    if (this.swapCount <= 3) this.events.push({type:'swap_buffers',backend:'browser',count:this.swapCount});
     return 1;
   }
   swapInterval(interval) {
@@ -143,9 +159,41 @@ export class BrowserWindow {
     this.vsync = interval;
     this.events.push({type:'swap_interval',interval});
   }
+  title(handle,value) { this.requireWindow(handle); this.title = value; this.events.push({type:'title',value}); }
+  setWindowPos(handle,x,y) { this.requireWindow(handle); this.windowPos = [x, y]; }
+  setWindowSize(handle,width,height) {
+    this.requireWindow(handle);
+    if (width <= 0 || height <= 0) throw new Error(`Invalid browser window size: ${width}x${height}`);
+    const ratio = window.devicePixelRatio || 1;
+    this.size = [width, height];
+    this.canvas.style.width = `${width}px`;
+    this.canvas.style.height = `${height}px`;
+    this.canvas.width = Math.max(1, Math.round(width * ratio));
+    this.canvas.height = Math.max(1, Math.round(height * ratio));
+    this.events.push({type:'resized',backend:'browser',width,height,drawingBufferWidth:this.canvas.width,
+      drawingBufferHeight:this.canvas.height});
+  }
+  // A tab has no window chrome: every frame edge is zero, and the content scale is the
+  // device pixel ratio the canvas uses for its drawing buffer.
+  frameMetric(handle,kind) { this.requireWindow(handle); return [0,0,0,0][kind]; }
+  cursorMetric(handle,kind) { this.requireWindow(handle); return this.cursor[kind]; }
+  contentScale(handle) { this.requireWindow(handle); return window.devicePixelRatio || 1; }
+  setAttrib(handle,attrib,value) {
+    this.requireWindow(handle);
+    switch (attrib) {
+      case 131075: this.hints.set(131075,value); break; // GLFW_RESIZABLE
+      case 131076: this.visible = value === 1; this.canvas.style.visibility = value === 1 ? '' : 'hidden'; break;
+      case 131078: case 131081: this.hints.set(attrib,value); break; // AUTO_ICONIFY / CENTER_CURSOR
+      case 131077: case 131079: case 131080: case 131082:
+        throw new Error(`Browser window attribute ${attrib} is fixed by the page and cannot be set`);
+      default: throw new Error(`Unsupported browser window attribute: ${attrib}`);
+    }
+  }
   poll() {
     // One serialized input event per call; JSBody cannot return arrays. Field layout:
-    // kind, handle, then callback-specific numeric/text fields (tab separated).
+    // kind, handle, then callback-specific numeric/text fields (tab separated). A key event
+    // carries the GLFW key twice: as key and as scancode, because this backend maps DOM keys
+    // onto themselves (keyScancode below).
     const events = this.input.drain();
     if (events.length === 0) return null;
     const event = events[0];
@@ -153,7 +201,7 @@ export class BrowserWindow {
     if (kind === undefined) return this.poll(); // unknown event type: skip without dispatching
     this.dispatchedEvents++;
     const fields = [kind, 1];
-    if (event.type === 'key') fields.push(event.key, event.action, 0);
+    if (event.type === 'key') fields.push(event.key, event.key, event.action, 0);
     else if (event.type === 'button') fields.push(event.button, event.action, 0);
     else if (event.type === 'cursor') fields.push(event.x, event.y);
     else if (event.type === 'scroll') fields.push(event.x, event.y);
@@ -190,8 +238,10 @@ export class BrowserWindow {
     }
     throw new Error(`Unsupported browser input mode: ${mode}`);
   }
-  windowWidth(handle) { this.requireWindow(handle); return this.canvas.width; }
-  windowHeight(handle) { this.requireWindow(handle); return this.canvas.height; }
+  // GLFW reports the window size in the coordinate space it handed to createWindow (CSS pixels),
+  // while the framebuffer size is the canvas drawing buffer.
+  windowWidth(handle) { this.requireWindow(handle); return this.size[0]; }
+  windowHeight(handle) { this.requireWindow(handle); return this.size[1]; }
   framebufferWidth(handle) { this.requireWindow(handle); return this.canvas.width; }
   framebufferHeight(handle) { this.requireWindow(handle); return this.canvas.height; }
   posX(handle) { this.requireWindow(handle); return this.windowPos[0]; }
@@ -199,7 +249,7 @@ export class BrowserWindow {
   attrib(handle,attrib) {
     this.requireWindow(handle);
     switch (attrib) {
-      case 131073: return 1; // GLFW_FOCUSED: a focused canvas is the best the page can report
+      case 131073: return this.focused ? 1 : 0; // GLFW_FOCUSED
       case 131075: return 1; // GLFW_RESIZABLE: the canvas resizes with the page
       case 131076: return this.visible ? 1 : 0; // GLFW_VISIBLE
       case 131077: return 0; // GLFW_DECORATED: a tab has no window chrome
@@ -223,6 +273,11 @@ export class BrowserWindow {
       throw new Error('Browser cannot create a fullscreen window: org.lwjgl.glfw.GLFW#glfwWindowHint(I)V GLFW_FULLSCREEN');
     return 1;
   }
-  registerCallback(id,kind) { this.requireInit(); this.callbackIds.set(kind,id); return 1; }
+  registerCallback(kind,handle) {
+    this.requireInit();
+    this.callbackIds.set(kind,handle);
+    this.events.push({type:'callback_registered',kind,handle});
+    return 1;
+  }
   callbackId(kind) { this.requireInit(); return this.callbackIds.get(kind) ?? 0; }
 }

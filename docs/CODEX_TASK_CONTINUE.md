@@ -27,3 +27,9 @@ Las rondas 15 y 18 gastaron más de una hora leyendo bytecode (javap) de GLFW/LW
 - Trabajá en pasos chicos: editá, compilá, probá en Chrome, y repetí. Cada 30-40 minutos tiene que haber cambios en archivos del repo.
 - Si un detalle no está claro, elegí la implementación más simple que avance el arranque y anotá la duda en STATUS.md, en vez de seguir investigando.
 - Antes de terminar, actualizá STATUS.md como indica la sección anterior.
+
+## OBLIGATORIO: cierre antes del límite de 4 horas
+Cada ronda se corta sola a las 4 horas exactas y, hasta ahora, ninguna llegó a actualizar STATUS.md.
+- La hora de inicio de tu ronda es la de la última línea "lanzando ronda N (local)" en supervisor.log. Revisala al empezar (`grep 'lanzando ronda' supervisor.log | tail -1`) y mirá `date` cada tanto (por lo menos cada 20-30 comandos).
+- Cuando lleves 3 horas y 30 minutos (o antes, si terminaste), dejá de programar: corré los tests rápidos que puedas, actualizá STATUS.md según la sección "actualizar STATUS.md" de arriba, y terminá la ronda.
+- Un STATUS.md actualizado vale más que 20 minutos extra de código sin documentar.

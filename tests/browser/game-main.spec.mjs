@@ -23,8 +23,9 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     // Resolve names/body boundaries only; never disassemble game code.
     symbols=execFileSync('python3',['scripts/wasm_stack.py','port/target/web/game/boot.wasm',...offsets],{encoding:'utf8'});
     await testInfo.attach('actual-main-symbols',{body:symbols,contentType:'text/plain'});
-    // Actual stop of this round: the main returns because MainScreenState.main catches the
-    // raise of the unsupported GLFW window creation; the menu is still not rendered.
+    // Actual stop of this round: the window lifecycle runs on the canvas (create window,
+    // register callbacks, show window, make context current) and the main returns because
+    // the WebGL2 GL capability bridge is not implemented yet; the menu is still not rendered.
     expect(state).toMatchObject({phase:'main-returned',error:'',menuRendered:false});
     const bullet = await page.evaluate(async()=>{const b=pzRuntime.bullet;return {loaded:!!b,loadedFor:b?.loadedFor,version:b?.version(),logging:b?.loggingInitialised(),world:b?.createWorld(0,-9.82,0),count:b?.bodyCount(),manifest:b?.manifest?.bullet?.version,wasmSha:b?.manifest?.module?.wasm_sha256};});
     expect(bullet.loaded).toBe(true); expect(bullet.loadedFor).toContain('PZBullet64'); expect(bullet.manifest).toBe('2.83');
@@ -39,15 +40,21 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     expect(progress).not.toContain('zombie.core.physics.Bullet#initPZBullet()V:returned');
     expect(progress).not.toContain('zombie.Lua.LuaManager#init()V:returned');
     const windowSystem=await page.evaluate(()=>pzRuntime.window.events);
-    expect(windowSystem).toHaveLength(1);
-    expect(windowSystem[0]).toMatchObject({type:'initialized',backend:'browser',refreshRate:0});
-    // The honest stop: GLFW window creation is not implemented, so Display.create raises
-    // with the exact operation name instead of pretending a window exists.
-    expect(trace).toContain('Browser GLFW operation unavailable: org.lwjgl.glfw.GLFW#glfwWindowHint(II)V');
+    const types=windowSystem.map(event=>event.type);
+    // Window lifecycle actually reached this round (verified against window.mjs events).
+    expect(types).toContain('created');
+    const created=windowSystem.find(event=>event.type==='created');
+    expect(created).toMatchObject({handle:1});
+    expect(types.filter(type=>type==='callback_registered').length).toBeGreaterThanOrEqual(10);
+    expect(types).toContain('shown');
+    expect(types).toContain('context_current');
+    // The honest stop: WebGL2 capability bridge is not implemented, so GL.createCapabilities
+    // raises with the exact operation name instead of pretending a GL context exists.
+    expect(trace).toContain('Browser WebGL2 GL capability bridge is not implemented: org.lwjgl.opengl.GL#createCapabilities()Lorg/lwjgl/opengl/GLCapabilities;');
     expect(trace).toContain('Exception thrown during MainScreenState.main');
     expect(pageErrors).toEqual([]);
   } finally {
-    const screenshot='test-results/game-main-round14.png';
+    const screenshot='test-results/game-main-round19.png';
     await page.screenshot({path:screenshot,fullPage:true});
     const windowSystem=await page.evaluate(()=>globalThis.pzRuntime?.window?.events || []);
     const progress=await page.evaluate(()=>globalThis.pzGameProgress || []);
