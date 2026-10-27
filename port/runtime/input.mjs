@@ -17,6 +17,7 @@ export class CanvasInput {
   constructor(canvas) {
     this.canvas = canvas; this.keys = new Set(); this.buttons = new Set();
     this.events = []; this.droppedEvents = 0;
+    this.closeRequested = false; // set only by glfwSetWindowShouldClose on this window
     this.controller = new AbortController();
     const on = (target, type, callback) => target.addEventListener(type, callback, { signal: this.controller.signal });
     const key = (event, action) => {

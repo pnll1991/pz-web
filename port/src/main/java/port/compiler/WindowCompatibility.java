@@ -43,7 +43,7 @@ public final class WindowCompatibility implements ClassHolderTransformer {
             // so a real GLFWVidMode/Buffer is constructed over one arena address holding the
             // single mode the page can present (the canvas drawing buffer).
             if (method.getDescriptor().equals(new MethodDescriptor("glfwGetVideoModes",
-                    ValueType.object("org.lwjgl.glfw.GLFWVidMode$Buffer"), ValueType.LONG))) {
+                    ValueType.LONG, ValueType.object("org.lwjgl.glfw.GLFWVidMode$Buffer")))) {
                 var e = ProgramEmitter.create(method,context.getHierarchy());
                 e.invoke(new MethodReference(BRIDGE,"checkMonitor",ValueType.VOID,ValueType.LONG),e.var(1,ValueType.LONG));
                 var address = e.invoke(new MethodReference(BRIDGE,"videoModeAddress",ValueType.LONG));
@@ -51,7 +51,7 @@ public final class WindowCompatibility implements ClassHolderTransformer {
                 continue;
             }
             if (method.getDescriptor().equals(new MethodDescriptor("glfwGetVideoMode",
-                    ValueType.object("org.lwjgl.glfw.GLFWVidMode"), ValueType.LONG))) {
+                    ValueType.LONG, ValueType.object("org.lwjgl.glfw.GLFWVidMode")))) {
                 var e = ProgramEmitter.create(method,context.getHierarchy());
                 e.invoke(new MethodReference(BRIDGE,"checkMonitor",ValueType.VOID,ValueType.LONG),e.var(1,ValueType.LONG));
                 var address = e.invoke(new MethodReference(BRIDGE,"videoModeAddress",ValueType.LONG));

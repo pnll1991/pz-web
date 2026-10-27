@@ -19,3 +19,11 @@ Antes de dar la ronda por terminada, reescribí `STATUS.md` para que refleje el 
 - El bloqueo actual y los siguientes pasos concretos, en orden.
 - Resultado de las pruebas de esta ronda.
 La siguiente ronda arranca leyendo este archivo: si queda viejo, se pierde el trabajo. No termines la ronda sin actualizarlo.
+
+## OBLIGATORIO: menos análisis, más código
+Las rondas 15 y 18 gastaron más de una hora leyendo bytecode (javap) de GLFW/LWJGL/OpenGL sin editar un solo archivo. Eso no sirve: una ronda sin cambios no deja nada.
+- Límite de análisis: como máximo 20 comandos de lectura (javap, grep, sed, cat, ls) antes de la primera edición real de código. No repitas análisis que ya figura en STATUS.md o en commits anteriores.
+- Objetivo inmediato (lo que dejó planteado la ronda 15): implementar el ciclo de vida de ventana GLFW sobre el canvas (glfwCreateWindow, glfwSetXxxCallback, glfwPollEvents, glfwSwapBuffers) y el registro de callbacks de teclado/mouse en port/src/main/java/port/shim/BrowserWindow.java y port/runtime/window.mjs, corrigiendo los descriptores de método invertidos en WindowCompatibility.
+- Trabajá en pasos chicos: editá, compilá, probá en Chrome, y repetí. Cada 30-40 minutos tiene que haber cambios en archivos del repo.
+- Si un detalle no está claro, elegí la implementación más simple que avance el arranque y anotá la duda en STATUS.md, en vez de seguir investigando.
+- Antes de terminar, actualizá STATUS.md como indica la sección anterior.
