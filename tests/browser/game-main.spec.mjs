@@ -23,11 +23,11 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     // Resolve names/body boundaries only; never disassemble game code.
     symbols=execFileSync('python3',['scripts/wasm_stack.py','port/target/web/game/boot.wasm',...offsets],{encoding:'utf8'});
     await testInfo.attach('actual-main-symbols',{body:symbols,contentType:'text/plain'});
-    // Actual stop of round 25 (verified in chrome-startup.json): the WebGL2 GLCapabilities
-    // bridge works, so org.lwjglx.opengl.Display#create()V returns. The game then calls
-    // Display.setBorderlessWindow -> glfwSetWindowAttrib(GLFW_DECORATED), which is fixed by a
-    // browser tab; the request is now recorded instead of throwing, so the boot continues.
-    // The menu is still not rendered.
+    // Actual stop of round 27 (verified in this run's symbols): Display.create() returns, the
+    // GL15/GL20 bridges let SpriteRenderer create its attribute buffers, and RenderThread.init
+    // reaches org.lwjglx.input.Controllers.create -> GLFW.glfwSetJoystickCallback. That setter is
+    // now registered as event kind 11 over the Gamepad API, so the next attempt to advance the
+    // boot is the joystick enumeration that follows it. The menu is still not rendered.
     expect(state).toMatchObject({phase:'main-returned',error:'',menuRendered:false});
     const bullet = await page.evaluate(async()=>{const b=pzRuntime.bullet;return {loaded:!!b,loadedFor:b?.loadedFor,version:b?.version(),logging:b?.loggingInitialised(),world:b?.createWorld(0,-9.82,0),count:b?.bodyCount(),manifest:b?.manifest?.bullet?.version,wasmSha:b?.manifest?.module?.wasm_sha256};});
     expect(bullet.loaded).toBe(true); expect(bullet.loadedFor).toContain('PZBullet64'); expect(bullet.manifest).toBe('2.83');
@@ -36,10 +36,8 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     expect(bullet.wasmSha).toBe(JSON.parse(readFileSync('port/target/web/vendor/pzbullet/manifest.json','utf8')).module.wasm_sha256);
     // Frames of the actual stop path, resolved from the offsets this round's trace reports.
     for(const name of ['zombie.gameStates.MainScreenState::main','zombie.core.opengl.RenderThread::init',
-        'zombie.GameWindow::InitDisplay','zombie.core.Core::init','org.lwjglx.opengl.Display::create',
-        'org.lwjglx.opengl.Display::setBorderlessWindow','org.lwjgl.glfw.GLFW::glfwSetWindowAttrib',
-        'port.shim.BrowserWindow::glfwSetWindowAttrib','org.lwjgl.opengl.GL::createCapabilities',
-        'org.lwjgl.opengl.GLCapabilities::<init>','port.shim.BrowserGL::addressPresent'])
+        'org.lwjglx.input.Controllers::create','org.lwjgl.glfw.GLFW::glfwSetJoystickCallback',
+        'java.lang.UnsupportedOperationException::<init>_0'])
         expect(symbols).toContain(name);
     const progress=await page.evaluate(()=>pzGameProgress.map(event=>event.label));
     expect(progress).toContain('org.lwjglx.opengl.Display#init()V:returned');
@@ -54,7 +52,9 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     expect(types).toContain('created');
     expect(types.filter(type=>type==='created').length).toBe(1);
     // Display$Callbacks.initCallbacks installs 10 kinds plus the error callback installed earlier.
-    expect(types.filter(type=>type==='callback_registered').length).toBe(11);
+    // Later the joystick callback (kind 11) is registered and zombie.core.Clipboard re-installs the
+    // error callback with null twice, so only the minimum count is asserted here.
+    expect(types.filter(type=>type==='callback_registered').length).toBeGreaterThanOrEqual(11);
     const created=windowSystem.find(event=>event.type==='created');
     expect(created).toMatchObject({backend:'browser',title:'Project Zomboid'});
     // The STB pixel bridge really decoded media/ui/zomboidIcon32.png and uploaded RGBA8 pixels.
@@ -65,15 +65,17 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     // Display.showWindow and glfwMakeContextCurrent run before the GL capability stop.
     expect(types).toContain('shown');
     expect(types).toContain('context_current');
-    // Display.create() really returns now (round 25 GL capability bridge), and the remaining
-    // stop is the GLFW_DECORATED(131077) attribute that a browser tab cannot change.
+    // Display.create() really returns now (round 25 GL capability bridge), and Controllers.create
+    // registers the joystick callback as kind 11 over the Gamepad API.
     expect(progress).toContain('org.lwjglx.opengl.Display#create()V:returned');
-    expect(trace).toContain('Browser window attribute 131077 is fixed by the page and cannot be set');
+    const registrations = windowSystem.filter(event=>event.type==='callback_registered');
+    expect(registrations.some(event=>event.kind===11)).toBe(true);
+    expect(types).toContain('attribute_ignored');
     expect(trace).not.toContain('failed to read image');
     expect(trace).toContain('Exception thrown during MainScreenState.main');
     expect(pageErrors).toEqual([]);
   } finally {
-    const screenshot='test-results/game-main-round25.png';
+    const screenshot='test-results/game-main-round27.png';
     await page.screenshot({path:screenshot,fullPage:true});
     const windowSystem=await page.evaluate(()=>globalThis.pzRuntime?.window?.events || []);
     const progress=await page.evaluate(()=>globalThis.pzGameProgress || []);

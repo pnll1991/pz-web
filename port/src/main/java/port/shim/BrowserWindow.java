@@ -152,6 +152,20 @@ public final class BrowserWindow {
     public static long glfwGetWindowMonitor(long window) { checkedHandle(window); return 0L; } // windowed: this backend has no fullscreen
     /** Record which callback instance receives each event kind; kind matches BrowserCallbacks. */
     public static void registerCallback(int kind,long handle) { registerCallbackNative(kind,(int)handle); }
+    // --- Gamepads (GLFW joystick slots) ---
+    // The browser exposes gamepads only through the Gamepad API, and Chrome reports an empty list
+    // until the user interacts with the page. Returning 'not present' in that state is the real
+    // answer, not a stub: org.lwjglx.input.Controllers.create() then simply builds no controllers.
+    public static boolean glfwJoystickPresent(int joystick) { return joystickPresentNative(joystick) != 0; }
+    public static String glfwGetJoystickName(int joystick) { return joystickNameNative(joystick); }
+    public static boolean glfwJoystickIsGamepad(int joystick) { return joystickIsGamepadNative(joystick) != 0; }
+    /**
+     * glfwGetGamepadName. Native GLFW returns NULL for a joystick that is not a gamepad; this
+     * backend can only name a gamepad whose Gamepad API mapping is 'standard', where the API's
+     * id is the hardware name it really reports. Axes, buttons, hats, GUID and gamepad state are
+     * not exposed by the browser and keep the fail-fast raise.
+     */
+    public static String glfwGetGamepadName(int joystick) { return gamepadNameNative(joystick); }
     private static void frame(int handle,int[] left,int[] top,int[] right,int[] bottom) {
         left[0]=frameMetric(0,handle); top[0]=frameMetric(1,handle); right[0]=frameMetric(2,handle); bottom[0]=frameMetric(3,handle);
     }
@@ -201,4 +215,8 @@ public final class BrowserWindow {
     @JSBody(script="globalThis.pzRuntime.window.defaultHints();") private static native void defaultHintsNative();
     @JSBody(params={"name","value"},script="globalThis.pzRuntime.window.hint(name,value);") private static native void hintNative(int name,int value);
     @JSBody(params={"kind","handle"},script="globalThis.pzRuntime.window.registerCallback(kind,handle);") private static native void registerCallbackNative(int kind,int handle);
+    @JSBody(params="joystick",script="return globalThis.pzRuntime.window.joystickPresent(joystick);") private static native int joystickPresentNative(int joystick);
+    @JSBody(params="joystick",script="return globalThis.pzRuntime.window.joystickName(joystick);") private static native String joystickNameNative(int joystick);
+    @JSBody(params="joystick",script="return globalThis.pzRuntime.window.joystickIsGamepad(joystick);") private static native int joystickIsGamepadNative(int joystick);
+    @JSBody(params="joystick",script="return globalThis.pzRuntime.window.gamepadName(joystick);") private static native String gamepadNameNative(int joystick);
 }

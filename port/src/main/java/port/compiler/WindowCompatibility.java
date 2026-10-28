@@ -32,7 +32,7 @@ public final class WindowCompatibility implements ClassHolderTransformer {
     /** Event kinds shared with port/runtime/window.mjs poll() and BrowserCallbacks. */
     private static final int KIND_KEY = 0, KIND_BUTTON = 1, KIND_CURSOR = 2, KIND_SCROLL = 3,
         KIND_CHAR = 4, KIND_WINDOW_POS = 5, KIND_WINDOW_SIZE = 6, KIND_REFRESH = 7,
-        KIND_FRAMEBUFFER = 8, KIND_ICONIFY = 9, KIND_ERROR = 10;
+        KIND_FRAMEBUFFER = 8, KIND_ICONIFY = 9, KIND_ERROR = 10, KIND_JOYSTICK = 11;
     private final java.util.Map<String,String> nativeNames=new java.util.HashMap<>();
     public WindowCompatibility() {
         try {
@@ -197,6 +197,7 @@ public final class WindowCompatibility implements ClassHolderTransformer {
             case "glfwSetFramebufferSizeCallback" -> KIND_FRAMEBUFFER;
             case "glfwSetWindowIconifyCallback" -> KIND_ICONIFY;
             case "glfwSetErrorCallback" -> KIND_ERROR;
+            case "glfwSetJoystickCallback" -> KIND_JOYSTICK;
             default -> -1;
         };
     }

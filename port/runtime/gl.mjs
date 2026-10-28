@@ -30,6 +30,21 @@ const PORT_PROVIDED = new Set([
   'glDisableVertexAttribArray', 'glVertexAttribPointer', 'glVertexAttrib1f', 'glVertexAttrib2f',
   'glVertexAttrib3f', 'glVertexAttrib4f', 'glGenVertexArrays', 'glDeleteVertexArrays',
   'glBindVertexArray', 'glDrawArrays', 'glDrawElements',
+  // Capability names of check_GL20 that WebGL2 does not expose as methods. port.shim.GL20 really
+  // implements the ones the game uses; the desktop-only introspection natives raise with their own
+  // identity instead of answering (docs/decisions.md), so no value is invented.
+  'glIsProgram', 'glIsShader', 'glGetShaderiv', 'glGetProgramiv', 'glGetShaderInfoLog',
+  'glGetProgramInfoLog', 'glGetAttachedShaders', 'glGetActiveUniform', 'glGetUniformfv',
+  'glGetUniformiv', 'glGetShaderSource', 'glVertexAttrib1s', 'glVertexAttrib1d', 'glVertexAttrib2s',
+  'glVertexAttrib2d', 'glVertexAttrib3s', 'glVertexAttrib3d', 'glVertexAttrib4s', 'glVertexAttrib4d',
+  'glVertexAttrib4Nub', 'glVertexAttrib1fv', 'glVertexAttrib1sv', 'glVertexAttrib1dv',
+  'glVertexAttrib2fv', 'glVertexAttrib2sv', 'glVertexAttrib2dv', 'glVertexAttrib3fv',
+  'glVertexAttrib3sv', 'glVertexAttrib3dv', 'glVertexAttrib4fv', 'glVertexAttrib4sv',
+  'glVertexAttrib4dv', 'glVertexAttrib4iv', 'glVertexAttrib4bv', 'glVertexAttrib4ubv',
+  'glVertexAttrib4usv', 'glVertexAttrib4uiv', 'glVertexAttrib4Nbv', 'glVertexAttrib4Nsv',
+  'glVertexAttrib4Niv', 'glVertexAttrib4Nubv', 'glVertexAttrib4Nusv', 'glVertexAttrib4Nuiv',
+  'glBindAttribLocation', 'glGetActiveAttrib', 'glGetVertexAttribiv', 'glGetVertexAttribfv',
+  'glGetVertexAttribdv', 'glGetVertexAttribPointerv',
 ]);
 
 /** WebGL2 context and object handles; unsupported entrypoints must throw. */
@@ -417,6 +432,28 @@ export class GLBridge {
       const start = pointers[i] - base;
       parts.push(new TextDecoder('utf-8').decode(bytes.subarray(start, start + lengths[i])));
     }
+    this.finishShaderSource(handle, stage, parts);
+  }
+  /**
+   * Variant used by port.shim.GL20: the desktop source blocks live in different arena
+   * allocations, so Java copies them into one contiguous buffer and sends that view plus the
+   * per-part lengths. Nothing is dropped: the parts are concatenated exactly as the driver does.
+   */
+  shaderSourceJoined(handle, lengths, bytes) {
+    const entry = this.shaderEntry(handle, 'shaderSource');
+    const stage = entry.type === this.context.VERTEX_SHADER ? 'vertex' : 'fragment';
+    const parts = [];
+    let offset = 0;
+    for (let i = 0; i < lengths.length; i++) {
+      parts.push(new TextDecoder('utf-8').decode(bytes.subarray(offset, offset + lengths[i])));
+      offset += lengths[i];
+    }
+    if (offset !== bytes.length)
+      throw new Error(`Shader source buffer is ${bytes.length} bytes, the ${lengths.length} parts cover ${offset}`);
+    this.finishShaderSource(handle, stage, parts);
+  }
+  finishShaderSource(handle, stage, parts) {
+    const entry = this.shaderEntry(handle, 'shaderSource');
     const translated = translateShader(parts.join('\n'), stage);
     entry.source = translated.source;
     entry.replacements = translated.replacements;
@@ -541,17 +578,31 @@ export class GLBridge {
    * Desktop uniform setters take count + arena pointer; WebGL2 takes an array. The Float32Array
    * / Int32Array views come from the arena block (same mechanism as port.shim.GL15).
    */
-  uniformfv(handle, count, values) { this.call('uniform1fv', this.locationOf(handle, 'uniform1fv'), values.subarray(0, count)); }
-  uniform2fv(handle, count, values) { this.call('uniform2fv', this.locationOf(handle, 'uniform2fv'), values.subarray(0, count * 2)); }
-  uniform3fv(handle, count, values) { this.call('uniform3fv', this.locationOf(handle, 'uniform3fv'), values.subarray(0, count * 3)); }
-  uniform4fv(handle, count, values) { this.call('uniform4fv', this.locationOf(handle, 'uniform4fv'), values.subarray(0, count * 4)); }
-  uniform1iv(handle, count, values) { this.call('uniform1iv', this.locationOf(handle, 'uniform1iv'), values.subarray(0, count)); }
-  uniform2iv(handle, count, values) { this.call('uniform2iv', this.locationOf(handle, 'uniform2iv'), values.subarray(0, count * 2)); }
-  uniform3iv(handle, count, values) { this.call('uniform3iv', this.locationOf(handle, 'uniform3iv'), values.subarray(0, count * 3)); }
-  uniform4iv(handle, count, values) { this.call('uniform4iv', this.locationOf(handle, 'uniform4iv'), values.subarray(0, count * 4)); }
-  uniformMatrix(handle, count, transpose, values, size) {
-    if (transpose) throw new Error('WebGL2 cannot transpose a uniform matrix (transpose=true)');
-    this.call(`uniformMatrix${size}fv`, this.locationOf(handle, 'uniformMatrixfv'), false, values.subarray(0, count * size * size));
+  /**
+   * Desktop `n*Uniform*Nfv(location,count,pointer)` natives become WebGL2 array setters. The
+   * `name` argument is the desktop name (it identifies the component count and is used in the
+   * error message), so one dispatcher covers all of them. WebGL2 takes the whole array, so the
+   * count is used to slice the arena view exactly as the desktop call would upload `count`
+   * elements.
+   */
+  uniformfv(name, handle, count, values) {
+    const size = Number(name.match(/^uniform(\d)fv$/)[1]);
+    const total = count * size;
+    if (total > values.length) throw new Error(`${name}: count ${count} needs ${total} floats, the view has ${values.length}`);
+    this.call(name, this.locationOf(handle, name), values.subarray(0, total));
+  }
+  uniform1iv(name, handle, count, values) {
+    const size = Number(name.match(/^uniform(\d)iv$/)[1]);
+    const total = count * size;
+    if (total > values.length) throw new Error(`${name}: count ${count} needs ${total} ints, the view has ${values.length}`);
+    this.call(name, this.locationOf(handle, name), values.subarray(0, total));
+  }
+  uniformMatrix(size, handle, count, transpose, values) {
+    if (transpose) throw new Error(`WebGL2 cannot transpose a uniform matrix (transpose=true, uniformMatrix${size}fv)`);
+    const total = count * size * size;
+    const name = `uniformMatrix${size}fv`;
+    if (total > values.length) throw new Error(`${name}: count ${count} needs ${total} floats, the view has ${values.length}`);
+    this.call(name, this.locationOf(handle, name), false, values.subarray(0, total));
   }
   /* --- Vertex attributes -------------------------------------------------------------
    * glEnable/DisableVertexAttribArray track the attribute index; glVertexAttribPointer needs

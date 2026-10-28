@@ -25,6 +25,25 @@ export class BrowserWindow {
     this.layout = null;
     this.events = [];
     this.keyCodes = new Map();
+    // Gamepad slots mirrored from the browser Gamepad API. Chrome only reports gamepads after a
+    // user interaction, so the honest initial state is 'no gamepads'.
+    this.gamepads = new Map(); // slot -> { id, mapping }
+    this.joystickEvents = [];
+    this.joystickOverflow = false;
+    // navigator.getGamepads() throws inside gamepad event callbacks, so the DOM events only ask
+    // for a re-sync, which happens on the next poll().
+    this.gamepadNeedsSync = true;
+    this.gamepadController = new AbortController();
+    const onGamepad = (type) => window.addEventListener(type, (event) => {
+      const pad = event?.gamepad;
+      if (pad && !(pad.index >= 0 && pad.index < 16) && !this.joystickOverflow) {
+        this.joystickOverflow = true;
+        this.events.push({ type: 'joystick_unrepresentable', index: pad.index, id: pad.id });
+      }
+      this.gamepadNeedsSync = true;
+    }, { signal: this.gamepadController.signal });
+    onGamepad('gamepadconnected');
+    onGamepad('gamepaddisconnected');
     const codes = ['Space','Quote','Comma','Minus','Period','Slash','Semicolon','Equal',
       'BracketLeft','Backslash','BracketRight','Backquote','Escape','Enter','Tab','Backspace',
       'Insert','Delete','ArrowRight','ArrowLeft','ArrowDown','ArrowUp','PageUp','PageDown',
@@ -234,11 +253,82 @@ export class BrowserWindow {
       default: throw new Error(`Unsupported browser window attribute: ${attrib}`);
     }
   }
+  // --- Gamepad slots (GLFW joystick indices 0..15) -------------------------------------------
+  // The browser's Gamepad API is the only source of gamepads here. getGamepads() returns null for
+  // an empty slot and its `id` is the hardware name the UA really reports; `mapping === 'standard'`
+  // is what the UA declares about the button layout, which is what glfwJoystickIsGamepad means.
+  // navigator.getGamepads() is forbidden inside gamepad event callbacks, so the DOM events only
+  // queue a re-sync; the snapshot is taken on the next poll() or syncGamepads() call.
+  syncGamepads() {
+    const list = typeof navigator.getGamepads === 'function' ? navigator.getGamepads() : [];
+    const seen = new Set();
+    for (const pad of list) {
+      if (!pad) continue;
+      const slot = pad.index >= 0 && pad.index < 16 ? pad.index : -1;
+      if (slot < 0) { // A slot outside GLFW's joystick range cannot be represented; report it once.
+        if (!this.joystickOverflow) {
+          this.joystickOverflow = true;
+          this.events.push({ type: 'joystick_unrepresentable', index: pad.index, id: pad.id });
+        }
+        continue;
+      }
+      seen.add(slot);
+      const previous = this.gamepads.get(slot);
+      if (!previous) {
+        this.gamepads.set(slot, { id: pad.id, mapping: pad.mapping });
+        this.joystickEvents.push({ type: 'joystick', slot, connected: 1 });
+      } else if (previous.id !== pad.id || previous.mapping !== pad.mapping) {
+        this.joystickEvents.push({ type: 'joystick', slot, connected: 0 });
+        this.gamepads.set(slot, { id: pad.id, mapping: pad.mapping });
+        this.joystickEvents.push({ type: 'joystick', slot, connected: 1 });
+      }
+    }
+    for (const slot of [...this.gamepads.keys()]) {
+      if (!seen.has(slot)) {
+        this.gamepads.delete(slot);
+        this.joystickEvents.push({ type: 'joystick', slot, connected: 0 });
+      }
+    }
+    this.gamepadNeedsSync = false;
+    return this.gamepads.size;
+  }
+  refreshGamepads() {
+    this.requireInit();
+    if (this.gamepadNeedsSync) this.syncGamepads();
+  }
+  joystickPresent(slot) {
+    this.refreshGamepads();
+    return this.gamepads.has(slot) ? 1 : 0;
+  }
+  joystickName(slot) {
+    this.refreshGamepads();
+    const pad = this.gamepads.get(slot);
+    return pad ? pad.id : null;
+  }
+  joystickIsGamepad(slot) {
+    this.refreshGamepads();
+    const pad = this.gamepads.get(slot);
+    return pad && pad.mapping === 'standard' ? 1 : 0;
+  }
+  gamepadName(slot) {
+    this.refreshGamepads();
+    const pad = this.gamepads.get(slot);
+    // Native GLFW returns NULL for a joystick that is not a gamepad; the API only names pads it
+    // declares standard-mapped.
+    return pad && pad.mapping === 'standard' ? pad.id : null;
+  }
   poll() {
     // One serialized input event per call; JSBody cannot return arrays. Field layout:
     // kind, handle, then callback-specific numeric/text fields (tab separated). A key event
     // carries the GLFW key twice: as key and as scancode, because this backend maps DOM keys
-    // onto themselves (keyScancode below).
+    // onto themselves (keyScancode below). A joystick event (kind 11) instead carries
+    // kind, slot, connected, because GLFWJoystickCallbackI reads slot 0 as the joystick index.
+    if (this.initialized) this.refreshGamepads();
+    if (this.joystickEvents.length > 0) {
+      const event = this.joystickEvents.shift();
+      this.dispatchedEvents++;
+      return [11, event.slot, event.connected].join('\t');
+    }
     const events = this.input.drain();
     if (events.length === 0) return null;
     const event = events[0];

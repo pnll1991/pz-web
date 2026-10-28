@@ -20,10 +20,13 @@ import org.teavm.jso.JSBody;
  * transformer can reference those identities.
  *
  * Kinds match the serialization of window.mjs poll(): 0 key, 1 mouse button, 2 cursor, 3 scroll,
- * 4 character. An event whose kind has no registered callback is dropped, exactly as GLFW drops an
- * event when no callback is set; nothing is simulated.
+ * 4 character, 5 window position, 6 window size, 7 refresh, 8 framebuffer size, 9 iconify,
+ * 10 error, 11 joystick. An event whose kind has no registered callback is dropped, exactly as
+ * GLFW drops an event when no callback is set; nothing is simulated.
  */
 public final class BrowserCallbacks {
+    /** Same kind numbering as WindowCompatibility and window.mjs poll(). */
+    public static final int KIND_JOYSTICK = 11;
     private static final Map<Long, Object> instances = new HashMap<>();
     private static final Map<Object, Long> handles = new IdentityHashMap<>();
     private static final Map<Integer, Long> handlers = new HashMap<>(); // event kind -> handle
@@ -122,9 +125,23 @@ public final class BrowserCallbacks {
             case 2 -> 2; // cursor position: xoffset, yoffset as double
             case 3 -> 2; // scroll: xoffset, yoffset as double
             case 4 -> 1; // character codepoint
+            case KIND_JOYSTICK -> 2; // joystick: joystick index and connected/disconnected flag
             default -> throw new IllegalStateException("Unknown browser input event kind: " + kind);
         };
         long args = port.runtime.memory.NativeMemory.nmemAllocChecked((long) (slots + 1) * 8);
+        if (kind == KIND_JOYSTICK) {
+            // GLFWJoystickCallbackI.callback reads args[0] with a single memGetAddress and then
+            // memGetInt, so slot 0 is the joystick index itself (not a window handle) and slot 1
+            // is the connect/disconnect flag. Both are plain ints in their own cells. window.mjs
+            // serializes kind 11 as: kind, slot, connected, so argument k is field k+1.
+            for (int k = 0; k < slots; k++) {
+                long cell = port.runtime.memory.NativeMemory.nmemAllocChecked(8);
+                port.runtime.memory.NativeMemory.memPutInt(cell, eventInt(event, k + 1));
+                port.runtime.memory.NativeMemory.memPutAddress(args + (long) k * 8, cell);
+            }
+            dispatched++;
+            return args;
+        }
         // Slot 0 is a pointer to the cell holding the window handle, which the interface body
         // reads through two memGetAddress calls.
         long handleCell = port.runtime.memory.NativeMemory.nmemAllocChecked(8);

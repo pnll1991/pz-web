@@ -16,8 +16,9 @@ from classfile import ClassReader
 # Everything else stays unmapped and keeps the fail-fast raise.
 SCALAR = 'port.shim.GL11'
 GL15 = 'port.shim.GL15'
+GL20 = 'port.shim.GL20'
 DIRECT_CLASSES = ('org.lwjgl.opengl.GL11', 'org.lwjgl.opengl.GL11C', 'org.lwjgl.opengl.GL30C',
-                  'org.lwjgl.opengl.GL15C')
+                  'org.lwjgl.opengl.GL15C', 'org.lwjgl.opengl.GL20C')
 SCALAR_DIRECT = {('glClearColor','(FFFF)V'), ('glClear','(I)V'), ('glViewport','(IIII)V'), ('glGetError','()I'),
     ('glEnable','(I)V'), ('glDisable','(I)V'), ('glBlendFunc','(II)V'), ('glClearStencil','(I)V'),
     ('glStencilMask','(I)V'), ('glCullFace','(I)V'), ('glFrontFace','(I)V'), ('glDepthFunc','(I)V'),
@@ -36,9 +37,38 @@ GL15_DIRECT = {('nglGenBuffers','(IJ)V'), ('nglDeleteBuffers','(IJ)V'), ('glBind
     ('nglGetQueryObjectiv','(IIJ)V'), ('nglGetQueryObjectuiv','(IIJ)V')}
 
 
+# Only the natives on GL20C: the wrappers of GL20/GL20C stay untouched and reach them. Every
+# entry is implemented in port.shim.GL20 over real WebGL2 calls, or raises with its own identity
+# when WebGL2 has no equivalent (docs/decisions.md).
+GL20_DIRECT = {('glCreateProgram','()I'), ('glDeleteProgram','(I)V'), ('glIsProgram','(I)Z'),
+    ('glCreateShader','(I)I'), ('glDeleteShader','(I)V'), ('glIsShader','(I)Z'),
+    ('glAttachShader','(II)V'), ('glDetachShader','(II)V'), ('nglShaderSource','(IIJJ)V'),
+    ('glCompileShader','(I)V'), ('glLinkProgram','(I)V'), ('glUseProgram','(I)V'),
+    ('glValidateProgram','(I)V'), ('nglGetShaderiv','(IIJ)V'), ('nglGetProgramiv','(IIJ)V'),
+    ('nglGetShaderInfoLog','(IIJJ)V'), ('nglGetProgramInfoLog','(IIJJ)V'),
+    ('nglGetUniformLocation','(IJ)I'), ('nglGetAttribLocation','(IJ)I'),
+    ('glUniform1f','(IF)V'), ('glUniform2f','(IFF)V'), ('glUniform3f','(IFFF)V'),
+    ('glUniform4f','(IFFFF)V'), ('glUniform1i','(II)V'), ('glUniform2i','(III)V'),
+    ('glUniform3i','(IIII)V'), ('glUniform4i','(IIIII)V'), ('nglUniform1fv','(IIJ)V'),
+    ('nglUniform2fv','(IIJ)V'), ('nglUniform3fv','(IIJ)V'), ('nglUniform4fv','(IIJ)V'),
+    ('nglUniform1iv','(IIJ)V'), ('nglUniform2iv','(IIJ)V'), ('nglUniform3iv','(IIJ)V'),
+    ('nglUniform4iv','(IIJ)V'), ('nglUniformMatrix2fv','(IIZJ)V'), ('nglUniformMatrix3fv','(IIZJ)V'),
+    ('nglUniformMatrix4fv','(IIZJ)V'), ('nglVertexAttribPointer','(IIIZIJ)V'),
+    ('glEnableVertexAttribArray','(I)V'), ('glDisableVertexAttribArray','(I)V'),
+    ('glVertexAttrib1f','(IF)V'), ('glVertexAttrib2f','(IFF)V'), ('glVertexAttrib3f','(IFFF)V'),
+    ('glVertexAttrib4f','(IFFFF)V'), ('nglGetUniformfv','(IIJ)V'), ('nglGetUniformiv','(IIJ)V'),
+    ('nglGetVertexAttribiv','(IIJ)V'), ('nglGetVertexAttribfv','(IIJ)V'),
+    ('nglGetVertexAttribdv','(IIJ)V'), ('nglGetVertexAttribPointerv','(IIJ)V'),
+    ('nglGetAttachedShaders','(IIJJ)V'), ('nglBindAttribLocation','(IIJ)V'),
+    ('nglGetShaderSource','(IIJJ)V'), ('nglGetActiveUniform','(IIIJJJJ)V'),
+    ('nglGetActiveAttrib','(IIIJJJJ)V')}
+
+
 def target_for(class_name, method_name, descriptor):
     if class_name == 'org.lwjgl.opengl.GL15C':
         return GL15 if (method_name, descriptor) in GL15_DIRECT else None
+    if class_name == 'org.lwjgl.opengl.GL20C':
+        return GL20 if (method_name, descriptor) in GL20_DIRECT else None
     return SCALAR if (method_name, descriptor) in SCALAR_DIRECT else None
 
 
