@@ -238,3 +238,144 @@ Acciones de esta ronda:
     `{timeout:190_000}`. Reporte `port/target/reports/game-main-lua/chrome-startup.json` ahora incluye
     `parkRing` (400 eventos) y deja `state {phase:'starting',error:'',menuRendered:false}`,
     `pageErrors:[]`.
+
+## Ronda 30 (cerrada 07:00) — iniciada 04:04:44 (-03), límite de corte 08:04
+
+Estado de partida verificado:
+- HEAD vigilante `9c0e144` (Ronda 29), `git status` limpio. `port/target/web/game/boot.wasm` presente
+  (144 556 110 B, 03:56) con `build-state.json` `success:true`, `reachable_classes:10235`,
+  `reachable_methods:72922`, peak RSS 7.03 GiB. Suite real previa: 5/5 (`verification-round29k-real.log`).
+- Diagnóstico 29k confirmado (`chrome-startup.json`, `observedAt 2026-10-28T07:03:49Z`): la última
+  frontera del juego es `PZXmlUtil#createNewDocument():returned` (t≈114796.3) dentro de
+  `PZXmlUtil#write()`; el fiber del hilo de juego nunca retorna de `mainThreadInit`, y el bootstrap
+  `Thread#lambda$start$0(Z)V` sí llega a su `returned` (pasa por el catch/handler), es decir el
+  bloque `tryWrite` se suspende dentro de `javax.xml.bind` y no se reanuda.
+
+Cambios de esta ronda:
+1. `port/compiler/StartupProgress.java`: corregido el bug de instrumentación de la Ronda 29 — la
+   sustitución de `port.compat.*` ocurre ANTES del transformer, así que `OWN_PREFIXES=
+   "port.compat.javax.xml."` producía **0 fronteras**. Ahora se instrumentan los nombres
+   post-sustitución `javax.xml.`, `org.w3c.dom.`, `org.xml.sax.` (más `port.shim.BrowserDom`).
+2. Sumado a la observación (solo entrada/retorno, sin cambiar lógica): las clases
+   `PZXmlUtil$MarshallerAllocator`, `PZXmlUtil$MarshallerAllocator$1`, `PZXmlUtil$UnmarshallerAllocator`,
+   y los métodos `ThreadLocal#get`/`initialValue`, `ServiceLoader#load`/`loadIterator`,
+   `Class#forName`, `Class#getMethod`, `Method#invoke`, `ClassLoader#getResource`,
+   `ExceptionLogger#logException(Throwable,String)`.
+   Motivo: `PZXmlUtil.write(T,File)` = `createNewDocument()` → `MarshallerAllocator.get(obj)` →
+   `JAXBContext.newInstance(Class[])` → `ContextFinder.find` (jaxb.properties → sysprops →
+   ServiceLoader → "platform default provider" `com.sun.xml.internal.bind.v2.ContextFactory`), todo
+   reflexión/ServiceLoader que en TeaVM es asíncrono y puede parkear el fiber. Verificado con
+   `javap`: el jar pinneado trae 119 entradas `javax/xml/bind/*` y 788 `com/sun/xml/bind/*`, pero en
+   `boot.wasm` hay **0** ocurrencias de `com.sun.xml.bind` (el RI del jar no es alcanzable), y
+   `tryWrite` captura `JAXBException` y llama `ExceptionLogger.logException` (método `synchronized`).
+3. `mvn -f port/pom.xml compile` BUILD SUCCESS con los cambios de instrumentación. Build `--with-game`
+   en primer plano (`build-round30-game.log`) en curso desde 04:44.
+4. Puente JAXB propio (esta ronda, la corrección del park): el RI del jar (`com.sun.xml.bind.v2.ContextFactory`)
+   tiene **0** ocurrencias en `boot.wasm`, así que `JAXBContext.newInstance` → `ContextFinder.find` →
+   `getResourceUrl("META-INF/services/javax.xml.bind.JAXBContext")` parkeaba el fiber del juego
+   (confirmado con `port/target/diag38.mjs`: última frontera `ContextFinder#getResourceUrl entered` y luego
+   `Thread#lambda$start$0(Z)V:returned`, o sea el catch de `runThread`, sin frames de `ExceptionLogger`).
+   Nuevos archivos (sustitución vía `port/compat/...` + `PlatformSubstitutions`):
+   `port/compat/javax/xml/bind/{JAXBContext,JAXBException,PropertyException,Marshaller,Unmarshaller}.java`,
+   `port/compat/javax/xml/bind/annotation/{XmlElement,XmlElements,XmlAttribute,XmlRootElement,XmlType,XmlTransient,XmlEnum,XmlEnumValue,XmlID,XmlIDREF}.java`
+   (firmas verificadas con `javap` del jar; `DEFAULT="$default$"`), y el motor
+   `port/runtime/PortXmlBeans.java` (bean↔DOM por reflexión, solo campos públicos/anotados, nunca inventa:
+   fuera del subset lanza `JAXBException`), `port/runtime/PortMarshaller.java` (DOM + `BrowserDom.serialize`,
+   propiedades `jaxb.encoding`/`jaxb.formatted.output`/`jaxb.fragment`/schemaLocation, `Listener`),
+   `port/runtime/PortUnmarshaller.java` (`BrowserDom.parse` + BOM/`<?xml encoding`).
+   `port/config/reflection.txt`: +58 clases bean con anotaciones `javax.xml.bind.annotation.*` (nombres del scan
+   de la copia fijada, incluido nested con `$`).
+5. Errores corregidos al compilar: `beanClasses()`/`resolve()` package-private entre paquetes; ctors de
+   `PortMarshaller`/`PortUnmarshaller` no públicos; `linked=cause==null?message:cause` (String→Throwable);
+   `rootOf(...)` devolvía `Document` donde se esperaba `Element`; `indexOf(int,String)` invertido;
+   `charset()` dentro de `setProperty` sin capturar `JAXBException`. `mvn -f port/pom.xml compile` BUILD SUCCESS.
+6. Build `--with-game` en primer plano hacia `build-round30b-game.log` (en curso).
+7. Build `build-round30b-game.log` (06:01): `EXIT=0`, `success:true`, `reachable_classes:10218`,
+   `reachable_methods:72042`, `wasm_bytes:143445840`, compile 366 s, peak RSS 6.39 GiB,
+   `teavm-diagnostics.txt` vacío. En `boot.wasm`: `com.sun.xml.bind` = 0, `ContextFinder` = 0,
+   `javax.xml.bind.JAXBContext` = 24, `PortXmlBeans` = 32, y las anotaciones reflectables sí se
+   emiten (`javax.xml.bind.annotation.Xml{Element,Type,RootElement,Attribute,Transient,EnumValue}$$_impl`).
+8. Diagnóstico Chrome con el puente JAXB (5 corridas: `port/target/diag38b/39/40/41/42/43.mjs`,
+   dev-server propio en 8092, ~100–140 s de instanciación): **el park de JAXB se resolvió**.
+   `pzGameProgress` pasa de 400 a 446 eventos y ahora se ven `BrowserDom#serialize():returned`,
+   `PZXmlUtil#elementToPrettyString():returned`, `PZXmlUtil#write/tryWrite():returned`,
+   `DebugOptions#initMessaging():returned`, `DebugOptions#init():returned`, `GameProfiler#init():returned`,
+   `SoundManager/<clinit>`, `AmbientStreamManager`, `VoiceManager#loadConfig():returned`.
+9. **Stop nuevo (nada simulado)**: `RenderThread#invokeQueryOnRenderContext():entered` →
+   `invokeOnRenderContext():entered` → `queueInvokeOnRenderContext():returned` →
+   `lambda$invokeOnRenderContext$0():returned` (el supplier llama `notifyRenderStateQueue`) →
+   `Thread#interrupted():returned` → el fiber del hilo de juego termina su `runThread` sin avanzar.
+   Verificado con `javap` del jar: `RenderContextQueueItem.waitUntilFinished(BooleanSupplier)` hace
+   `synchronized (waitLock) { if (!isFinished()) waitLock.wait(); }` y ningún fiber vuelve a
+   `flushInvokeQueue()`, por lo que el `wait()` nunca recibe `notify`.
+   (Corrección de la Ronda 30, ver ítem 13: la afirmación inicial de que `renderLoop()` suspende su fiber en
+   `Thread.yield()` no se sostiene — `renderLoop()` tiene 0 `Thread.sleep` y la instrumentación deduplicada
+   no permite localizar la suspensión del fiber de render.)
+   Contadores tras 170 s: `swapCount:2`, GL calls 267, `dispatched:0`; y la prueba nueva comprueba que
+   `progress` y `swapCount` **no crecen** en 12 s adicionales (no es un boot lento, es un interbloqueo
+   cooperativo entre los dos fibers).
+10. Suite real Ronda 30 (`verification-round30-real.log`, 06:36, `PZ_REAL_TEST_PORT=8093`): **5/5 passed**
+    (2.5 m). La spec nueva de esta ronda pasó sin relajar asserts: `DebugOptions#init()/initMessaging():returned`,
+    `PZXmlUtil#tryWrite():returned`, `GameProfiler#init():returned`, `VoiceManager#loadConfig():returned`,
+    `JAXBContext#newInstance([Class):returned`, `BrowserDom#serialize():returned`,
+    `invokeQueryOnRenderContext/invokeOnRenderContext` **entered y no returned**, `not MainScreenState#enter():entered`,
+    y `frozen-counters` (`progress` y `swapCount` idénticos tras 12 s extra). Bullet/GL/ventana/ícono/oshi siguen asserts.
+    Reporte: `port/target/reports/game-main-lua/chrome-startup.json` (progress 446, parkRing 400,
+    `bridge.glCallTotal:267`, `dispatched:0`, `swapCount:2`, `state.phase:"starting"`, `menuRendered:false`).
+    Captura `test-results/game-main-round30.png` (1458x1323): 77,08 % rgb(0,0,0) + 18,70 % rgb(11,17,22) +
+    2,45 % rgb(16,27,32); `screenshot_visually_checked:false` (no existe `view_image` en este entorno).
+11. Otras suites: `npm test` 19/19 OK; `python3 -m unittest discover -s tests/python` 10 OK (requiere
+    `source scripts/env.sh`). No se corrió `scripts/test.sh` (no quedaba ventana y no debe correrse junto con Chrome).
+12. **Diagnóstico decisivo del interbloqueo** (`port/target/diag44.mjs`, dev-server 8092, 170 s + 25 s):
+    el anillo sin dedup `pzGameTrace` (400 eventos) contiene **0** entradas de `Thread#yield`,
+    `Thread#sleep`, `flushInvokeQueue`, `renderStep` o `#wait`, y es byte-idéntico entre la muestra A
+    (t≈170 s) y la muestra B (t≈195 s), con `swapCount:2` en ambas. Conclusión: **no hay ningún fiber
+    avanzando**; no es un boot lento ni un rate-limit del yield. El fiber del hilo de juego está parkado
+    en `Object.wait()` de `RenderContextQueueItem.waitLock` y el fiber de render ya no está en su loop.
+13. Hechos medidos (sin inferencias):
+    - `pzGameProgress` **deduplica por label**, así que no permite contar iteraciones del loop de render;
+      el anillo sin dedup `pzGameTrace` (cap 400) quedó saturado por las escrituras de `FileOutputStream`
+      del hilo de juego. Por lo tanto **no** se puede afirmar en qué llamada exacta quedó suspendido el
+      fiber de render: hace falta un contador por label (ver paso a de abajo).
+    - `renderLoop()` tiene **0** llamadas a `Thread.sleep` (los 2 `Thread.sleep` de `RenderThread.class`
+      están ambos en `lambda$uncaughtException$0()`, el hilo ForceCloseThread) y ningún otro llamador del
+      boot las usa (`Input`, `Mouse`, `Clipboard`, `GameProfiler`: 0 llamadas verificadas con `javap`).
+      Aun así hay un `Thread#sleep(J)V:entered` (t=134352.8) **sin** `returned`, y ningún
+      `Thread#sleep(J)V:returned` en toda la traza.
+    - Fronteras del boot en orden temporal: `Thread#start()` (134298.3) → `renderLoop():entered` (134298.7)
+      → `acquireContextReentrant():entered/returned` → `renderStep():entered/returned` (134316.4/134317.7)
+      → `flushInvokeQueue():entered/returned` (134318.0) → `DebugOptions#testThreadCrash():returned` (134319.0)
+      → `Thread#yield():entered/returned` (134319.0/134319.1) → `Thread#sleep(J):entered` (134352.8, sin retorno).
+      El fiber que corre `mainThreadStart`/`mainThreadInit` entra en 134360.8 y su último evento es
+      `Thread#interrupted():returned` (134740.6) seguido de `Thread#lambda$start$0(Z)V:returned` (134740.7),
+      inmediatamente después de `invokeQueryOnRenderContext():entered`/`invokeOnRenderContext():entered`/
+      `queueInvokeOnRenderContext():returned`/`lambda$invokeOnRenderContext$0():returned`.
+    - `notifyRenderStateQueue()` sólo reenvía a `SpriteRenderer.instance` (instance null en boot) ⇒ nunca
+      existe `notifyAll` del `waitLock` de `RenderContextQueueItem`, que es donde el bytecode del juego hace
+      `synchronized (waitLock) { if (!isFinished()) waitLock.wait(); }`.
+14. Bloqueo actual (Ronda 30, nada simulado): **un fiber queda parkado y ninguno avanza**. El hilo de juego
+    llama `RenderThread.invokeQueryOnRenderContext()` y espera `RenderContextQueueItem.waitLock`; con
+    `swapCount:2` fijo, `dispatched:0` y contadores idénticos tras 12 s extra, no hay progreso de ningún
+    fiber (`state.phase:"starting"`, sin excepción nueva ni timeout). El menú sigue sin verse, así que **no**
+    se crea ninguna señal de menú. La causa exacta de la suspensión del fiber de render sigue **sin resolver**
+    (ver 13); la hipótesis principal es que quedó suspendido dentro de una llamada asíncrona no instrumentada
+    después de `Thread.yield()`, o en nuestro propio `JdkSupport.yield()`, y por eso nunca vuelve a
+    `flushInvokeQueue()` para liberar el `waitLock`.
+15. Siguientes pasos concretos (Ronda 31), en orden:
+    a. **Contar, no deduplicar**: agregar a `port.shim.BrowserProgress` un contador por label
+       (`globalThis.pzGameCounts`, `counts[label]++` en cada entrada) y exponerlo en los diags. Esto resuelve
+       la limitación de 13 y permite decidir con una sola corrida de ~250 s.
+    b. Instrumentar (solo entrada/retorno) `org.lwjglx.opengl.Display` (`processMessages`, `update`,
+       `isCloseRequested`, `swapBuffers`), `zombie.core.SpriteRenderer` y `java.lang.Object`
+       (`wait`, `wait(J)`, `notify`, `notifyAll`). Son clase TeaVM propia en el caso de `Object`, así que se
+       observa sin tocar el juego.
+    c. Con los contadores, distinguir los dos casos: si `Thread#yield():entered` crece ⇒ el render fiber
+       itera y el problema es que `flushInvokeQueue` no invoca el item pendiente (mirar el `synchronized` de
+       `flushInvokeQueue`/`hasContext`); si no crece ⇒ el fiber está suspendido y hay que encontrar la última
+       entrada sin retorno (`Display.processMessages()` es el candidato principal).
+    d. Sólo después de eso, evaluar un puente propio de `Display.processMessages()`/`Display.sync()` si el
+       park resulta estar en código de plataforma (LWJGL/ GLFW), que es terreno del port. **No** modificar
+       `RenderContextQueueItem.waitUntilFinished()`: es concurrencia real del juego; si algún día se puentea,
+       documentarlo en `docs/decisions.md` y nunca como un stub que simule éxito.
+    e. Build `--with-game` en primer plano (~7 min) y suite real con `PZ_REAL_TEST_PORT=8093`; actualizar los
+       asserts de la spec según el nuevo stop real (nunca relajar Bullet/GL/ventana/ícono).

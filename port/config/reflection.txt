@@ -1,2 +1,65 @@
 # Explicit allowlist, one class per line. Expand only from real exposure metadata.
 port.demo.ReflectionProbe
+
+# JAXB bean classes: names only, from scanning the pinned copy for references to
+# javax/xml/bind/annotation/Xml* in each .class constant pool (tools scan, 2026-10-28).
+# Needed because port.runtime.PortXmlBeans reads these via reflection (fields, annotations,
+# getDeclaredConstructor). No game content is stored here, only class names.
+zombie.FileGuidPair
+zombie.FileGuidTable
+zombie.characters.AnimStateTriggerXmlFile
+zombie.characters.CharacterInputBindingSet
+zombie.characters.CharacterInputBindingSet$Axis2dBinding
+zombie.characters.CharacterInputBindingSet$ButtonAxis1dBinding
+zombie.characters.CharacterInputBindingSet$ButtonAxis2dBinding
+zombie.characters.CharacterInputBindingSet$ButtonBinding
+zombie.characters.TriggerSetAnimationRecorderFile
+zombie.characters.TriggerXmlFile
+zombie.core.math.IInterpolator
+zombie.core.math.interpolators.LerpEaseInQuad
+zombie.core.math.interpolators.LerpEaseOutInQuad
+zombie.core.math.interpolators.LerpEaseOutQuad
+zombie.core.math.interpolators.LerpLinear
+zombie.core.math.interpolators.LerpOne
+zombie.core.math.interpolators.LerpPolyline
+zombie.core.math.interpolators.LerpPolyline$PolylinePoint
+zombie.core.math.interpolators.LerpSequence
+zombie.core.math.interpolators.LerpSequence$LerpSequenceEntry
+zombie.core.math.interpolators.LerpZero
+zombie.core.math.interpolators.xml.InterpolatorSlot
+zombie.core.profiling.TriggerGameProfilerFile
+zombie.core.skinnedmodel.advancedanimation.Anim2DBlend
+zombie.core.skinnedmodel.advancedanimation.Anim2DBlendTriangle
+zombie.core.skinnedmodel.advancedanimation.AnimBoneWeight
+zombie.core.skinnedmodel.advancedanimation.AnimCondition
+zombie.core.skinnedmodel.advancedanimation.AnimCondition$Type
+zombie.core.skinnedmodel.advancedanimation.AnimEvent
+zombie.core.skinnedmodel.advancedanimation.AnimEvent$AnimEventTime
+zombie.core.skinnedmodel.advancedanimation.AnimEventFlagWhileAlive
+zombie.core.skinnedmodel.advancedanimation.AnimEventSetVariable
+zombie.core.skinnedmodel.advancedanimation.AnimNode
+zombie.core.skinnedmodel.advancedanimation.AnimTransition
+zombie.core.skinnedmodel.advancedanimation.GrappleOffsetBehaviour
+zombie.core.skinnedmodel.animation.BoneAxis
+zombie.core.skinnedmodel.population.BeardStyle
+zombie.core.skinnedmodel.population.BeardStyles
+zombie.core.skinnedmodel.population.ClothingDecal
+zombie.core.skinnedmodel.population.ClothingDecalGroup
+zombie.core.skinnedmodel.population.ClothingDecals
+zombie.core.skinnedmodel.population.ClothingItemReference
+zombie.core.skinnedmodel.population.ClothingItemXML
+zombie.core.skinnedmodel.population.HairStyle
+zombie.core.skinnedmodel.population.HairStyle$Alternate
+zombie.core.skinnedmodel.population.HairStyles
+zombie.core.skinnedmodel.population.Outfit
+zombie.core.skinnedmodel.population.OutfitManager
+zombie.core.skinnedmodel.population.VoiceStyle
+zombie.core.skinnedmodel.population.VoiceStyles
+zombie.debug.DebugOptionsXml
+zombie.debug.DebugOptionsXml$OptionNode
+zombie.iso.sprite.shapers.FloorShaperAttachedSprites$Settings
+zombie.iso.sprite.shapers.FloorShaperAttachedSprites$Settings$ASBorderSetting
+zombie.iso.sprite.shapers.FloorShaperDeDiamond$Settings
+zombie.iso.sprite.shapers.FloorShaperDeDiamond$Settings$BorderSetting
+zombie.iso.sprite.shapers.SpritePaddingSettings$Settings
+zombie.popman.ZombieTriggerXmlFile

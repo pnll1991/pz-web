@@ -40,7 +40,13 @@ public final class StartupProgress implements ClassHolderTransformer {
         "java.io.BufferedWriter",
         "java.io.OutputStreamWriter",
         "java.io.FileWriter",
-        "java.lang.Thread");
+        "java.lang.Thread",
+        // Round 30: PZXmlUtil#write() reaches createNewDocument():returned and then nothing. Its
+        // next calls are the JAXB marshaller allocator and the JAXBContext lookup, so those are
+        // now observed explicitly (entry-only classes, no name guessing).
+        "zombie.util.PZXmlUtil$MarshallerAllocator",
+        "zombie.util.PZXmlUtil$MarshallerAllocator$1",
+        "zombie.util.PZXmlUtil$UnmarshallerAllocator");
     // Round 29 close: the exact park is now bounded. The last game boundary is
     // PZXmlUtil#createNewDocument()Lorg/w3c/dom/Document;:returned inside PZXmlUtil#write(), and
     // nothing after it is reached. Everything between that point and the file write is OUR compat
@@ -48,14 +54,36 @@ public final class StartupProgress implements ClassHolderTransformer {
     // Only the XML write path is instrumented so the bounded ring keeps the park point instead of
     // filling with unrelated shim traffic. port.shim.BrowserProgress is deliberately excluded: it
     // is the recorder itself and would recurse.
+    // Round 30: the prefix above produced ZERO boundaries, because the port.compat.* rename
+    // happens BEFORE this transformer runs, so the names it sees are already the standard
+    // javax.xml/org.w3c.dom/org.xml.sax ones. Instrument those names post-rename instead: the
+    // ones we ship are our own code, and the rest (the JAXB shipped by the pinned jar) is
+    // observed only, never replaced here.
     private static final Set<String> OWN_PREFIXES = Set.of(
-        "port.compat.javax.xml.",
+        "javax.xml.",
+        "org.w3c.dom.",
+        "org.xml.sax.",
         "port.shim.BrowserDom");
     private static boolean own(String name) {
         for (String prefix : OWN_PREFIXES) if (name.startsWith(prefix)) return true;
         return false;
     }
     private static final Set<String> METHODS = Set.of(
+        // Round 30: the JAXB path (JAXBContext.newInstance -> ContextFinder.find) uses reflection
+        // and ServiceLoader, both of which are async in TeaVM and therefore able to park a fiber.
+        // These are entry-only observations of TeaVM's own classlib, not game code.
+        "java.util.ServiceLoader#load(Ljava/lang/Class;)Ljava/util/ServiceLoader;",
+        "java.util.ServiceLoader#loadIterator()Ljava/util/Iterator;",
+        "java.lang.Class#forName(Ljava/lang/String;)Ljava/lang/Class;",
+        "java.lang.Class#getMethod(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;",
+        "java.lang.reflect.Method#invoke(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+        "java.lang.ClassLoader#getResource(Ljava/lang/String;)Ljava/net/URL;",
+        // ThreadLocal.get() is used by PZXmlUtil (documentBuilders and MarshallerAllocator are
+        // ThreadLocal.withInitial) and is async in TeaVM outside the main thread. Method-only so
+        // the bounded ring is not flooded by every ThreadLocal call in the boot.
+        "java.lang.ThreadLocal#get()Ljava/lang/Object;",
+        "java.lang.ThreadLocal#initialValue()Ljava/lang/Object;",
+        "zombie.core.logger.ExceptionLogger#logException(Ljava/lang/Throwable;Ljava/lang/String;)V",
         "zombie.Lua.LuaManager#init()V",
         "zombie.core.logger.LoggerManager#init()V",
         "zombie.core.physics.Bullet#init()V",

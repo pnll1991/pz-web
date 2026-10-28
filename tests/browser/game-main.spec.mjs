@@ -41,11 +41,42 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     const boundary=await page.evaluate(()=>pzGameProgress.map(event=>event.label));
     expect(boundary).toContain('zombie.GameWindow#mainThreadInit()V:entered');
     expect(boundary).not.toContain('zombie.GameWindow#mainThreadInit()V:returned');
-    expect(boundary).toContain('zombie.debug.DebugOptions#initMessaging()V:entered');
     expect(boundary).toContain('zombie.core.opengl.RenderThread#renderStep()Z:returned');
+    // Round 30 (verified with port/target/diag38b/39/40/41/42.mjs): the own JAXB bridge lets
+    // PZXmlUtil.write finish, so DebugOptions.init()/initMessaging() RETURN now and the boot goes
+    // on through GameProfiler.init(), the sound managers and VoiceManager.loadConfig().
+    expect(boundary).toContain('zombie.debug.DebugOptions#initMessaging()V:entered');
+    expect(boundary).toContain('zombie.debug.DebugOptions#initMessaging()V:returned');
+    expect(boundary).toContain('zombie.debug.DebugOptions#init()V:returned');
+    expect(boundary).toContain('zombie.util.PZXmlUtil#tryWrite(Ljava/lang/Object;Ljava/io/File;)Z:returned');
+    expect(boundary).toContain('zombie.GameProfiler#init()V:returned');
+    expect(boundary).toContain('zombie.core.raknet.VoiceManager#loadConfig()V:returned');
+    expect(boundary).toContain('javax.xml.bind.JAXBContext#newInstance([Ljava/lang/Class;)Ljavax/xml/bind/JAXBContext;:returned');
+    expect(boundary).toContain('port.shim.BrowserDom#serialize(Lorg/w3c/dom/Node;)Ljava/lang/String;:returned');
+    // New stop: the game thread asks the render thread to run something and waits on
+    // RenderContextQueueItem.waitLock, while the render fiber is suspended in the rate-limited
+    // Thread.yield of its renderLoop. Neither fiber advances, so the trace stays frozen.
+    expect(boundary).toContain('zombie.core.opengl.RenderThread#invokeQueryOnRenderContext(Lzombie/util/lambda/Invokers$Params0$Boolean$ICallback;)Z:entered');
+    expect(boundary).not.toContain('zombie.core.opengl.RenderThread#invokeQueryOnRenderContext(Lzombie/util/lambda/Invokers$Params0$Boolean$ICallback;)Z:returned');
+    expect(boundary).toContain('zombie.core.opengl.RenderThread#invokeOnRenderContext(Ljava/lang/Runnable;)V:entered');
+    expect(boundary).not.toContain('zombie.core.opengl.RenderThread#invokeOnRenderContext(Ljava/lang/Runnable;)V:returned');
+    expect(boundary).not.toContain('zombie.gameStates.MainScreenState#enter()V:entered');
     // Save the raw park tail for the next round without disassembling anything.
     const ring=await page.evaluate(()=>(globalThis.pzGameTrace||[]).map(event=>event.label));
     await testInfo.attach('park-ring-tail',{body:ring.slice(-60).join('\n'),contentType:'text/plain'});
+    // Round 30: prove the two fibers really stand still (not a slow boot): the trace length and the
+    // render counters must not grow over a further 12 s of event loop.
+    const frozen=await page.evaluate(async()=>{
+      const before={trace:(globalThis.pzGameTrace||[]).length,progress:(globalThis.pzGameProgress||[]).length,
+        swap:globalThis.pzRuntime?.window?.swapCount??null,gl:Object.values(globalThis.pzRuntime?.gl?.calls||{}).reduce((a,b)=>a+b,0)};
+      await new Promise(resolve=>setTimeout(resolve,12000));
+      const after={trace:(globalThis.pzGameTrace||[]).length,progress:(globalThis.pzGameProgress||[]).length,
+        swap:globalThis.pzRuntime?.window?.swapCount??null,gl:Object.values(globalThis.pzRuntime?.gl?.calls||{}).reduce((a,b)=>a+b,0)};
+      return {before,after};
+    });
+    await testInfo.attach('frozen-counters',{body:JSON.stringify(frozen,null,2),contentType:'application/json'});
+    expect(frozen.after.progress).toBe(frozen.before.progress);
+    expect(frozen.after.swap).toBe(frozen.before.swap);
     const bullet = await page.evaluate(async()=>{const b=pzRuntime.bullet;return {loaded:!!b,loadedFor:b?.loadedFor,version:b?.version(),logging:b?.loggingInitialised(),world:b?.createWorld(0,-9.82,0),count:b?.bodyCount(),manifest:b?.manifest?.bullet?.version,wasmSha:b?.manifest?.module?.wasm_sha256};});
     expect(bullet.loaded).toBe(true); expect(bullet.loadedFor).toContain('PZBullet64'); expect(bullet.manifest).toBe('2.83');
     expect(bullet.version).toMatch(/^Bullet 283 \(upstream bullet3-2\.83, wasm32 port build\)$/);
@@ -97,7 +128,7 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     expect(trace).toContain('Unable to determine available GPU memory');
     expect(pageErrors).toEqual([]);
   } finally {
-    const screenshot='test-results/game-main-round29.png';
+    const screenshot='test-results/game-main-round30.png';
     await page.screenshot({path:screenshot,fullPage:true});
     const windowSystem=await page.evaluate(()=>globalThis.pzRuntime?.window?.events || []);
     const progress=await page.evaluate(()=>globalThis.pzGameProgress || []);

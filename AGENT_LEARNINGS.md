@@ -264,3 +264,32 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Error de cuenta: el handoff decía "3 h 30 min transcurridos"; `grep 'lanzando ronda' supervisor.log`
   + `date` dieron 2 h 33 min. Mejor enfoque: calcular el tiempo restante con esas dos lecturas
   reales antes de decidir "solo cierre documentado".
+
+## 2026-10-28 — Ronda 30
+- Error: el handoff de la Ronda 29 afirmaba que `DebugOptionsXml` no tenía anotaciones JAXB. Sí las tiene
+  (scan del jar: 58 clases bean con `javax.xml.bind.annotation.*`). Mejor enfoque: antes de asumir “este bean
+  no usa JAXB”, correr el scan de anotaciones sobre el jar fijado y citar el conteo.
+- Error: `PortUnmarshaller` llamaba `readAllBytes()` dos veces sobre el mismo stream (la segunda lectura ya
+  devolvía 0 bytes) y el parseador quedaba con XML vacío. Mejor enfoque: leer una vez en un `byte[]` propio y
+  derivar todas las vistas (BOM, charset, snippet) de ese buffer.
+- Error: busqué las anotaciones reflectables en `boot.wasm` con el patrón `$$$_impl` y concluí “no se emitieron”.
+  TeaVM 0.16 emite `$$_impl`. Mejor enfoque: confirmar el sufijo real con `grep -o 'Xml[A-Za-z]*\$_*impl'` sobre
+  el wasm antes de concluir ausencia.
+- Error: métodos declarados package-private en `port.runtime` y llamados desde `port.compat` (distinto paquete)
+  → `mvn compile` falló dos veces. Mejor enfoque: todo helper cruzado entre `port.compat` y `port.runtime`
+  se declara `public` desde el inicio.
+- Error: `javap` sin `source scripts/env.sh` (el JDK está en `.toolchain/`) y sin `cd /tmp/tm30` donde están las
+  clases extraídas del jar. Mejor enfoque: `source scripts/env.sh` y `cd /tmp/tm30` como prefijo fijo de todo
+  `javap` de la ronda.
+- Error de observación: `pzGameProgress` **deduplica por label**, así que interpreté “no hay un segundo
+  `acquireContextReentrant():entered`” como “el loop no itera”. Eso no se puede deducir de una lista dedup.
+  Mejor enfoque: para preguntas de iteración usar un contador por label, no una lista dedup ni un anillo que
+  satura (el anillo de 400 quedó lleno de escrituras de `FileOutputStream`).
+- Error de atribución: atribuí el `Thread#sleep(J)V:entered` al `renderLoop()` del juego. `javap -c` muestra que
+  `renderLoop()` tiene **0** `Thread.sleep` (los 2 están en `lambda$uncaughtException$0()`). Mejor enfoque: antes
+  de nombrar la causa de un park, contar las llamadas al método sospechoso en el bytecode del llamador.
+- Patrón a evitar: `pgrep -af` inunda tokens por los argumentos largos de los procesos. Usar `ss -ltnp` para
+  puertos y `ls`/`stat` para procesos de build.
+- Patrón útil (reutilizar): para decidir “¿boot lento o interbloqueo?”, muestrear dos veces el mismo estado
+  con 25 s de diferencia y comparar contadores (`progress.length`, `swapCount`, GL total). Es más concluyente
+  que leer logs.
