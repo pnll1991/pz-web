@@ -63,7 +63,12 @@ public final class JdkSupport {
         yieldCalls++;
         if (yieldCalls % YIELD_GRANT != 0) return;
         try {
-            Thread.sleep(0L);
+            // Round 31: Thread.sleep(0L) suspends the fiber but TeaVM 0.16.0 registers no timer for
+            // it on WasmGC (the page creates exactly one setTimeout: the renderThread start), so the
+            // suspended render fiber was never resumed and the game thread stayed parked on
+            // RenderContextQueueItem.waitLock. BrowserYield.pause suspends on a real macrotask, which
+            // the browser event loop does fire.
+            port.shim.BrowserYield.pause(0);
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
         }

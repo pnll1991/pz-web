@@ -379,3 +379,212 @@ Cambios de esta ronda:
        documentarlo en `docs/decisions.md` y nunca como un stub que simule éxito.
     e. Build `--with-game` en primer plano (~7 min) y suite real con `PZ_REAL_TEST_PORT=8093`; actualizar los
        asserts de la spec según el nuevo stop real (nunca relajar Bullet/GL/ventana/ícono).
+16. Ronda 31 (2026-10-28 07:2x-07:3x -03), paso a+ (cambio 1): `port/src/main/java/port/shim/BrowserProgress.java`
+    — el JSBody de `record` ahora además mantiene `globalThis.pzGameCounts`: `counts[label]++` y
+    `counts[label+'#last']=t`. La lista deduplicada `pzGameProgress` sigue intacta (el reporte/suite la lee),
+    así que el cambio es observación pura y el storage queda acotado por el conjunto de labels.
+17. Ronda 31, paso b (cambio 2): `port/src/main/java/port/compiler/StartupProgress.java` — agregados
+    `EXTRA_CLASSES` (`org.lwjglx.opengl.Sync`, `zombie.core.opengl.RenderContextQueueItem`) y
+    `EXTRA_METHODS` con entradas/salidas de: ciclo de plataforma del render loop (`Display.processMessages/
+    update/update(Z)/sync(I)/swapBuffers/isCloseRequested/getWidth/getHeight`), el handoff atascado
+    (`RenderContextQueueItem.invoke/waitUntilFinished/notifyWaitingListeners`), `SpriteRenderer`
+    (`notifyRenderStateQueue/renderQueued/NewFrame/isWaitingForRenderState/waitForReadyState/waitForReadySlotToOpen`),
+    los monitores de TeaVM post-`@Rename` (`java.lang.Object#wait/#wait(J)/#wait(JI)/#notify/#notifyAll`),
+    nuestro `JdkSupport#yield/onSpinWait`, y el scheduler propio de TeaVM (`Fiber.suspend/start/resume`,
+    `EventQueue.offer/processSingle/stop`). Descriptores verificados con `javap` sobre el jar fijo y con las
+    sources de TeaVM 0.16.0 (`TObject` usa `@Rename("wait")` sobre `wait0`, y `waitImpl(JI,AsyncCallback)` es
+    la que suspende; `TThread.sleep` es `@Async` vía `EventQueue.offer(SleepHandler, now+millis)`).
+    `mvn -f port/pom.xml compile` con `-Xmx8g` y `-Dmaven.repo.local=$PZ_WEB_ROOT/.toolchain/m2`: **OK** (rc=0).
+    Nota de entorno: `mvn` sin `-Dmaven.repo.local` falla con "Could not create local repository at
+    /home/agente47/.m2/repository" (la sandbox no permite escribir ahí); siempre usar el repo de `.toolchain/m2`.
+18. Ronda 31, paso b2 (cambio 3): se agregaron además a `EXTRA_METHODS` las fronteras del scheduler propio de
+    TeaVM (`org.teavm.runtime.Fiber#suspend/start/resume`, `EventQueue#offer(Event)/offer(Event,J)/
+    processSingle/stop`) porque el stop medido es un `Thread#sleep(J)V:entered` que ningún timer reactiva.
+    Diag nuevo `port/target/diag45.mjs`: muestrea a los 170 s y 25 s después y reporta **contadores** por
+    familia de labels (`Thread#yield`, `JdkSupport#yield`, `Thread#sleep`, `Sync#sync`, `Display#*`,
+    `flushInvokeQueue`, `RenderContextQueueItem#invoke/waitUntilFinished`, `Object#wait/notify`,
+    `Fiber#*`, `EventQueue#*`) + delta, `swapCount`, GL total, `dispatchedEvents`, phase y cola del anillo.
+19. Ronda 31, **error registrado en AGENT_LEARNINGS.md**: `scripts/build.sh --with-game` con
+    `MAVEN_OPTS=-Xmx8g` (sin `-Xss16m`) dio `BUILD FAILURE ... compile-wasm-gc ... StackOverflowError`
+    a los 6:07 min y dejó `port/target/web/game/build-state.json` en `success:false`, `status:
+    "compiler-failed"`, `wasm_bytes:0` y **sin** `boot.wasm` (el round30 quedó borrado). Causa: env.sh
+    pone `-Xmx20g -Xss16m` y asignar `MAVEN_OPTS` reemplaza ambos. Ahora se usa `MAVEN_OPTS="-Xmx8g -Xss16m"`.
+    Segundo intento en curso: `build-round31b-game.log`.
+20. Ronda 31, build y diag (cambio 4): `build-round31b-game.log` con `MAVEN_OPTS="-Xmx8g -Xss16m"` → **BUILD
+    SUCCESS** en 6:43 min; `build-state.json success:true`, `boot.wasm` 143,455,368 B, classes 10218, methods
+    72042, pico RSS 6.97 GiB. `diag45.mjs` (dev-server 8092, muestra A t≈170 s, B +25 s) dio el stop exacto,
+    con **contadores** (todo idéntico A vs B, `phase:"starting"`, `swap:2`, `gl:267`, `dispatched:0`):
+    - `RenderThread#renderLoop():entered` = **1** (nunca retornó).
+    - El loop de render iteró **exactamente 64 veces** y paró ahí: `renderStep`, `flushInvokeQueue`,
+      `Display#processMessages`, `Display#isCloseRequested`, `SpriteRenderer#waitForReadyState` y
+      `Thread#yield`/`JdkSupport#yield` = **64 entradas/64 (o 63) retornos**. 64 = `YIELD_GRANT`: nuestra
+      cedencia rate-limitada suspende en la llamada 64.
+    - `port.runtime.JdkSupport#yield():entered` 64 → en la 64 llama `Thread.sleep(0L)`:
+      `Thread#sleep(J)V:entered` = **1** y **ningún `returned`**. El fiber de render quedó suspendido en ese
+      `sleep(0)` y **nunca fue reanudado** (`Fiber#suspend:entered`=2 con 0 retornos; `Fiber#start():returned`=2
+      ⇒ los dos fibers devolvieron al event loop de JS; `EventQueue#offer(Event,J)` = 1; `Fiber#resume` = 0).
+    - El fiber del juego, después, llegó a `RenderContextQueueItem#waitUntilFinished():entered`=1 y
+      `Object#wait/#wait(J)/#wait(JI):entered`=1 (0 retornos) → parkado en `waitLock`. `RenderContextQueueItem#invoke`
+      = **0**: el item encolado jamás se ejecutó, así que nunca hay `notifyAll` del `waitLock`.
+    - `SpriteRenderer#notifyRenderStateQueue()` 65 y `java.lang.Object#notifyAll()` = 4,227,205 llamadas
+      (todas antes del park): existe un `notifyAll` masivo pero **no** del `waitLock` del item pendiente.
+    Conclusión (sin inferencias): **el port se detiene en la primera suspensión real del fiber de render**,
+    que es nuestro propio `JdkSupport.yield()` → `Thread.sleep(0L)`. Ningún timer de TeaVM (`teavmAsync.offer`
+    = `setTimeout`) lo reanudó, por eso `flushInvokeQueue` nunca vuelve a correr y el hilo de juego queda
+    parkado en `waitLock`. El interbloqueo de la ronda 30 era este síntoma, no el `waitLock` en sí.
+21. Ronda 31, paso 1 (cambio 5): `port/web/game.mjs` — envoltorio **de observación** del import
+    `teavmAsync.offer/kill` usando el hook documentado `installImports` del loader de TeaVM
+    (`TeaVM.wasmGC.load(url, {installImports})`). Cuenta ofertas, timers que disparan, errores del
+    callback rethrown y `kill`s, en `globalThis.pzAsync`. Además se envolvió `globalThis.setTimeout`
+    para registrar **todos** los timers de la página con su stack de origen (`globalThis.pzTimers`).
+    Diags nuevos `port/target/diag46..49.mjs` (misma muestra de 170 s + 25 s).
+22. Ronda 31, **medición decisiva** (diag49): la página crea **exactamente UN `setTimeout`** en toda
+    su vida — `delay 0`, stack `org.teavm.runtime.EventQueue::offerWasmGC` → `offer` (game.mjs) →
+    `setTimeout` — y ese es el `EventQueue.offer` de `TThread.start()` del renderThread
+    (`EventQueue#offer(Event,J)` = 1 entrada/1 retorno, t≈160.479 s). `pzAsync`: offers=1, fired=1,
+    errors=0, kills=0. Después: el renderLoop itera 64 veces, en la 64 `JdkSupport.yield()` llama
+    `Thread#sleep(J)V` (entered=1, **nunca** retorna) y **no se crea ningún otro timer**
+    (`timers.calls` sigue en 1). `Fiber#suspend:entered`=2 con 0 retornos y `Fiber#resume`=0.
+    Conclusión: **la suspensión de `Thread.sleep(0L)` no registra ningún timer**, por eso ningún
+    `setTimeout` la reanuda. No es un `setTimeout` perdido ni un error del callback: la llamada que
+    debería ofrecer el `SleepHandler` nunca llega a `EventQueue.offerWasmGC`.
+23. Ronda 31, paso 2 (cambio 6): `port/src/main/java/port/compiler/StartupProgress.java` — para ver
+    qué rama corre, se instrumentan las clases propias de TeaVM `java.lang.Thread$SleepHandler`
+    (`org.teavm.classlib.java.lang.TThread$SleepHandler` post-`@Rename`) y
+    `org.teavm.runtime.Fiber$AsyncCallbackImpl` (clases completas, sin adivinar descriptores), más
+    los métodos `Thread#sleep(JLorg/teavm/interop/AsyncCallback;)V`, `Platform#schedule(...)` y
+    `Platform#postpone(...)`. Descriptores verificados con `javap` sobre
+    `.toolchain/m2/org/teavm/teavm-classlib/0.16.0/teavm-classlib-0.16.0.jar` y `teavm-core-0.16.0.jar`
+    (`TThread$SleepHandler(TThread,AsyncCallback)`, `Fiber$AsyncCallbackImpl.complete(Object)/error(Throwable)`,
+    `Platform.schedule(PlatformRunnable,I)`, `EventQueue.offer(Event)` **existe** y por eso
+    `Platform.postpone` (que la llama) también).
+    **Error registrado en AGENT_LEARNINGS.md**: incluí `EventQueue#offer(Lorg/teavm/runtime/EventQueue$Event;)I`
+    dos veces en `Set.of` (una ya estaba del paso b) y el build falló en 16 s con
+    `ExceptionInInitializerError: duplicate element: ...` (falla temprano, no 6 min). Arreglado
+    eliminando el duplicado; rebuild `build-round31c-game.log`.
+24. Ronda 31, paso 3 (cambio 7) `diag50.mjs` + corrida 170 s (dev-server 8092): **confirmado con contadores**
+    que la instrumentación de `Thread$SleepHandler` y `Fiber$AsyncCallbackImpl` (ítem 23) produce **cero
+    fronteras**, mientras `boot.wasm` sí contiene los strings de esas etiquetas (`Thread$SleepHandler#<init>`,
+    `#run`, `#interrupted`, `Fiber$AsyncCallbackImpl#complete/error/removePendingCall`) ⇒ el transformer las
+    compiló pero **nunca se ejecutaron**: TeaVM 0.16.0 no llega a esa implementación en este `sleep`. Mismo
+    sample: `timers.calls=1`, `async.offers=1/fired=1/errors=0/kills=0`, `JdkSupport#yield` 64 entradas/63
+    retornos, `Thread#sleep(J)V:entered`=1 sin retorno, `Fiber#suspend:entered`=2 con 0 retornos,
+    `Fiber#resume`=0, `Object#wait*`=1 sin retorno, `RenderContextQueueItem#invoke`=0, `Object#notifyAll`
+    4,227,205, `totalLabels=483`, `totalEvents=51,374,774`, `phase:"starting"`, `swap:2`, `gl:267`.
+25. Ronda 31, paso 4 (cambio 8, **arreglo real, no stub**): `port/src/main/java/port/shim/BrowserYield.java`
+    nuevo — `@Async pause(int millis)` cuyo `AsyncCallback` se completa desde un `setTimeout` real del
+    navegador (`@JSBody`). `port/runtime/JdkSupport.yield()` ahora suspende con `BrowserYield.pause(0)` en vez
+    de `Thread.sleep(0L)`, que era la suspensión que **no registraba ningún timer**. No simula éxito: si el
+    timer no dispara, el fiber queda parkado y los diags lo muestran igual que antes. `mvn -f port/pom.xml
+    compile` con `-Xmx8g -Xss16m` y `-Dmaven.repo.local=$PZ_WEB_ROOT/.toolchain/m2`: **OK** (rc=0, ~5 s).
+26. Ronda 31, paso 5 (cambio 9): `StartupProgress.EXTRA_CLASSES` incluye ahora `port.shim.BrowserYield` para
+    contar suspensiones/reanudaciones del handoff propio. Build `--with-game` `build-round31d-game.log` en curso.
+27. Ronda 31, paso 6 (build + diag): `build-round31e-game.log` **BUILD SUCCESS** (5:47 min, rc=0), `boot.wasm`
+    143,461,083 B, classes 10222, methods 72052, pico RSS 6.97 GiB. `diag52.log` (170 s + 25 s, dev-server 8092)
+    muestra el **avance real** del handoff nuevo: `port.shim.BrowserYield#pause(I)V:entered=1`,
+    `BrowserYield#lambda$pause$0:entered=1`, `Fiber$AsyncCallbackImpl#complete:entered=1`,
+    `Fiber$AsyncCallbackImpl#removePendingCall:entered/returned=1`, `Thread#setCurrentThread:entered/returned=1`
+    y **`org.teavm.runtime.Fiber#resume():entered=1` + `Fiber#start():entered=3`** ⇒ el fiber de render **sí es
+    reanudado** por el timer (antes: `Fiber#resume=0`, `Fiber#start=2`). `timers.calls=2/fired=2`.
+28. **Error registrado en AGENT_LEARNINGS.md**: el timer del functor llamaba `resume.complete()` →
+    `TypeError: resume.complete is not a function` (pageerror). Un `@JSFunctor` de TeaVM es la función JS en sí;
+    corregido a `resume()` (misma convención que `BrowserPersistence`).
+29. Ronda 31, paso 7 (crash nuevo, medido con `diag53.mjs`): tras el fix del functor aparece
+    `RuntimeError: dereferencing a null pointer` con stack
+    `java.lang.String::length <- org.teavm.jso.impl.wasmgc.WasmGCJSRuntime::stringToJs <- port.shim.BrowserProgress::record
+    <- port.shim.BrowserYield::pause <- JdkSupport::yield <- Thread::yield <- RenderThread::renderLoop <-
+    MainScreenState::main <- Fiber::runMain <- Fiber::resume <- Fiber$AsyncCallbackImpl::complete <-
+    BrowserYield$pause$lambda$_2_0::complete$exported$0 <- game.mjs setTimeout`.
+    El anillo muestra `null` en 3 entradas: **al reanudarse el fiber, TeaVM re-ejecuta el cuerpo instrumentado
+    desde el medio y las cadenas que el transformer inyectó todavía no están materializadas** (son `null`), y
+    `record` las pasaba a la conversión JS. Arreglado en `BrowserProgress`: `record`/`trace` convierten `null`
+    en el centinela `"(resumed-frame)"` (observación propia del port, no cambia el juego). `mvn compile` OK.
+30. Ronda 31, build `build-round31f-game.log` en curso con el fix del `null`. Suite real previa
+    (`verification-round31-real.log`, 10:23-10:26, `PZ_REAL_TEST_PORT=8093`): **4/5 pasó**; `game-main` falló
+    **sólo** por `expect(pageErrors).toEqual([])` con `["dereferencing a null pointer"]` (ítem 29). Los demás
+    asserts de esta ronda siguen vigentes (DebugOptions/PZXmlUtil/GameProfiler/VoiceManager/JAXB/BrowserDom,
+    `invokeQueryOnRenderContext` entered y no returned, ventana/ícono/GL, oshi `Unsupported platform`, Bullet).
+31. Ronda 31, paso 8 (dos fixes finales, `mvn compile` OK rc=0):
+    a. `port/shim/BrowserProgress.java`: `record`/`trace` ahora **omiten** la frontera cuando `label == null`
+       (`if (label != null) recordNative(label)`). La variante anterior (sustituir por la constante
+       `"(resumed-frame)"`) **no arregló nada**: build `build-round31f-game.log` (BUILD SUCCESS, boot.wasm
+       143,461,172 B) dio el mismo `RuntimeError: dereferencing a null pointer` en `String::length <-
+       WasmGCJSRuntime::stringToJs <- record` (diag54), porque una constante String nueva se materializa con
+       el mismo mecanismo diferido. Por eso ahora se salta, sin crear cadenas.
+    b. `port/shim/BrowserYield.java`: se **desinstrumentó** el método que suspende (quitado de
+       `StartupProgress.EXTRA_CLASSES`) y el conteo pasa al lado JS dentro del propio `@JSBody`:
+       `globalThis.pzYield = {pauses, resumes}`. Un contador JS no puede crashear el módulo.
+32. Ronda 31, cierre (build `build-round31g-game.log` con ambos fixes; en curso al cortar la ronda).
+    **No** se creó `MENU_REACHED`: el menú sigue sin verse (`phase:"starting"`, `swapCount:2`, `gl:267`,
+    `dispatched:0`, `menuRendered:false`).
+
+## Ronda 31 (cierre 10:50) — iniciada 06:57:04 (-03), límite de corte 10:57
+
+**Archivos cambiados en esta ronda** (ningún commit propio; el vigilante commitea):
+- `port/src/main/java/port/shim/BrowserProgress.java` — contadores por label (`globalThis.pzGameCounts`)
+  y, al cierre, `record`/`trace` omiten las fronteras con `label == null` (crash WasmGC en fiber reanudado).
+- `port/src/main/java/port/compiler/StartupProgress.java` — `EXTRA_CLASSES`/`EXTRA_METHODS` nuevos
+  (ciclo de plataforma del render loop, `RenderContextQueueItem`, `SpriteRenderer`, monitores TeaVM
+  post-`@Rename`, `Fiber.suspend/start/resume`, `EventQueue.offer/processSingle/stop`, `Thread$SleepHandler`,
+  `Fiber$AsyncCallbackImpl`, `Platform.schedule/postpone`); al cierre se **retiró** `port.shim.BrowserYield`
+  de la instrumentación (es el método que suspende y ahí las cadenas del transformer son `null`).
+- `port/src/main/java/port/shim/BrowserYield.java` — **nuevo**: `@Async pause(int)` cuyo `AsyncCallback`
+  completa un `setTimeout` real del navegador; `globalThis.pzYield = {pauses,resumes}` en el propio `@JSBody`.
+- `port/src/main/java/port/runtime/JdkSupport.java` — `yield()` suspende con `BrowserYield.pause(0)`
+  en lugar de `Thread.sleep(0L)`.
+- `port/web/game.mjs` — wrapper observacional del import `teavmAsync.offer/kill` (`installImports`) y de
+  `globalThis.setTimeout` (`globalThis.pzTimers` con stack de origen).
+- Diags nuevos `port/target/diag45..53.mjs` + logs `diag45..54.log`, builds `build-round31{b..g}-game.log`.
+
+**Última etapa alcanzada hoy (verificada con diag52/diag53 y suite real):** el arranque llega a
+`MainScreenState#main` → `Display.init/create` → `RenderThread#renderLoop()` con **64 iteraciones reales**
+(`Display.processMessages/isCloseRequested/getWidth/getHeight`, `flushInvokeQueue`, `notifyRenderStateQueue` = 64/65),
+luego el fiber de render se suspende en el handoff propio y **por primera vez es reanudado**:
+`BrowserYield#lambda$pause$0:entered=1` → `Fiber$AsyncCallbackImpl#complete:entered=1` →
+`removePendingCall:entered/returned=1` → `Thread#setCurrentThread:entered/returned=1` →
+**`Fiber#resume():entered=1`** y `Fiber#start():entered=3` (ronda 30: `resume=0`, `start=2`), con
+`timers.calls=2/fired=2`. El error exacto donde se detiene hoy es:
+`RuntimeError: dereferencing a null pointer` en `java.lang.String::length <-
+org.teavm.jso.impl.wasmgc.WasmGCJSRuntime::stringToJs <- port.shim.BrowserProgress::record <-
+port.shim.BrowserYield::pause <- JdkSupport::yield <- Thread::yield <- RenderThread::renderLoop`,
+disparado **durante la reanudación** (pila `Fiber::resume <- Fiber$AsyncCallbackImpl::complete <-
+BrowserYield$pause$lambda$_2_0::complete$exported$0 <- game.mjs setTimeout`). Fix aplicado al cierre
+(ítem 31): no registrar fronteras con `label == null` + desinstrumentar `BrowserYield`.
+
+**Estado del juego tras la reanudación:** todavía `state.phase:"starting"`, `swapCount:2`, `gl:267`,
+`dispatched:0`, `menuRendered:false`; `RenderContextQueueItem#invoke=0` y el hilo del juego sigue parkado en
+`Object#wait` de `waitLock` (`waitUntilFinished():entered=1`). **No** existe `MENU_REACHED`.
+
+**Bloqueo actual:** la reanudación del fiber de render funciona, pero el `pageerror` nulo del
+instrumentador abortaba la corrida; con el fix del cierre queda por comprobar si el loop vuelve a iterar
+y si `flushInvokeQueue()` ejecuta el item pendiente (lo que liberaría el `waitLock` del hilo de juego).
+
+**Siguientes pasos concretos (ronda 32), en orden:**
+1. Confirmar `build-round31g-game.log` (BUILD SUCCESS + `build-state.json success:true`) y servirlo en 8092.
+2. `PZ_DIAG_PORT=8092 node port/target/diag53.mjs` (200 s): exigir `pageErrors` vacío,
+   `pzYield.pauses/resumes > 1` y `timers.calls > 2`; si `JdkSupport#yield():entered` crece > 64, el loop
+   re-itera. Ahí mirar `RenderContextQueueItem#invoke` y `Object#notifyAll` del `waitLock`.
+3. Si el loop re-itera pero `invoke` sigue en 0: el `synchronized` de `RenderThread.flushInvokeQueue` /
+   `hasContext` es el siguiente candidato (observar `Sync#sync`, `Display#sync/update`, `hasContext`).
+   **No** modificar `RenderContextQueueItem.waitUntilFinished()` (concurrencia real del juego).
+4. Suite real `PZ_HOME=... PZ_REAL_TEST_PORT=8093 npx playwright test --config playwright.game.config.mjs`
+   y actualizar `tests/browser/game-main.spec.mjs`: quitar los asserts de contadores congelados (`frozen.after
+   .progress === frozen.before.progress`) si el loop vuelve a avanzar, y reubicar la captura
+   (`test-results/game-main-round31.png`) + histograma de píxeles con python; `screenshot_visually_checked:false`
+   salvo que se inspeccione la imagen. Nunca relajar Bullet/GL/ventana/ícono/oshi.
+5. Recordar límite de la spec: `test.setTimeout(330_000)` y que el `webServer` de `playwright.game.config.mjs`
+   usa `reuseExistingServer:false` (puerto 8093 propio, no reutilizar 8092).
+
+**Pruebas de esta ronda:**
+- `mvn -f port/pom.xml compile` con `-Xmx8g -Xss16m`: OK (rc=0, ~4-5 s) tras cada cambio.
+- Builds `--with-game`: round31b/c/e/f **BUILD SUCCESS**; round31a falló por StackOverflow (ver AGENT_LEARNINGS);
+  `build-round31g-game.log` en curso al cerrar.
+- `npm test` **19/19 OK**; `python3 -m unittest discover -s tests/python` **OK** (10).
+- Suite real `verification-round31-real.log` (10:23-10:26, puerto 8093): **4/5**; `game-main` falló sólo por
+  `expect(pageErrors).toEqual([])` con `["dereferencing a null pointer"]` (fix en ítem 31).
+33. Ronda 31, cierre real (10:50 -03): `build-round31g-game.log` **BUILD SUCCESS** (rc=0, 6:33 min),
+    `build-state.json success:true`, `boot.wasm` **143,460,420 B**, classes 10222, methods 72052, pico RSS
+    6.67 GiB. El dev-server 8092 ya lo sirve (ETag nuevo `W/"88d0844-1a182c72be9.f0a"`). Intento de verificación
+    rápida con `diag53.mjs` (espera 45 s) quedó cortado por el límite de la ronda (`timeout 120`, rc=124):
+    **quede pendiente confirmar que el `pageerror: dereferencing a null pointer` desapareció** con el fix del
+    ítem 31. Suites rápidas del cierre: `npm test` 19/19 OK y `python3 -m unittest discover -s tests/python` OK.

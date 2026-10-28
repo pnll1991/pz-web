@@ -293,3 +293,44 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Patrón útil (reutilizar): para decidir “¿boot lento o interbloqueo?”, muestrear dos veces el mismo estado
   con 25 s de diferencia y comparar contadores (`progress.length`, `swapCount`, GL total). Es más concluyente
   que leer logs.
+
+## Ronda 31 — error: `MAVEN_OPTS=-Xmx8g` sin `-Xss16m` reventó el compilador TeaVM
+- **Error**: `bash scripts/build.sh --with-game` con `MAVEN_OPTS=-Xmx8g` terminó en
+  `BUILD FAILURE ... compile-wasm-gc ... StackOverflowError` (341 frames de
+  `WasmBinaryRenderingVisitor.render`) después de 6 min de trabajo.
+- **Causa**: `scripts/env.sh` define `MAVEN_OPTS="${MAVEN_OPTS:--Xmx20g -Xss16m}"`. Al asignar
+  `MAVEN_OPTS=-Xmx8g` se reemplaza el valor por completo y se pierde `-Xss16m`; el goal
+  `exec-maven-plugin` renderiza el módulo Wasm con recursion profunda y con el stack por defecto
+  (1 MB) del JVM de Maven revienta con SOE.
+- **Patrón a evitar**: no reasignar `MAVEN_OPTS` con solo `-Xmx`; sobrescribe la línea completa de
+  flags que el entorno necesita.
+- **Mejor enfoque**: siempre `MAVEN_OPTS=-Xmx8g -Xss16m` para builds del juego (el límite de RAM
+  sigue siendo 8 GiB). Un fallo del compilador por stack no es un error del port: revisar primero
+  los flags del entorno antes de tocar código.
+
+## Ronda 31 — error: duplicado en `Set.of` de StartupProgress reventó el goal `compile-wasm-gc`
+- **Error**: al agregar observabilidad, escribí `"org.teavm.runtime.EventQueue#offer(Lorg/teavm/runtime/EventQueue$Event;)I"`
+  en el bloque nuevo de `EXTRA_METHODS` cuando ya estaba declarado en el bloque del paso b.
+  `bash scripts/build.sh --with-game` falló en 16 s con
+  `ExceptionInInitializerError ... Caused by: java.lang.IllegalArgumentException: duplicate element: ...`.
+- **Causa**: `java.util.Set.of(E,E,...)` lanza `IllegalArgumentException` por elementos duplicados, y el
+  conjunto se construye en el inicializador estático del transformer, antes de cualquier análisis.
+- **Patrón a evitar**: no duplicar keys cuando se amplían los `Set.of` de `StartupProgress`
+  (`EXTRA_CLASSES` / `EXTRA_METHODS` / `METHODS` comparten el mismo espacio de keys `clase#descriptor`).
+- **Mejor enfoque**: antes de agregar una key, buscarla en el archivo
+  (`grep -n 'key' port/src/main/java/port/compiler/StartupProgress.java`) o usar un `Set` acumulado.
+  Este fallo es barato (16 s) y temprano: vale la pena comprobarlo con `mvn -f port/pom.xml compile`
+  + un build corto antes de asumir que el instrumentation set es válido.
+
+## Ronda 31 — error: `resume.complete is not a function` (JSFunctor usado como objeto)
+- **Error**: en `port/shim/BrowserYield.java` el `@JSBody` llamaba `resume.complete()` sobre el
+  `@JSFunctor` pasado como argumento. El timer disparó y tiró `TypeError: resume.complete is not a
+  function` (`pageerror` en Chrome), por lo que el `AsyncCallback` nunca se completó y el fiber
+  quedó igual de parkado que con `Thread.sleep(0L)`.
+- **Causa**: un `@JSFunctor` de TeaVM **es la función JS en sí**, no un objeto con métodos; el
+  callback se invoca llamando al objeto (`resume()`), como ya hace `BrowserPersistence`
+  (`.then(success, e=>failure(...))`).
+- **Patrón a evitar**: inventar la forma del functor JS. Si ya hay un shim propio que pasa un
+  `@JSFunctor` a un `@JSBody`, copiar su convención de llamada en vez de adivinar.
+- **Mejor enfoque**: `setTimeout(function(){resume();}, ...)`; verificar el tipo de functor leyendo
+  un shim existente del repo antes de escribir el `@JSBody`.

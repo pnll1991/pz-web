@@ -12,6 +12,20 @@ const status = document.getElementById('game-status');
 // Fiber::push/reversePush/Arrays::copyOf cycle. A higher limit keeps the base frames of that
 // recursion visible, which is what identifies the real Java caller.
 if (typeof Error.stackTraceLimit === 'number') Error.stackTraceLimit = Infinity;
+// Round 31: the render fiber's last boundary is Thread#sleep(J)V:entered and it is never resumed,
+// while the wrapped teavmAsync.offer reported exactly one offer (the renderThread start). To find
+// out which JS path really registers timers here, observe setTimeout itself: who calls it, with
+// which delay, and how many timers actually fire. Observation only; the call still happens.
+const timerObs = globalThis.pzTimers = { calls: 0, fired: 0, bySite: {}, items: [] };
+const baseSetTimeout = globalThis.setTimeout.bind(globalThis);
+globalThis.setTimeout = (fn, ms, ...rest) => {
+  timerObs.calls++;
+  const site = ((new Error()).stack ?? '').split('\n').slice(1, 4)
+    .map((line) => line.trim().slice(0, 90)).join(' | ');
+  timerObs.bySite[site] = (timerObs.bySite[site] ?? 0) + 1;
+  if (timerObs.items.length < 40) timerObs.items.push({ n: timerObs.calls, ms: ms ?? null, site });
+  return baseSetTimeout(() => { timerObs.fired++; fn(); }, ms, ...rest);
+};
 try {
   const response = await fetch('/game/build-state.json');
   if (!response.ok) throw new Error('Todavía no hay una compilación del juego.');
@@ -29,7 +43,37 @@ try {
   // The wasm32 Bullet module is the only library this runtime honestly provides.
   pzRuntime.bullet = await bulletBridge();
   pzRuntime.loadedLibraries = pzRuntime.bullet.loadedFor;
-  const runtime = await TeaVM.wasmGC.load('/game/boot.wasm');
+  // Round 31: the render fiber parks in Thread.sleep(0L) and no Fiber#resume ever happens. On
+  // WasmGC that suspension is resumed by TeaVM's own timer import (teavmAsync.offer -> setTimeout
+  // -> EventQueue.run -> AsyncCallback.complete). Wrap that import through the loader's documented
+  // installImports hook to observe, without changing it: how many events TeaVM hands to the timer,
+  // how many timers actually fire, whether the fired callback throws, and how many are cancelled.
+  const asyncObs = globalThis.pzAsync = { offers: 0, fired: 0, errors: 0, kills: 0, errorsSeen: [], last: [] };
+  const runtime = await TeaVM.wasmGC.load('/game/boot.wasm', {
+    installImports(imports) {
+      const base = imports.teavmAsync;
+      if (!base || typeof base.offer !== 'function' || typeof base.kill !== 'function')
+        throw new Error('TeaVM loader exposes no teavmAsync.offer/kill import: the timer path cannot be observed.');
+      imports.teavmAsync = {
+        offer(event, callback, time) {
+          const delay = Math.max(0, time - Date.now());
+          asyncObs.offers++;
+          asyncObs.last.push({ n: asyncObs.offers, delay, t: performance.now() });
+          if (asyncObs.last.length > 40) asyncObs.last.splice(0, asyncObs.last.length - 40);
+          return setTimeout(() => {
+            asyncObs.fired++;
+            try { callback(event); }
+            catch (error) {
+              asyncObs.errors++;
+              if (asyncObs.errorsSeen.length < 5) asyncObs.errorsSeen.push(`${error.name}: ${error.message}`);
+              throw error;
+            }
+          }, delay);
+        },
+        kill(id) { asyncObs.kills++; return base.kill(id); }
+      };
+    }
+  });
   // The browser runtime provides no fmod native library. Passing the game's own documented
   // -nosound argument makes MainScreenState parse it into Core.soundDisabled, which is the real
   // path the desktop game takes when sound is off: GameWindow.mainThreadInit then installs

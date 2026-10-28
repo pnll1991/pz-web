@@ -47,6 +47,26 @@ public final class StartupProgress implements ClassHolderTransformer {
         "zombie.util.PZXmlUtil$MarshallerAllocator",
         "zombie.util.PZXmlUtil$MarshallerAllocator$1",
         "zombie.util.PZXmlUtil$UnmarshallerAllocator");
+    // Round 31: the two fibers are parked and nothing advances, but the deduplicated label list
+    // cannot say whether a boundary repeats. The render fiber's last boundary is
+    // Thread#sleep(J)V:entered without a return, so the calls that could reach a sleep inside
+    // renderLoop's next iteration are now observed explicitly: the platform display cycle
+    // (LWJGL/ GLFW is port territory), the render-queue handoff, and TeaVM's own monitor wait/
+    // notify (java.lang.Object is TeaVM's classlib, so observing it is not touching the game).
+    private static final Set<String> EXTRA_CLASSES = Set.of(
+        "org.lwjglx.opengl.Sync",
+        "zombie.core.opengl.RenderContextQueueItem",
+        // Round 31: the page created exactly ONE setTimeout (the renderThread start) and zero
+        // Fiber#resume, yet Thread#sleep(J)V:entered never returned. Instrument TeaVM's own sleep
+        // implementation and its completion path (whole classes, so no descriptor guessing) to see
+        // which scheduling branch runs and whether the pending callback is ever completed.
+        "java.lang.Thread$SleepHandler",
+        "org.teavm.runtime.Fiber$AsyncCallbackImpl");
+        // Round 31: port.shim.BrowserYield is deliberately NOT instrumented. It is the method that
+        // suspends the fiber, and on resume TeaVM re-enters that frame with the String constants the
+        // transformer injected still unmaterialized, so record() crashed with
+        // "dereferencing a null pointer" (see diag53/diag54 stack). Its counters now come from the
+        // JS side (globalThis.pzYield.pauses/resumes in the @JSBody), which cannot crash.
     // Round 29 close: the exact park is now bounded. The last game boundary is
     // PZXmlUtil#createNewDocument()Lorg/w3c/dom/Document;:returned inside PZXmlUtil#write(), and
     // nothing after it is reached. Everything between that point and the file write is OUR compat
@@ -68,6 +88,58 @@ public final class StartupProgress implements ClassHolderTransformer {
         for (String prefix : OWN_PREFIXES) if (name.startsWith(prefix)) return true;
         return false;
     }
+    private static final Set<String> EXTRA_METHODS = Set.of(
+        // Round 31: platform cycle of the render loop. renderLoop() calls Display.processMessages
+        // only when rendering is disabled, and Display.sync()/update() are the paths that can
+        // Thread.sleep/yield; isCloseRequested/swapBuffers prove whether the loop iterates.
+        "org.lwjglx.opengl.Display#processMessages()V",
+        "org.lwjglx.opengl.Display#update()V",
+        "org.lwjglx.opengl.Display#update(Z)V",
+        "org.lwjglx.opengl.Display#sync(I)V",
+        "org.lwjglx.opengl.Display#swapBuffers()V",
+        "org.lwjglx.opengl.Display#isCloseRequested()Z",
+        "org.lwjglx.opengl.Display#getWidth()I",
+        "org.lwjglx.opengl.Display#getHeight()I",
+        // Round 31: the handoff that is actually stuck. The game fiber waits on
+        // RenderContextQueueItem.waitLock; invoke() is the only thing that sets isFinished and
+        // notifyAll, so its count decides whether the render fiber ever ran the pending item.
+        "zombie.core.opengl.RenderContextQueueItem#invoke()V",
+        "zombie.core.opengl.RenderContextQueueItem#waitUntilFinished(Ljava/util/function/BooleanSupplier;)V",
+        "zombie.core.opengl.RenderContextQueueItem#notifyWaitingListeners()V",
+        "zombie.core.SpriteRenderer#notifyRenderStateQueue()V",
+        "zombie.core.SpriteRenderer#renderQueued()V",
+        "zombie.core.SpriteRenderer#NewFrame()V",
+        "zombie.core.SpriteRenderer#isWaitingForRenderState()Z",
+        "zombie.core.SpriteRenderer#waitForReadyState(Ljava/util/function/BooleanSupplier;)Z",
+        "zombie.core.SpriteRenderer#waitForReadySlotToOpen()V",
+        // TeaVM's own monitor primitives, named after the @Rename the classlib applies, so these
+        // keys match what the transformer sees. Counting them shows who waits and who notifies.
+        "java.lang.Object#wait()V",
+        "java.lang.Object#wait(J)V",
+        "java.lang.Object#wait(JI)V",
+        "java.lang.Object#notify()V",
+        "java.lang.Object#notifyAll()V",
+        // Our own cooperative yield: if its count grows, the render fiber is iterating.
+        "port.runtime.JdkSupport#yield()V",
+        "port.runtime.JdkSupport#onSpinWait()V",
+        // Round 31: the render fiber's last boundary is Thread#sleep(J)V:entered and no timer ever
+        // resumes it, so observe TeaVM's own scheduler (its classes, not the game's) to see whether
+        // an event is offered and whether the fiber is ever resumed.
+        "org.teavm.runtime.Fiber#suspend(Lorg/teavm/runtime/Fiber$AsyncCall;)Ljava/lang/Object;",
+        "org.teavm.runtime.Fiber#start()V",
+        "org.teavm.runtime.Fiber#resume()V",
+        "org.teavm.runtime.EventQueue#offer(Lorg/teavm/runtime/EventQueue$Event;)I",
+        "org.teavm.runtime.EventQueue#offer(Lorg/teavm/runtime/EventQueue$Event;J)I",
+        "org.teavm.runtime.EventQueue#processSingle()J",
+        "org.teavm.runtime.EventQueue#stop()V",
+        // Round 31: the JS side proved there is exactly ONE setTimeout in the whole page (the
+        // renderThread start) and zero resumes, so Thread#sleep(J)V:entered suspends a fiber whose
+        // async implementation never registers a timer. Instrument that implementation and the
+        // completion path to see which of the two branches (EventQueue.offer vs Platform.schedule)
+        // runs, and whether the pending callback is ever completed.
+        "java.lang.Thread#sleep(JLorg/teavm/interop/AsyncCallback;)V",
+        "org.teavm.platform.Platform#schedule(Lorg/teavm/platform/PlatformRunnable;I)I",
+        "org.teavm.platform.Platform#postpone(Lorg/teavm/platform/PlatformRunnable;)V");
     private static final Set<String> METHODS = Set.of(
         // Round 30: the JAXB path (JAXBContext.newInstance -> ContextFinder.find) uses reflection
         // and ServiceLoader, both of which are async in TeaVM and therefore able to park a fiber.
@@ -120,7 +192,8 @@ public final class StartupProgress implements ClassHolderTransformer {
     @Override public void transformClass(ClassHolder cls,ClassHolderTransformerContext context) {
         for(var method:cls.getMethods()) {
             String key=cls.getName()+"#"+method.getDescriptor();
-            if(!METHODS.contains(key)&&!CLASSES.contains(cls.getName())&&!own(cls.getName()))continue;
+            if(!METHODS.contains(key)&&!EXTRA_METHODS.contains(key)&&!CLASSES.contains(cls.getName())
+                &&!EXTRA_CLASSES.contains(cls.getName())&&!own(cls.getName()))continue;
             if(method.getProgram()==null)continue;
             Program program=method.getProgram();
             Instruction first=program.basicBlockAt(0).getFirstInstruction();
