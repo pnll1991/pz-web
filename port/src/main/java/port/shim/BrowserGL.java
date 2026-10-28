@@ -19,6 +19,7 @@ public final class BrowserGL {
     /** LWJGL's {@code GLCapabilities.ADDRESS_BUFFER_SIZE}: one 8-byte cell per entrypoint. */
     private static final int ADDRESS_BUFFER_SLOTS = 2236;
     private static long addressBuffer = 0L;
+    private static long providerHandle = 0L;
 
     private BrowserGL() { }
 
@@ -90,6 +91,19 @@ public final class BrowserGL {
         return addressBuffer;
     }
 
+    /**
+     * Handle for the browser library object that installs this provider. LWJGL's
+     * {@code Pointer$Default} rejects a zero address when checks are enabled, so the pseudo handle
+     * is a real arena cell: it is never dereferenced as a host module, only used as an identity.
+     */
+    public static long providerHandle() {
+        if (providerHandle == 0L) {
+            providerHandle = NativeArena.allocate(8L, 8L);
+            NativeArena.putLong(providerHandle, 0L);
+        }
+        return providerHandle;
+    }
+
     /** Address of a WebGL2 entrypoint, or 0 when the context does not expose it. */
     public static long functionAddress(String name) {
         if (name == null || name.isEmpty()) return 0L;
@@ -100,6 +114,15 @@ public final class BrowserGL {
         NativeArena.putLong(slot, name.hashCode() & 0x7fffffffL);
         HANDLES.put(name, slot);
         return slot;
+    }
+
+    /**
+     * Branch helper for compiler-emitted IR: the Wasm GC backend mis-types a directly emitted
+     * long/long equality, so capability probes ask this Java method instead. True only when a real
+     * address was handed out for the name.
+     */
+    public static boolean addressPresent(long address) {
+        return address != 0L;
     }
 
     private static int parse(String text) {

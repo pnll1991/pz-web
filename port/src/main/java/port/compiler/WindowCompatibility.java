@@ -13,7 +13,6 @@ public final class WindowCompatibility implements ClassHolderTransformer {
     private static final String MEMORY_STACK = "org.lwjgl.system.MemoryStack";
     private static final String POINTER_DEFAULT = "org.lwjgl.system.Pointer$Default";
     private static final String CALLBACK_I = "org.lwjgl.system.CallbackI";
-    private static final String GL = "org.lwjgl.opengl.GL";
     private static final ValueType OBJECT = ValueType.object("java.lang.Object");
     private static final ValueType STRING = ValueType.object("java.lang.String");
     private static final ValueType THREAD_LOCAL = ValueType.object("java.lang.ThreadLocal");
@@ -54,7 +53,6 @@ public final class WindowCompatibility implements ClassHolderTransformer {
             case "org.lwjgl.system.APIUtil" -> rewriteAPIUtil(cls, context);
             case "org.lwjgl.system.Upcalls" -> rewriteUpcalls(cls, context);
             case MEMORY_STACK -> rewriteMemoryStack(cls, context);
-            case GL -> rewriteGL(cls, context);
             default -> { }
         }
         if (cls.getName().equals("org.lwjglx.opengl.Display")) {
@@ -416,34 +414,5 @@ public final class WindowCompatibility implements ClassHolderTransformer {
         result.returnValue();
         // nmalloc(int), ncalloc(int,int,int), malloc/calloc/mallocInt/callocInt keep their original
         // bodies: they only combine the nmalloc above with MemoryUtil.wrapBuffer*, already bridged.
-    }
-
-    /**
-     * Capability discovery belongs to the host GL library. The browser has a real WebGL2 context,
-     * but no GLCapabilities object has been built from it yet, so every createCapabilities variant
-     * raises with its own identity: Display.create stops here until the WebGL2 capability bridge
-     * exists. setCapabilities/getCapabilities keep their thread-local bodies.
-     */
-    private void rewriteGL(ClassHolder cls, ClassHolderTransformerContext context) {
-        var hierarchy = context.getHierarchy();
-        var clinit = cls.getMethod(new MethodDescriptor("<clinit>",ValueType.VOID));
-        if (clinit == null) throw new IllegalStateException("Inventoried GL.<clinit> is missing");
-        var e = ProgramEmitter.create(clinit,hierarchy);
-        e.setField(cls.getName(),"capabilitiesTLS",e.construct("java.lang.ThreadLocal"));
-        e.exit();
-        ValueType intFunction = ValueType.object("java.util.function.IntFunction");
-        MethodDescriptor[] variants = {
-            new MethodDescriptor("createCapabilities",ValueType.object("org.lwjgl.opengl.GLCapabilities")),
-            new MethodDescriptor("createCapabilities",intFunction,ValueType.object("org.lwjgl.opengl.GLCapabilities")),
-            new MethodDescriptor("createCapabilities",ValueType.BOOLEAN,ValueType.object("org.lwjgl.opengl.GLCapabilities")),
-            new MethodDescriptor("createCapabilities",ValueType.BOOLEAN,intFunction,ValueType.object("org.lwjgl.opengl.GLCapabilities"))};
-        for (MethodDescriptor descriptor : variants) {
-            var method = cls.getMethod(descriptor);
-            if (method == null) continue;
-            method.getModifiers().remove(ElementModifier.NATIVE);
-            var emitter = ProgramEmitter.create(method,hierarchy);
-            emitter.construct(IllegalStateException.class,emitter.constant(
-                "Browser WebGL2 GL capability bridge is not implemented: org.lwjgl.opengl.GL#"+descriptor)).raise();
-        }
     }
 }

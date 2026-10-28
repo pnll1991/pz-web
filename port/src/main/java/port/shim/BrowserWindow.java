@@ -104,6 +104,22 @@ public final class BrowserWindow {
     public static void glfwGetWindowPos(long window,int[] x,int[] y) { x[0]=windowMetric(4,checkedHandle(window)); y[0]=windowMetric(5,checkedHandle(window)); }
     public static void glfwGetWindowPos(long window,IntBuffer x,IntBuffer y) { x.put(0,windowMetric(4,checkedHandle(window))); y.put(0,windowMetric(5,checkedHandle(window))); }
     public static void glfwSetWindowSize(long window,int width,int height) { setSizeNative(checkedHandle(window),width,height); }
+
+    /**
+     * glfwSetWindowMonitor. A tab has no window chrome, so "fullscreen" means the canvas takes
+     * the monitor work area (the whole screen) and windowed mode keeps the requested size and
+     * position. The refresh rate the game asks for is recorded, not honoured: the browser owns
+     * the presentation cadence (see swapInterval).
+     */
+    public static void glfwSetWindowMonitor(long window,long monitor,int x,int y,int width,int height,int refreshRate) {
+        checkWindow(window);
+        if (monitor != 0) checkMonitor(monitor);
+        int px = x, py = y, w = width, h = height;
+        if (monitor != 0) { px = monitorX(); py = monitorY(); w = monitorWorkareaWidth(); h = monitorWorkareaHeight(); }
+        setPosNative(checkedHandle(window),px,py);
+        setSizeNative(checkedHandle(window),w,h);
+        monitorModeNative(checkedHandle(window),monitor == 0 ? 0 : 1,refreshRate);
+    }
     public static void glfwGetWindowSize(long window,int[] width,int[] height) { width[0]=windowMetric(0,checkedHandle(window)); height[0]=windowMetric(1,checkedHandle(window)); }
     public static void glfwGetWindowSize(long window,IntBuffer width,IntBuffer height) { width.put(0,windowMetric(0,checkedHandle(window))); height.put(0,windowMetric(1,checkedHandle(window))); }
     public static void glfwGetFramebufferSize(long window,int[] width,int[] height) { width[0]=windowMetric(2,checkedHandle(window)); height[0]=windowMetric(3,checkedHandle(window)); }
@@ -170,6 +186,7 @@ public final class BrowserWindow {
     @JSBody(params={"window","title"},script="globalThis.pzRuntime.window.title(window,title);") private static native void titleNative(int window,String title);
     @JSBody(params={"window","x","y"},script="globalThis.pzRuntime.window.setWindowPos(window,x,y);") private static native void setPosNative(int window,int x,int y);
     @JSBody(params={"window","width","height"},script="globalThis.pzRuntime.window.setWindowSize(window,width,height);") private static native void setSizeNative(int window,int width,int height);
+    @JSBody(params={"window","mode","refreshRate"},script="globalThis.pzRuntime.window.setMonitorMode(window,mode,refreshRate);") private static native void monitorModeNative(int window,int mode,int refreshRate);
     @JSBody(params={"kind","window"},script="var w=globalThis.pzRuntime.window;switch(kind){case 0:return w.windowWidth(window);case 1:return w.windowHeight(window);case 2:return w.framebufferWidth(window);case 3:return w.framebufferHeight(window);case 4:return w.posX(window);default:return w.posY(window);}") private static native int windowMetric(int kind,int window);
     @JSBody(params={"kind","window"},script="return globalThis.pzRuntime.window.frameMetric(window,kind);") private static native int frameMetric(int kind,int window);
     @JSBody(params={"kind","window"},script="return globalThis.pzRuntime.window.cursorMetric(window,kind);") private static native double cursorMetric(int kind,int window);

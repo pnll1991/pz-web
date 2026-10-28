@@ -189,6 +189,16 @@ export class BrowserWindow {
     this.events.push({type:'icon_set',backend:'browser',width,height,bytes:copy.length});
   }
   setWindowPos(handle,x,y) { this.requireWindow(handle); this.windowPos = [x, y]; }
+  // glfwSetWindowMonitor: 'fullscreen' in a tab means the canvas fills the screen work area.
+  // The refresh rate the game requests is only recorded (the browser owns presentation cadence).
+  setMonitorMode(handle,mode,refreshRate) {
+    this.requireWindow(handle);
+    this.monitorMode = mode;
+    this.requestedRefreshRate = refreshRate;
+    this.events.push({type:'monitor_mode',backend:'browser',monitor:mode === 1 ? 2 : 0,
+      fullscreen:mode === 1,requestedRefreshRate:refreshRate,
+      workareaWidth:window.screen.width,workareaHeight:window.screen.height});
+  }
   setWindowSize(handle,width,height) {
     this.requireWindow(handle);
     if (width <= 0 || height <= 0) throw new Error(`Invalid browser window size: ${width}x${height}`);
@@ -213,7 +223,14 @@ export class BrowserWindow {
       case 131076: this.visible = value === 1; this.canvas.style.visibility = value === 1 ? '' : 'hidden'; break;
       case 131078: case 131081: this.hints.set(attrib,value); break; // AUTO_ICONIFY / CENTER_CURSOR
       case 131077: case 131079: case 131080: case 131082:
-        throw new Error(`Browser window attribute ${attrib} is fixed by the page and cannot be set`);
+        // GLFW_DECORATED / FLOATING / MAXIMIZED / TRANSPARENT_FRAMEBUFFER: a browser tab has no
+        // window chrome, so these values are fixed by the page. The request is recorded (never
+        // silently dropped) and getAttrib keeps reporting the fixed value, which is what GLFW
+        // itself does on a host where the window manager ignores the change.
+        this.hints.set(attrib, value);
+        this.events.push({type:'attribute_ignored',backend:'browser',attrib,value,fixed:true,
+          reason:'browser tab has no window chrome'});
+        break;
       default: throw new Error(`Unsupported browser window attribute: ${attrib}`);
     }
   }

@@ -32,6 +32,35 @@ public final class GL11 {
     public static void glScissor(int x, int y, int width, int height) { call4("scissor", x, y, width, height); }
     public static void glClearDepthf(float depth) { clearDepthf(depth); }
 
+    // --- Queries the game reads during Core.init (GL tokens answered by port/runtime/gl.mjs) ---
+    public static String glGetString(int pname) { return stringNative(pname); }
+    public static String glGetStringi(int pname, int index) { return stringIndexedNative(pname, index); }
+    public static int glGetInteger(int pname) { return intParameterNative(pname, 0); }
+    public static int glGetIntegeri(int pname, int index) { return intParameterNative(pname, index); }
+    public static float glGetFloat(int pname) { return floatParameterNative(pname, 0); }
+    public static boolean glGetBoolean(int pname) { return boolParameterNative(pname, 0) != 0; }
+    public static void glGetIntegerv(int pname, int[] data) {
+        for (int i = 0; i < data.length; i++) data[i] = intParameterNative(pname, i);
+    }
+    public static void glGetIntegerv(int pname, java.nio.IntBuffer data) {
+        long base = port.runtime.memory.NativeMemory.memAddress(data);
+        for (int i = 0; i < data.remaining(); i++)
+            port.runtime.memory.NativeMemory.memPutInt(base + 4L * i, intParameterNative(pname, i));
+    }
+    public static void glGetFloatv(int pname, float[] data) {
+        for (int i = 0; i < data.length; i++) data[i] = floatParameterNative(pname, i);
+    }
+    public static void glGetFloatv(int pname, java.nio.FloatBuffer data) {
+        long base = port.runtime.memory.NativeMemory.memAddress(data);
+        for (int i = 0; i < data.remaining(); i++)
+            port.runtime.memory.NativeMemory.memPutFloat(base + 4L * i, floatParameterNative(pname, i));
+    }
+    public static void glGetBooleanv(int pname, java.nio.ByteBuffer data) {
+        long base = port.runtime.memory.NativeMemory.memAddress(data);
+        for (int i = 0; i < data.remaining(); i++)
+            port.runtime.memory.NativeMemory.memPutByte(base + i, (byte) boolParameterNative(pname, i));
+    }
+
     @JSBody(params={"r","g","b","a"}, script="globalThis.pzRuntime.gl.clearColor(r,g,b,a);")
     private static native void clearColor(float r, float g, float b, float a);
     @JSBody(params="mask", script="globalThis.pzRuntime.gl.clear(mask);")
@@ -53,4 +82,14 @@ public final class GL11 {
     private static native void lineWidth(float width);
     @JSBody(params="depth", script="globalThis.pzRuntime.gl.call('clearDepthf',depth);")
     private static native void clearDepthf(float depth);
+    @JSBody(params="pname", script="return globalThis.pzRuntime.gl.stringParameter(pname);")
+    private static native String stringNative(int pname);
+    @JSBody(params={"pname","index"}, script="return globalThis.pzRuntime.gl.stringParameterIndexed(pname,index);")
+    private static native String stringIndexedNative(int pname, int index);
+    @JSBody(params={"pname","index"}, script="return globalThis.pzRuntime.gl.intParameter(pname,index);")
+    private static native int intParameterNative(int pname, int index);
+    @JSBody(params={"pname","index"}, script="return globalThis.pzRuntime.gl.floatParameter(pname,index);")
+    private static native float floatParameterNative(int pname, int index);
+    @JSBody(params={"pname","index"}, script="return globalThis.pzRuntime.gl.boolParameter(pname,index);")
+    private static native int boolParameterNative(int pname, int index);
 }

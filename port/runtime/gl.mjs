@@ -9,6 +9,14 @@ const PORT_PROVIDED = new Set([
   'glClearColor', 'glClear', 'glViewport', 'glGetError', 'glEnable', 'glDisable', 'glScissor',
   'glDepthMask', 'glDepthFunc', 'glCullFace', 'glFrontFace', 'glPixelStorei', 'glLineWidth',
   'glBlendFunc', 'glBlendFuncSeparate', 'glClearDepthf', 'glStencilMask', 'glClearStencil',
+  'glGetString', 'glGetStringi', 'glGetInteger', 'glGetIntegerv', 'glGetFloat', 'glGetFloatv',
+  'glGetBoolean', 'glGetBooleanv',
+  // GL15 vertex buffer objects: WebGL2 owns the storage, port.shim.GL15 drives it through the
+  // bridge below. Every one of these names has a real implementation in this class.
+  'glGenBuffers', 'glCreateBuffer', 'glDeleteBuffers', 'glBindBuffer', 'glIsBuffer', 'glBufferData',
+  'glBufferSubData', 'glGetBufferSubData', 'glMapBuffer', 'glUnmapBuffer', 'glGetBufferParameteriv',
+  'glGetBufferPointerv', 'glGenQueries', 'glDeleteQueries', 'glIsQuery', 'glBeginQuery', 'glEndQuery',
+  'glGetQueryiv', 'glGetQueryObjectiv', 'glGetQueryObjectuiv',
 ]);
 
 /** WebGL2 context and object handles; unsupported entrypoints must throw. */
@@ -18,6 +26,11 @@ export class GLBridge {
     if (!context) throw new Error('WebGL 2 is required');
     this.context = context;
     this.calls = Object.create(null);
+    this.viewportBox = [0, 0, canvas.width, canvas.height];
+    this.scissorBox = [0, 0, canvas.width, canvas.height];
+    this.buffers = new Map(); // GL handle -> {buffer,size,target}
+    this.queries = new Map(); // GL handle -> {query,target}
+    this.nextHandle = 1; // 0 is reserved for "none", as in desktop GL
     this.lost = false;
     canvas.addEventListener('webglcontextlost', event => { event.preventDefault(); this.lost = true; });
     canvas.addEventListener('webglcontextrestored', () => {
@@ -28,6 +41,8 @@ export class GLBridge {
   call(name, ...args) {
     if (this.lost) throw new Error('WebGL context lost: reload required');
     this.calls[name] = (this.calls[name] || 0) + 1;
+    if (name === 'viewport') this.viewportBox = args.slice(0, 4).map(Number);
+    if (name === 'scissor') this.scissorBox = args.slice(0, 4).map(Number);
     const method = this.context[name];
     if (typeof method !== 'function') throw new Error(`Unsupported WebGL function: ${name}`);
     return method.apply(this.context, args);
@@ -54,6 +69,196 @@ export class GLBridge {
     if (!name.startsWith('gl') || name.length < 3) return false;
     return typeof this.context[name[2].toLowerCase() + name.slice(3)] === 'function';
   }
+  /* --- Queries the game reads through GL11/GL11C (docs/decisions.md) ---------------
+   * Desktop GL tokens are answered from real WebGL2 state where an equivalent exists.
+   * A token with no WebGL equivalent raises honestly; nothing is invented. The values
+   * that follow from this backend's declared API version (3.3) are stated below, and
+   * viewport/scissor come from the state this bridge actually set.
+   */
+  stringParameter(pname) {
+    const gl = this.context;
+    switch (pname) {
+      case 0x1f00: { // GL_VENDOR
+        const ext = gl.getExtension('WEBGL_debug_renderer_info');
+        return ext ? String(gl.getParameter(ext.UNMASKED_VENDOR_WEBGL)) : String(gl.getParameter(gl.VENDOR));
+      }
+      case 0x1f01: { // GL_RENDERER
+        const ext = gl.getExtension('WEBGL_debug_renderer_info');
+        return ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
+      }
+      case 0x1f02: return this.apiVersion();
+      case 0x1f03: return String(gl.getParameter(gl.SHADING_LANGUAGE_VERSION));
+      case 0x1f05: return this.extensions().join(' '); // desktop: space-separated list
+      default: throw new Error(`Unsupported WebGL2 string parameter: 0x${pname.toString(16)}`);
+    }
+  }
+  stringParameterIndexed(pname, index) {
+    if (pname !== 0x1f05) throw new Error(`Unsupported WebGL2 indexed string parameter: 0x${pname.toString(16)}`);
+    const names = this.extensions();
+    if (index < 0 || index >= names.length) throw new Error(`Extension index out of range: ${index}`);
+    return names[index];
+  }
+  // Desktop token -> the WebGL2 constant to query.
+  static INT_ANSWERS = new Map([
+    [0x0d33, 'MAX_TEXTURE_SIZE'], [0x84e8, 'MAX_CUBE_MAP_TEXTURE_SIZE'],
+    [0x8872, 'MAX_TEXTURE_IMAGE_UNITS'], [0x8b4c, 'MAX_VERTEX_TEXTURE_IMAGE_UNITS'],
+    [0x8b4d, 'MAX_COMBINED_TEXTURE_IMAGE_UNITS'], [0x8869, 'MAX_VERTEX_ATTRIBS'],
+    [0x8dfb, 'MAX_VERTEX_UNIFORM_VECTORS'], [0x8dfc, 'MAX_VARYING_VECTORS'],
+    [0x8dfd, 'MAX_FRAGMENT_UNIFORM_VECTORS'], [0x84d8, 'MAX_SAMPLES'],
+  ]);
+  static BOOL_ANSWERS = new Map([
+    [0x0b90, 'SCISSOR_TEST'], [0x0b91, 'CULL_FACE'], [0x0b92, 'DEPTH_TEST'],
+    [0x0bc2, 'BLEND'], [0x0be2, 'POLYGON_OFFSET_FILL'], [0x0ba7, 'RASTERIZER_DISCARD'],
+    [0x0bb8, 'SAMPLE_ALPHA_TO_COVERAGE'], [0x0bad, 'SAMPLE_MASK'],
+  ]);
+  intParameters(pname) {
+    const gl = this.context;
+    if (pname === 0x0ba2) return this.viewportBox; // GL_VIEWPORT: what this bridge last set
+    if (pname === 0x0c36) return this.scissorBox; // GL_SCISSOR_BOX
+    if (pname === 0x820b) return [3]; // GL_MAJOR_VERSION, from the declared apiVersion()
+    if (pname === 0x820d) return [3]; // GL_MINOR_VERSION, from the declared apiVersion()
+    if (pname === 0x821d) return [this.extensions().length]; // GL_NUM_EXTENSIONS
+    if (pname === 0x9126) return [0]; // GL_CONTEXT_PROFILE_MASK: WebGL2 has no profile bits
+    const constant = GLBridge.INT_ANSWERS.get(pname);
+    if (constant === undefined || gl[constant] === undefined)
+      throw new Error(`Unsupported WebGL2 integer parameter: 0x${pname.toString(16)}`);
+    return [Number(gl.getParameter(gl[constant]))];
+  }
+  floatParameters(pname) {
+    if (pname === 0x0b51) return [0, 1]; // GL_DEPTH_RANGE: WebGL2 always uses [0,1]
+    throw new Error(`Unsupported WebGL2 float parameter: 0x${pname.toString(16)}`);
+  }
+  boolParameters(pname) {
+    const gl = this.context;
+    const constant = GLBridge.BOOL_ANSWERS.get(pname);
+    if (constant === undefined || gl[constant] === undefined)
+      throw new Error(`Unsupported WebGL2 boolean parameter: 0x${pname.toString(16)}`);
+    return [gl.getParameter(gl[constant]) ? 1 : 0];
+  }
+  // Single-value accessors used by the Java wrappers (glGetInteger / glGetFloat / glGetBoolean).
+  intParameter(pname, index) {
+    const values = this.intParameters(pname);
+    if (index < 0 || index >= values.length)
+      throw new Error(`Desktop parameter ${pname.toString(16)} returns ${values.length} ints, index ${index} unavailable`);
+    return values[index];
+  }
+  floatParameter(pname, index) {
+    const values = this.floatParameters(pname);
+    if (index < 0 || index >= values.length)
+      throw new Error(`Desktop parameter ${pname.toString(16)} returns ${values.length} floats, index ${index} unavailable`);
+    return values[index];
+  }
+  boolParameter(pname, index) {
+    const values = this.boolParameters(pname);
+    if (index < 0 || index >= values.length)
+      throw new Error(`Desktop parameter ${pname.toString(16)} returns ${values.length} bools, index ${index} unavailable`);
+    return values[index];
+  }
+
+  /* --- GL15 vertex buffer objects over WebGL2 (docs/decisions.md) --------------------
+   * Desktop VBO/query names have no one-to-one WebGL2 entrypoint (deleteBuffers vs deleteBuffer,
+   * glGenBuffers returns handles, mapBuffer returns a pointer), so port.shim.GL15 drives these
+   * bridge methods. WebGL2 owns the storage: a GL handle never repeats and 0 means "none".
+   */
+  genBuffers(count) {
+    const handles = new Int32Array(count);
+    for (let i = 0; i < count; i++) {
+      const handle = this.nextHandle++;
+      this.buffers.set(handle, { buffer: this.call('createBuffer') });
+      handles[i] = handle;
+    }
+    return handles;
+  }
+  deleteBuffers(handles) {
+    for (let i = 0; i < handles.length; i++) {
+      const entry = this.buffers.get(handles[i]);
+      if (entry === undefined) continue; // deleting an unknown handle is a no-op, as in desktop GL
+      this.buffers.delete(handles[i]);
+      this.call('deleteBuffer', entry.buffer);
+    }
+  }
+  bufferEntry(handle, what) {
+    const entry = this.buffers.get(handle);
+    if (entry === undefined) throw new Error(`Unknown buffer handle for ${what}: ${handle}`);
+    return entry;
+  }
+  bindBuffer(target, handle) {
+    const gl = this.context;
+    if (target !== gl.ARRAY_BUFFER && target !== gl.ELEMENT_ARRAY_BUFFER)
+      throw new Error(`Unsupported WebGL2 buffer target: 0x${target.toString(16)}`);
+    if (handle === 0) { this.call('bindBuffer', target, null); return; }
+    this.call('bindBuffer', target, this.bufferEntry(handle, 'bindBuffer').buffer);
+  }
+  isBuffer(handle) { return this.buffers.has(handle); }
+  bufferData(target, size, data) {
+    const gl = this.context;
+    if (target !== gl.ARRAY_BUFFER && target !== gl.ELEMENT_ARRAY_BUFFER)
+      throw new Error(`Unsupported WebGL2 buffer target: 0x${target.toString(16)}`);
+    // The desktop usage hint is dropped: WebGL2 has no storage hints.
+    this.call('bufferData', target, data === null ? size : data, gl.DYNAMIC_DRAW);
+  }
+  bufferSubData(target, offset, data) {
+    const gl = this.context;
+    if (target !== gl.ARRAY_BUFFER && target !== gl.ELEMENT_ARRAY_BUFFER)
+      throw new Error(`Unsupported WebGL2 buffer target: 0x${target.toString(16)}`);
+    this.call('bufferSubData', target, offset, data);
+  }
+  getBufferSubData(target, offset, data) {
+    const gl = this.context;
+    if (target !== gl.ARRAY_BUFFER && target !== gl.ELEMENT_ARRAY_BUFFER)
+      throw new Error(`Unsupported WebGL2 buffer target: 0x${target.toString(16)}`);
+    this.call('getBufferSubData', target, offset, data);
+  }
+  bufferParameter(target, pname) {
+    const gl = this.context;
+    if (target !== gl.ARRAY_BUFFER && target !== gl.ELEMENT_ARRAY_BUFFER)
+      throw new Error(`Unsupported WebGL2 buffer target: 0x${target.toString(16)}`);
+    if (pname === 0x8764) return [Number(gl.getBufferParameter(target, gl.BUFFER_SIZE))]; // BUFFER_SIZE
+    if (pname === 0x8765) return [0]; // BUFFER_USAGE: WebGL2 exposes no usage query
+    throw new Error(`Unsupported WebGL2 buffer parameter: 0x${pname.toString(16)}`);
+  }
+  bufferPointerParameter(target, pname) {
+    throw new Error(`WebGL2 has no buffer pointer parameter: 0x${pname.toString(16)} (target 0x${target.toString(16)})`);
+  }
+  genQueries(count) {
+    const handles = new Int32Array(count);
+    for (let i = 0; i < count; i++) {
+      const handle = this.nextHandle++;
+      this.queries.set(handle, { query: this.call('createQuery') });
+      handles[i] = handle;
+    }
+    return handles;
+  }
+  deleteQueries(handles) {
+    for (let i = 0; i < handles.length; i++) {
+      const entry = this.queries.get(handles[i]);
+      if (entry === undefined) continue;
+      this.queries.delete(handles[i]);
+      this.call('deleteQuery', entry.query);
+    }
+  }
+  queryEntry(handle) {
+    const entry = this.queries.get(handle);
+    if (entry === undefined) throw new Error(`Unknown query handle: ${handle}`);
+    return entry;
+  }
+  isQuery(handle) { return this.queries.has(handle); }
+  beginQuery(target, handle) {
+    const entry = this.queryEntry(handle);
+    entry.target = target;
+    this.call('beginQuery', target, entry.query);
+  }
+  endQuery(target) { this.call('endQuery', target); }
+  queryResult(handle, pname) {
+    if (pname !== 0x8866) throw new Error(`Unsupported WebGL2 query object parameter: 0x${pname.toString(16)}`); // QUERY_RESULT
+    const entry = this.queryEntry(handle);
+    return [this.call('getQueryParameter', entry.query, this.context.QUERY_RESULT) ? 1 : 0];
+  }
+  queryActive(target, pname) {
+    if (pname !== 0x8865) throw new Error(`Unsupported WebGL2 active-query parameter: 0x${pname.toString(16)}`); // QUERY_ACTIVE
+    return [this.call('getQueryParameter', target, this.context.QUERY_ACTIVE) ? 1 : 0];
+  }
+
   async loadTexture(url) {
     const location = new URL(url, globalThis.location.href);
     if (location.origin !== globalThis.location.origin) throw new Error('Texture must be local');

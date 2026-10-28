@@ -23,10 +23,11 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     // Resolve names/body boundaries only; never disassemble game code.
     symbols=execFileSync('python3',['scripts/wasm_stack.py','port/target/web/game/boot.wasm',...offsets],{encoding:'utf8'});
     await testInfo.attach('actual-main-symbols',{body:symbols,contentType:'text/plain'});
-    // Actual stop of round 21 (verified in chrome-startup.json): the STB bridge loads the real
-    // PNG icon and glfwSetWindowIcon uploads it to the page, Display.showWindow and
-    // glfwMakeContextCurrent run, and Display.create then stops in GL.createCapabilities because
-    // the WebGL2 GLCapabilities bridge is not implemented yet. The menu is not rendered.
+    // Actual stop of round 25 (verified in chrome-startup.json): the WebGL2 GLCapabilities
+    // bridge works, so org.lwjglx.opengl.Display#create()V returns. The game then calls
+    // Display.setBorderlessWindow -> glfwSetWindowAttrib(GLFW_DECORATED), which is fixed by a
+    // browser tab; the request is now recorded instead of throwing, so the boot continues.
+    // The menu is still not rendered.
     expect(state).toMatchObject({phase:'main-returned',error:'',menuRendered:false});
     const bullet = await page.evaluate(async()=>{const b=pzRuntime.bullet;return {loaded:!!b,loadedFor:b?.loadedFor,version:b?.version(),logging:b?.loggingInitialised(),world:b?.createWorld(0,-9.82,0),count:b?.bodyCount(),manifest:b?.manifest?.bullet?.version,wasmSha:b?.manifest?.module?.wasm_sha256};});
     expect(bullet.loaded).toBe(true); expect(bullet.loadedFor).toContain('PZBullet64'); expect(bullet.manifest).toBe('2.83');
@@ -36,7 +37,9 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     // Frames of the actual stop path, resolved from the offsets this round's trace reports.
     for(const name of ['zombie.gameStates.MainScreenState::main','zombie.core.opengl.RenderThread::init',
         'zombie.GameWindow::InitDisplay','zombie.core.Core::init','org.lwjglx.opengl.Display::create',
-        'org.lwjgl.opengl.GL::createCapabilities','java.lang.IllegalStateException::<init>'])
+        'org.lwjglx.opengl.Display::setBorderlessWindow','org.lwjgl.glfw.GLFW::glfwSetWindowAttrib',
+        'port.shim.BrowserWindow::glfwSetWindowAttrib','org.lwjgl.opengl.GL::createCapabilities',
+        'org.lwjgl.opengl.GLCapabilities::<init>','port.shim.BrowserGL::addressPresent'])
         expect(symbols).toContain(name);
     const progress=await page.evaluate(()=>pzGameProgress.map(event=>event.label));
     expect(progress).toContain('org.lwjglx.opengl.Display#init()V:returned');
@@ -62,13 +65,15 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     // Display.showWindow and glfwMakeContextCurrent run before the GL capability stop.
     expect(types).toContain('shown');
     expect(types).toContain('context_current');
-    // The honest stop: the missing WebGL2 capability bridge is named exactly.
-    expect(trace).toContain('Browser WebGL2 GL capability bridge is not implemented: org.lwjgl.opengl.GL#createCapabilities()Lorg/lwjgl/opengl/GLCapabilities;');
+    // Display.create() really returns now (round 25 GL capability bridge), and the remaining
+    // stop is the GLFW_DECORATED(131077) attribute that a browser tab cannot change.
+    expect(progress).toContain('org.lwjglx.opengl.Display#create()V:returned');
+    expect(trace).toContain('Browser window attribute 131077 is fixed by the page and cannot be set');
     expect(trace).not.toContain('failed to read image');
     expect(trace).toContain('Exception thrown during MainScreenState.main');
     expect(pageErrors).toEqual([]);
   } finally {
-    const screenshot='test-results/game-main-round21b.png';
+    const screenshot='test-results/game-main-round25.png';
     await page.screenshot({path:screenshot,fullPage:true});
     const windowSystem=await page.evaluate(()=>globalThis.pzRuntime?.window?.events || []);
     const progress=await page.evaluate(()=>globalThis.pzGameProgress || []);

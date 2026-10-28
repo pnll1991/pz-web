@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Classify actual LWJGL signatures. Only four verified, scalar GL calls are mapped."""
+"""Classify actual LWJGL signatures; map only verified scalar calls and queries."""
 import argparse
 import json
 from pathlib import Path
@@ -10,7 +10,36 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT/'tools/inventory'))
 from classfile import ClassReader
 
-DIRECT = {('glClearColor','(FFFF)V'), ('glClear','(I)V'), ('glViewport','(IIII)V'), ('glGetError','()I')}
+# Verified against the pinned jar: each (class, name, descriptor) is an existing static method
+# that port.shim.GL11 / port.shim.GL15 implement over the real WebGL2 context. Every mapped name
+# is in gl.mjs PORT_PROVIDED, so a capability address handed out for it can actually be called.
+# Everything else stays unmapped and keeps the fail-fast raise.
+SCALAR = 'port.shim.GL11'
+GL15 = 'port.shim.GL15'
+DIRECT_CLASSES = ('org.lwjgl.opengl.GL11', 'org.lwjgl.opengl.GL11C', 'org.lwjgl.opengl.GL30C',
+                  'org.lwjgl.opengl.GL15C')
+SCALAR_DIRECT = {('glClearColor','(FFFF)V'), ('glClear','(I)V'), ('glViewport','(IIII)V'), ('glGetError','()I'),
+    ('glEnable','(I)V'), ('glDisable','(I)V'), ('glBlendFunc','(II)V'), ('glClearStencil','(I)V'),
+    ('glStencilMask','(I)V'), ('glCullFace','(I)V'), ('glFrontFace','(I)V'), ('glDepthFunc','(I)V'),
+    ('glDepthMask','(Z)V'), ('glLineWidth','(F)V'), ('glPixelStorei','(II)V'), ('glScissor','(IIII)V'),
+    ('glGetString','(I)Ljava/lang/String;'), ('glGetStringi','(II)Ljava/lang/String;'),
+    ('glGetInteger','(I)I'), ('glGetIntegerv','(I[I)V'), ('glGetIntegerv','(ILjava/nio/IntBuffer;)V'),
+    ('glGetFloat','(I)F'), ('glGetFloatv','(I[F)V'), ('glGetFloatv','(ILjava/nio/FloatBuffer;)V'),
+    ('glGetBoolean','(I)Z'), ('glGetBooleanv','(ILjava/nio/ByteBuffer;)V')}
+# Only the natives on GL15C: the wrappers of GL15/GL15C stay untouched and reach them.
+GL15_DIRECT = {('nglGenBuffers','(IJ)V'), ('nglDeleteBuffers','(IJ)V'), ('glBindBuffer','(II)V'),
+    ('glIsBuffer','(I)Z'), ('nglBufferData','(IJJI)V'), ('nglBufferSubData','(IJJJ)V'),
+    ('nglGetBufferSubData','(IJJJ)V'), ('nglGetBufferParameteriv','(IIJ)V'),
+    ('nglGetBufferPointerv','(IIJ)V'), ('nglMapBuffer','(II)J'), ('glUnmapBuffer','(I)Z'),
+    ('nglGenQueries','(IJ)V'), ('nglDeleteQueries','(IJ)V'), ('glIsQuery','(I)Z'),
+    ('glBeginQuery','(II)V'), ('glEndQuery','(I)V'), ('nglGetQueryiv','(IIJ)V'),
+    ('nglGetQueryObjectiv','(IIJ)V'), ('nglGetQueryObjectuiv','(IIJ)V')}
+
+
+def target_for(class_name, method_name, descriptor):
+    if class_name == 'org.lwjgl.opengl.GL15C':
+        return GL15 if (method_name, descriptor) in GL15_DIRECT else None
+    return SCALAR if (method_name, descriptor) in SCALAR_DIRECT else None
 
 
 def generate(inventory, output):
@@ -26,10 +55,11 @@ def generate(inventory, output):
                     if method['name'].startswith('<'): continue
                     key = (cls['name'],method['name'],method['descriptor'])
                     # No inheritance-based guesses, pointer overloads or desktop GLSL rewrites.
-                    direct = cls['name'] in ('org.lwjgl.opengl.GL11','org.lwjgl.opengl.GL11C') and method['static'] and (method['name'],method['descriptor']) in DIRECT
+                    target = target_for(cls['name'], method['name'], method['descriptor']) if method['static'] else None
+                    direct = target is not None
                     signatures[key] = {'class':cls['name'],'method':method['name'],'descriptor':method['descriptor'],
                         'native':method['native'], 'status':'direct' if direct else ('throws-native' if method['native'] else 'original-wrapper-needs-review'),
-                        'target':'port.shim.GL11' if direct else None}
+                        'target':target}
     rows = [signatures[key] for key in sorted(signatures)]
     output.mkdir(parents=True, exist_ok=True)
     (output/'coverage.json').write_text(json.dumps({'schema_version':1,'signatures':rows,
