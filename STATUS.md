@@ -729,3 +729,24 @@ y si `flushInvokeQueue()` ejecuta el item pendiente (lo que liberaría el `waitL
     cambios en `.git` (el vigilante commitea). Sin `MENU_REACHED`.
     Nota para la próxima ronda: el flag de experimento `PZ_PULSE_OFF=1` sigue disponible en
     `StartupProgress.transformClass` para compilar una build de control sin fronteras.
+
+## Ronda 33 — iniciada 13:18:21 (-03), límite de corte 17:18
+1. 14:00 — Parche de scheduler en `scripts/prepare_teavm.py` (`patch_fiber()`): `AsyncCallbackImpl.complete/error`
+   reemplaza el `fiber.resume()` anidado por `EventQueue.offer(new ResumeEvent(thread, fiber))` (macrotask, tiempo 0).
+   Verificado: `python3 scripts/prepare_teavm.py` OK; el Fiber.java generado tiene 2 offers, 1 `fiber.resume()` (dentro de
+   ResumeEvent.run) y conserva `growObjectStack`. `mvn -f port/pom.xml compile` **BUILD SUCCESS** (270 archivos).
+   Registrado en `docs/decisions.md`.
+2. 14:07 — Build grande `build-round33-game.log` **BUILD SUCCESS** con el parche: `boot.wasm` 143,216,983 B,
+   classes 10223, methods 72056, pico RSS 5.95 GiB, `build-state.json success:true`. El dev-server 8092 ya lo sirve
+   (ETag nuevo). Diag nuevo `port/target/diag65.mjs` (counts + trace + async/timers + captura con `Promise.race`).
+3. 14:12 — `diag65.log` con la build parchada (resume diferido por EventQueue): sigue **1 pageerror**
+   `RuntimeError: array element access out of bounds` en `Fiber::popInt <- Thread::currentThread <-
+   Fiber::suspend <- BrowserYield::pause <- RenderThread::renderLoop`, con `pzAsync {offers:2, fired:2,
+   errors:1}` y `pzYield {pauses:1, resumes:1}`. O sea el resume diferido no elimina el desbalance del
+   int-stack: el corruptor no es sólo el anidamiento de `start()`. Para identificarlo con números se
+   instrumenta el Fiber parchado (diagnóstico honesto, no simula éxito): `popInt` lanza
+   `IllegalStateException("Fiber int-stack underflow…")` con id/estado/intTop/push/pop/suspend/resume/
+   doubleResume de la fiber y de `Fiber.current`, `lastSuspendFiber`, `lastResumeFiber`, `startDepth`,
+   `maxStartDepth`, `nestedStarts`. Build de medición `build-round33b-game.log` en curso.
+   Nota: un parche previo dejó basura al final de `scripts/prepare_teavm.py` (líneas fuera de Python);
+   corregido recortando el archivo tras `main()` — ver AGENT_LEARNINGS.

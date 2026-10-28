@@ -368,3 +368,10 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   herramientas ausentes.
   Evitar: suites del repo sin el toolchain local en PATH.
   Mejor enfoque: `source scripts/env.sh` primero (10 tests OK).
+
+## 2026-10-28 — Ronda 33
+- Error: `apply_patch` con un bloque duplicado por error dejó líneas de texto Java fuera de Python al final de `scripts/prepare_teavm.py`; un fix posterior con `python3` recortó mal el ancla (`"    main()"` aparecía dentro de un string) y luego un script de inserción rompió otro parche (`patch_monitor`). La archivo quedó con `IndentationError`.
+- Causa y patrón a evitar: parches sucesuales sobre un archivo ya dañado, y buscar anclas que no son únicas (líneas que también aparecen dentro de cadenas triple-quoted).
+- Mejor enfoque: cuando un archivo de generación queda sintácticamente roto, restaurar desde `git show HEAD:<path>` y volver a aplicar TODO el cambio en una sola pasada con anclas verificadas por `count(...)==1` antes de insertar; después `ast.parse` como puerta antes de correr el script.
+- Error: el primer diagnóstico dentro de `Fiber.popInt` construyó el mensaje con `StringBuilder`; `StringBuilder.append` es él mismo una corrutina en la classlib fijada, así que el diagnóstico recursó `popInt <- describe <- append` y saturó la pila de JS (`RangeError: Maximum call stack size exceeded`) en lugar de reportar los contadores.
+- Mejor enfoque: dentro de machinery de corrutinas (`popInt`/`push`/prologue) no usar APIs suspendibles: emitir números con `@JSBody` directo a `console.log` y lanzar un mensaje fijo.

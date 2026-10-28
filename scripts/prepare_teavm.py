@@ -280,6 +280,207 @@ def patch_fiber():
 """
     assert source.count(marker) == 1
     source = source.replace(marker, helper + marker)
+    import_marker = "import org.teavm.interop.AsyncCallback;"
+    assert source.count(import_marker) == 1
+    source = source.replace(import_marker, import_marker + "\nimport org.teavm.jso.JSBody;")
+    # Local change: never resume a fiber from inside another fiber's live start(). In WasmGC,
+    # AsyncCallbackImpl.complete/error calls fiber.resume() whenever Fiber.current is not the
+    # awaited fiber, so the JS callback runs resume() -> start() nested inside the other parked
+    # fiber's start(). The async prologue (CoroutineTransformation.generatePrologue:
+    # isResuming ? popInt(...) : state = 0) then reads that other fiber's saved-int stack.
+    # Deferring the resume through EventQueue (time 0 -> setTimeout 0) serializes every fiber
+    # transition in a top-level macrotask, exactly like TThread.sleep already does. Semantics are
+    # unchanged: resume still happens outside any Fiber.current, and nothing is simulated -- if the
+    # timer never fires the fiber stays parked.
+    old = """                setCurrentThread(javaThread);
+                javaThread = null;
+                Fiber fiber = this.fiber;
+                this.fiber = null;
+                fiber.result = result;
+                removePendingCall();
+                fiber.resume();"""
+    new = """                Fiber fiber = this.fiber;
+                this.fiber = null;
+                Thread thread = javaThread;
+                javaThread = null;
+                fiber.result = result;
+                removePendingCall();
+                EventQueue.offer(new ResumeEvent(thread, fiber));"""
+    assert source.count(old) == 1, "Fiber.complete handoff changed"
+    source = source.replace(old, new)
+    old = """                setCurrentThread(javaThread);
+                javaThread = null;
+                Fiber fiber = this.fiber;
+                this.fiber = null;
+                fiber.exception = e;
+                removePendingCall();
+                fiber.resume();"""
+    new = """                Fiber fiber = this.fiber;
+                this.fiber = null;
+                Thread thread = javaThread;
+                javaThread = null;
+                fiber.exception = e;
+                removePendingCall();
+                EventQueue.offer(new ResumeEvent(thread, fiber));"""
+    assert source.count(old) == 1, "Fiber.error handoff changed"
+    source = source.replace(old, new)
+    resume_event = """    private static final class ResumeEvent implements EventQueue.Event {
+        private Thread thread;
+        private Fiber fiber;
+
+        ResumeEvent(Thread thread, Fiber fiber) {
+            this.thread = thread;
+            this.fiber = fiber;
+        }
+
+        @Override
+        public void run() {
+            Thread thread = this.thread;
+            this.thread = null;
+            Fiber fiber = this.fiber;
+            this.fiber = null;
+            setCurrentThread(thread);
+            fiber.resume();
+        }
+    }
+
+"""
+    end_marker = """        private void removePendingCall() {"""
+    assert source.count(end_marker) == 1
+    source = source.replace(end_marker, resume_event + end_marker)
+    # Diagnostics (round 33): the deferred resume above did not remove the crash, so the
+    # out-of-bounds pop must report the counters that identify the corruptor. No string building:
+    # StringBuilder.append is itself a coroutine in the pinned classlib, so composing a message
+    # inside popInt re-enters popInt and overflows the JS stack (measured: RangeError inside
+    # Fiber::describe). The counters go straight to the console through a plain JS body.
+    fields_marker = """    private static Fiber current;
+    private static PendingCall lastPendingCall;"""
+    fields = """    private static Fiber current;
+    private static PendingCall lastPendingCall;
+    static int fiberIdCounter;
+    static int lastSuspendFiber;
+    static int lastResumeFiber;
+    static int lastResumeFrom;
+    static int startDepth;
+    static int maxStartDepth;
+    static int nestedStarts;
+    int fiberId;
+    int suspendCount;
+    int resumeCount;
+    int intPushes;
+    int intPops;
+    int doubleResumes;"""
+    assert source.count(fields_marker) == 1
+    source = source.replace(fields_marker, fields)
+    ctor_marker = """    private Fiber(FiberRunner runner, boolean daemon) {
+        this.runner = runner;
+        this.daemon = daemon;
+    }"""
+    assert source.count(ctor_marker) == 1
+    source = source.replace(ctor_marker, """    private Fiber(FiberRunner runner, boolean daemon) {
+        this.runner = runner;
+        this.daemon = daemon;
+        this.fiberId = ++fiberIdCounter;
+    }""")
+    push_marker = "        intValues[intTop++] = value;"
+    assert source.count(push_marker) == 1
+    source = source.replace(push_marker, "        ++intPushes;\n        intValues[intTop++] = value;")
+    popint_marker = """    @Unmanaged
+    public int popInt() {
+        return intValues[--intTop];
+    }"""
+    assert source.count(popint_marker) == 1
+    source = source.replace(popint_marker, """    public int popInt() {
+        if (intTop <= 0) {
+            Fiber other = current;
+            reportUnderflow(fiberId, state, intTop, intPushes, intPops, suspendCount, resumeCount,
+                    doubleResumes,
+                    other == null ? -1 : other.fiberId,
+                    other == null ? -1 : other.state,
+                    other == null ? -1 : other.intTop,
+                    other == null ? -1 : other.intPushes,
+                    other == null ? -1 : other.intPops,
+                    other == null ? -1 : other.suspendCount,
+                    other == null ? -1 : other.resumeCount,
+                    lastSuspendFiber, lastResumeFiber, lastResumeFrom, startDepth, maxStartDepth,
+                    nestedStarts, lastPendingCall == null ? 0 : 1);
+            throw new IllegalStateException("Fiber int-stack underflow (see console pzFiberDiag)");
+        }
+        ++intPops;
+        return intValues[--intTop];
+    }
+
+    @JSBody(params = {"selfId", "selfState", "selfIntTop", "selfPush", "selfPop", "selfSuspend",
+            "selfResume", "selfDoubleResume", "curId", "curState", "curIntTop", "curPush", "curPop",
+            "curSuspend", "curResume", "lastSuspendFiber", "lastResumeFiber", "lastResumeFrom",
+            "startDepth", "maxStartDepth", "nestedStarts", "pendingCall"},
+            script = "globalThis.pzFiberDiag = { selfId: selfId, selfState: selfState,"
+                    + " selfIntTop: selfIntTop, selfPush: selfPush, selfPop: selfPop,"
+                    + " selfSuspend: selfSuspend, selfResume: selfResume,"
+                    + " selfDoubleResume: selfDoubleResume, curId: curId, curState: curState,"
+                    + " curIntTop: curIntTop, curPush: curPush, curPop: curPop,"
+                    + " curSuspend: curSuspend, curResume: curResume,"
+                    + " lastSuspendFiber: lastSuspendFiber, lastResumeFiber: lastResumeFiber,"
+                    + " lastResumeFrom: lastResumeFrom, startDepth: startDepth,"
+                    + " maxStartDepth: maxStartDepth, nestedStarts: nestedStarts,"
+                    + " pendingCall: pendingCall };"
+                    + " console.log('pzFiberDiag ' + JSON.stringify(globalThis.pzFiberDiag));")
+    private static native void reportUnderflow(int selfId, int selfState, int selfIntTop, int selfPush,
+            int selfPop, int selfSuspend, int selfResume, int selfDoubleResume, int curId, int curState,
+            int curIntTop, int curPush, int curPop, int curSuspend, int curResume, int lastSuspendFiber,
+            int lastResumeFiber, int lastResumeFrom, int startDepth, int maxStartDepth, int nestedStarts,
+            int pendingCall);""")
+    suspend_marker = """        Thread javaThread = Thread.currentThread();
+        if (fiber.isResuming()) {"""
+    assert source.count(suspend_marker) == 1
+    source = source.replace(suspend_marker, """        Thread javaThread = Thread.currentThread();
+        ++fiber.suspendCount;
+        lastSuspendFiber = fiber.fiberId;
+        if (fiber.isResuming()) {""")
+    resume_marker = """    void resume() {
+        state = STATE_RESUMING;
+        start();
+    }"""
+    assert source.count(resume_marker) == 1
+    source = source.replace(resume_marker, """    void resume() {
+        ++resumeCount;
+        lastResumeFiber = fiberId;
+        lastResumeFrom = current == null ? -1 : current.fiberId;
+        if (state == STATE_RESUMING) {
+            ++doubleResumes;
+        }
+        state = STATE_RESUMING;
+        start();
+    }""")
+    start_marker = """    private void start() {
+        Fiber former = current;
+        current = this;"""
+    assert source.count(start_marker) == 1
+    source = source.replace(start_marker, """    private void start() {
+        Fiber former = current;
+        ++startDepth;
+        if (startDepth > maxStartDepth) {
+            maxStartDepth = startDepth;
+        }
+        if (former != null) {
+            ++nestedStarts;
+        }
+        try {
+            current = this;""")
+    start_end_marker = """        current = former;
+        if (!isSuspending() && !daemon && --userThreadCount == 0) {
+            EventQueue.stop();
+        }
+    }"""
+    assert source.count(start_end_marker) == 1
+    source = source.replace(start_end_marker, """        current = former;
+        } finally {
+            --startDepth;
+        }
+        if (!isSuspending() && !daemon && --userThreadCount == 0) {
+            EventQueue.stop();
+        }
+    }""")
     # The concrete Object[] allocation makes Array<java.lang.Object>@new reachable even when
     # Array.newInstance is not, and then the upstream generator adds a null supertype.
     generator_path = "org/teavm/backend/wasm/generate/classes/WasmGCNewArrayFunctionGenerator.java"
@@ -300,8 +501,11 @@ def patch_fiber():
     print("TeaVM: array allocation function tolerates an undeclared newArray supertype")
     destination = ROOT / "port/target/generated-sources/teavm" / path
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text("// Local change: synchronous fiber object-stack growth.\n" + source)
+    destination.write_text(
+        "// Local change: synchronous fiber object-stack growth; deferred cross-fiber resume.\n"
+        + source)
     print("TeaVM: fiber object-stack growth no longer goes through the async Arrays.copyOf(T[],int)")
+    print("TeaVM: AsyncCallbackImpl resumes through EventQueue instead of nesting start() in another fiber")
 
 def main():
     archive = ROOT / f".toolchain/downloads/teavm-core-{VERSION}-sources.jar"

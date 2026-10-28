@@ -38,3 +38,7 @@ Cada ronda se corta sola a las 4 horas exactas y, hasta ahora, ninguna llegó a 
 
 - Nunca escribas ni reescribas un archivo entero en una sola llamada de herramienta. Las llamadas muy largas se rompen (salen como texto `<tool_call>` y la ronda se corta). Editá con parches chicos: como máximo unas 80 líneas por llamada; si un archivo nuevo es más largo, crealo en varias partes (por ejemplo, un primer bloque y después agregados con `cat >> archivo <<'EOF'`).
 - Después de cada cambio que compila o de cada prueba, agregá enseguida una o dos líneas a STATUS.md (sección de la ronda actual) con lo que cambió y el resultado. No esperes al final de la ronda para actualizar STATUS.md.
+
+## OBLIGATORIO: notas del agente Code (desde la ronda 34)
+- Antes de tocar el handoff de hilos, leé `docs/notes-from-code.md`. Ahí está la causa raíz verificada del crash `Fiber::popInt` (Thread.currentThread/setCurrentThread vueltos corrutinas por el registro synchronized + WeakHashMap del ThreadGroup compat en JdkCompatibility.threads()), el fix recomendado y un repro mínimo. El script de verificación está en `tools/code-agent/wasmfn.py`.
+- Aplicá ese fix primero, sin stubs, y agregá el chequeo de build que propone. Anotá el resultado en STATUS.md.
