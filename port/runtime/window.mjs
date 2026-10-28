@@ -17,7 +17,15 @@ export class BrowserWindow {
     this.title = '';
     this.focused = true;
     this.swapCount = 0;
-    this.inputMode = { 212993: 208896, 212994: 1, 212995: 0 }; // cursor/sticky-buttons/sticky-keys
+    // Real GLFW constants: the mode is the key, the value is the cursor/sticky setting.
+    // GLFW_CURSOR=208897 (values NORMAL=212993/HIDDEN=212994/DISABLED=212995/CAPTURED=212996),
+    // GLFW_STICKY_KEYS=208898, GLFW_STICKY_MOUSE_BUTTONS=208899, GLFW_RAW_MOUSE_MOTION=208901.
+    this.inputMode = { 208897: 212993, 208898: 0, 208899: 0, 208901: 0 };
+    // Pointer lock state mirrored from the document, plus whether a lock was requested but is
+    // still waiting for a user gesture (Chrome only grants it from inside a gesture handler).
+    this.pointerLock = false;
+    this.pointerLockPending = false;
+    this.pointerLockError = null;
     this.hints = new Map();
     this.vsync = 1;
     this.callbackIds = new Map(); // kind -> callback id registered by BrowserCallbacks
@@ -53,6 +61,18 @@ export class BrowserWindow {
     for (let n=0;n<=9;n++) codes.push(`Digit${n}`,`Numpad${n}`);
     for (let n=1;n<=25;n++) codes.push(`F${n}`);
     for (const code of codes) this.keyCodes.set(glfwKey(code),code);
+    // Pointer lock is granted by Chrome only from inside a user gesture handler, so a request
+    // from the Java thread may fail; the state below records what actually happened.
+    document.addEventListener('pointerlockchange', () => {
+      this.pointerLock = document.pointerLockElement === this.canvas;
+      if (this.pointerLock) this.pointerLockPending = false;
+      this.events.push({type:'pointer_lock',locked:this.pointerLock});
+    }, { signal: this.gamepadController.signal });
+    document.addEventListener('pointerlockerror', () => {
+      this.pointerLock = false;
+      this.pointerLockError = 'pointerlockerror';
+      this.events.push({type:'pointer_lock_error'});
+    }, { signal: this.gamepadController.signal });
   }
   async prepare() {
     // Layout is optional and permission/policy dependent. Do not invent host labels.
@@ -352,6 +372,21 @@ export class BrowserWindow {
   }
   cursorX(handle) { this.requireWindow(handle); return this.cursor[0]; }
   cursorY(handle) { this.requireWindow(handle); return this.cursor[1]; }
+  // Chrome only grants pointer lock from a user gesture, so this records the request and never
+  // claims success: pointerLock stays false until the browser fires pointerlockchange.
+  requestPointerLock() {
+    this.pointerLockPending = true;
+    try {
+      const result = this.canvas.requestPointerLock();
+      if (result && typeof result.catch === 'function')
+        result.catch((error) => { this.pointerLockError = `${error.name}: ${error.message}`;
+          this.events.push({type:'pointer_lock_error',error:this.pointerLockError}); });
+    } catch (error) {
+      this.pointerLockError = `${error.name}: ${error.message}`;
+      this.events.push({type:'pointer_lock_error',error:this.pointerLockError});
+    }
+    return 1;
+  }
   inputModeValue(handle,mode) {
     this.requireWindow(handle);
     if (!Object.hasOwn(this.inputMode,mode)) throw new Error(`Unsupported browser input mode: ${mode}`);
@@ -359,16 +394,34 @@ export class BrowserWindow {
   }
   setInputMode(handle,mode,value) {
     this.requireWindow(handle);
-    if (mode === 212993) { // GLFW_CURSOR
-      // 208896 normal / 208897 hidden / 208898 captured. Pointer lock needs a user gesture
-      // and is not integrated yet, so only the observable normal mode is accepted.
-      if (value !== 208896)
-        throw new Error(`Browser pointer lock is not integrated: GLFW_CURSOR mode ${value}`);
+    if (mode === 208897) { // GLFW_CURSOR, values are the cursor modes below.
+      if (value === 212993) { // GLFW_CURSOR_NORMAL: OS cursor over the canvas.
+        this.canvas.style.cursor = '';
+        if (document.pointerLockElement === this.canvas) document.exitPointerLock();
+        this.pointerLockPending = false;
+      } else if (value === 212994) { // GLFW_CURSOR_HIDDEN: cursor visible only outside the window.
+        this.canvas.style.cursor = 'none';
+        if (document.pointerLockElement === this.canvas) document.exitPointerLock();
+        this.pointerLockPending = false;
+      } else if (value === 212995) { // GLFW_CURSOR_DISABLED: pointer lock, needs a user gesture.
+        this.canvas.style.cursor = 'none';
+        this.requestPointerLock();
+      } else if (value === 212996) { // GLFW_CURSOR_CAPTURED has no browser equivalent.
+        throw new Error(`Browser cannot capture the cursor: GLFW_CURSOR value ${value}`);
+      } else {
+        throw new Error(`Unsupported GLFW_CURSOR value: ${value}`);
+      }
+      this.inputMode[mode] = value;
+      this.events.push({type:'input_mode',mode,value,pointerLock:this.pointerLock});
+      return 1;
+    }
+    if (mode === 208898 || mode === 208899) { // GLFW_STICKY_KEYS / GLFW_STICKY_MOUSE_BUTTONS
       this.inputMode[mode] = value;
       return 1;
     }
-    if (mode === 212994 || mode === 212995) { // sticky mouse buttons / sticky keys
+    if (mode === 208901) { // GLFW_RAW_MOUSE_MOTION: movementX/Y only matches GLFW while locked.
       this.inputMode[mode] = value;
+      this.events.push({type:'raw_mouse_motion',value,locked:this.pointerLock});
       return 1;
     }
     throw new Error(`Unsupported browser input mode: ${mode}`);

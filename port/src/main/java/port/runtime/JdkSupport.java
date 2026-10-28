@@ -39,7 +39,37 @@ public final class JdkSupport {
         return total;
     }
 
-    public static void onSpinWait() { Thread.yield(); }
+    /**
+     * Cooperative yield for the browser backend.
+     *
+     * TeaVM 0.16.0 implements threads as coroutines: every suspension point replays the fiber's
+     * pending-call chain on the JavaScript stack, so a Java loop that suspends on each iteration
+     * (zombie.core.opengl.RenderThread#renderLoop calls Thread.yield) permanently keeps ~3 JS
+     * frames per suspension until V8 throws RangeError: Maximum call stack size exceeded. That
+     * was verified in round 28: the overflow stack of boot.wasm contains 3370 cycles of
+     * Fiber::reversePush/Fiber::push/Arrays::copyOf under Thread::switchContext <- Thread::yield.
+     *
+     * Yielding on every call therefore kills the boot, and not yielding at all starves the other
+     * fibers. This suspends only once per YIELD_GRANT calls, which bounds the replay depth while
+     * still handing control to the browser event loop (and to the other fibers) regularly. It is
+     * a rate limit, not a fix: the real fix is a scheduler that does not replay pending calls.
+     */
+    private static final int YIELD_GRANT = 64;
+    private static long yieldCalls;
+    public static long yieldCount() { return yieldCalls; }
+
+    /** `yield` is a restricted identifier: the only legal call is the qualified JdkSupport.yield(). */
+    public static void yield() {
+        yieldCalls++;
+        if (yieldCalls % YIELD_GRANT != 0) return;
+        try {
+            Thread.sleep(0L);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    public static void onSpinWait() { JdkSupport.yield(); }
 
     public static int read(InputStream stream) throws IOException {
         byte[] one = new byte[1];

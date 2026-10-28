@@ -79,9 +79,19 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     await page.screenshot({path:screenshot,fullPage:true});
     const windowSystem=await page.evaluate(()=>globalThis.pzRuntime?.window?.events || []);
     const progress=await page.evaluate(()=>globalThis.pzGameProgress || []);
+    // Call counters that reveal which bridge is looping when the wasm overflows the JS stack.
+    const bridge=await page.evaluate(()=>({
+      glCalls:globalThis.pzRuntime?.gl?.calls || null,
+      glCallTotal:Object.values(globalThis.pzRuntime?.gl?.calls || {}).reduce((a,b)=>a+b,0),
+      dispatched:globalThis.pzRuntime?.window?.dispatchedEvents ?? null,
+      swapCount:globalThis.pzRuntime?.window?.swapCount ?? null,
+      inputMode:globalThis.pzRuntime?.window?.inputMode ?? null,
+      pointerLock:globalThis.pzRuntime?.window?.pointerLock ?? null,
+      pointerLockError:globalThis.pzRuntime?.window?.pointerLockError ?? null,
+    }));
     mkdirSync('port/target/reports/game-main-lua',{recursive:true});
     writeFileSync('port/target/reports/game-main-lua/chrome-startup.json',JSON.stringify({
-      observedAt:new Date().toISOString(),build,state,wasm,windowSystem,progress,
+      observedAt:new Date().toISOString(),build,state,wasm,windowSystem,progress,bridge,
       console:{consoleMessages,pageErrors,failedResponses},symbols,screenshot,
       screenshot_visually_checked:false
     },null,2)+'\n');

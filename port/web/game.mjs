@@ -8,7 +8,10 @@ import { preloadPacks } from '/runtime/packs.mjs';
 
 const status = document.getElementById('game-status');
 // TeaVM derives Java frames from V8 stacks; the default ten frames hide callers.
-if (typeof Error.stackTraceLimit === 'number') Error.stackTraceLimit = Math.max(Error.stackTraceLimit,64);
+// Diagnostic depth for round 28: the RangeError reported in rounds 27b/28 has a repeating
+// Fiber::push/reversePush/Arrays::copyOf cycle. A higher limit keeps the base frames of that
+// recursion visible, which is what identifies the real Java caller.
+if (typeof Error.stackTraceLimit === 'number') Error.stackTraceLimit = Infinity;
 try {
   const response = await fetch('/game/build-state.json');
   if (!response.ok) throw new Error('Todavía no hay una compilación del juego.');
@@ -27,7 +30,12 @@ try {
   pzRuntime.bullet = await bulletBridge();
   pzRuntime.loadedLibraries = pzRuntime.bullet.loadedFor;
   const runtime = await TeaVM.wasmGC.load('/game/boot.wasm');
-  runtime.exports.main([]);
+  // The browser runtime provides no fmod native library. Passing the game's own documented
+  // -nosound argument makes MainScreenState parse it into Core.soundDisabled, which is the real
+  // path the desktop game takes when sound is off: GameWindow.mainThreadInit then installs
+  // DummySoundManager/DummyAmbientStreamManager instead of calling FMODManager.init(). Sound is
+  // genuinely absent here, so this reports that honestly rather than faking a fmod bridge.
+  runtime.exports.main(['-nosound']);
   const phases = { starting:'Arranque real en curso…', failed:'El arranque encontró un error.', 'main-returned':'El main retornó. Menú todavía no verificado.' };
   const update = () => {
     status.textContent = phases[globalThis.pzGame?.phase] || 'Esperando el arranque Java…';

@@ -67,6 +67,7 @@ export class GLBridge {
     this.boundArrays = null; // last ARRAY_BUFFER handle bound by bindBuffer (needed by attrib pointers)
     this.nextHandle = 1; // 0 is reserved for "none", as in desktop GL
     this.lost = false;
+    this.capabilities = new Map(); // desktop capability token -> {enabled, webgl} actually applied
     canvas.addEventListener('webglcontextlost', event => { event.preventDefault(); this.lost = true; });
     canvas.addEventListener('webglcontextrestored', () => {
       // Resource reconstruction is not implemented yet: do not continue with invalid handles.
@@ -87,6 +88,52 @@ export class GLBridge {
   viewport(...args) { this.call('viewport', ...args); }
   getError() { return this.call('getError'); }
   unsupported(jniName) { throw new Error(`Unsupported native: ${jniName}`); }
+  /* --- Desktop capability tokens on glEnable/glDisable ---------------------------------
+   * WebGL2 only accepts its own capability constants, so a desktop token has to be translated.
+   * A token with no WebGL2 capability is reported with its identity instead of being dropped:
+   * silently ignoring it would pretend the fixed-function feature is active (AGENTS.md).
+   */
+  // Values verified with `javap -constants` over the pinned LWJGL jar: for these capabilities the
+  // desktop token and the WebGL2 constant are the same number, so the token is only a lookup key.
+  static CAPS = new Map([
+    [0x0c11, 'SCISSOR_TEST'], [0x0b44, 'CULL_FACE'], [0x0b71, 'DEPTH_TEST'], [0x0b90, 'STENCIL_TEST'],
+    [0x0be2, 'BLEND'], [0x8037, 'POLYGON_OFFSET_FILL'], [0x8c89, 'RASTERIZER_DISCARD'],
+    [0x809e, 'SAMPLE_ALPHA_TO_COVERAGE'], [0x80a0, 'SAMPLE_COVERAGE'], [0x80b0, 'SAMPLE_MASK'],
+  ]);
+  /* Desktop fixed-function capabilities with no WebGL2 state at all. This backend runs the game's
+   * shader pipeline (see apiVersion '3.3 (WebGL 2.0)'), where texturing, lighting, alpha test and
+   * fog are shader behaviour rather than enable bits. Their requested value is *recorded* and is
+   * reported in the Chrome evidence (capabilityState), never reported as applied.
+   */
+  static FIXED_FUNCTION_CAPS = new Map([
+    [0x0de0, 'TEXTURE_1D'], [0x0de1, 'TEXTURE_2D'], [0x806f, 'TEXTURE_3D'], [0x8513, 'TEXTURE_CUBE_MAP'],
+    [0x0b60, 'FOG'], [0x0b50, 'LIGHTING'], [0x0b57, 'COLOR_MATERIAL'], [0x0ba1, 'NORMALIZE'],
+    [0x0bc0, 'ALPHA_TEST'], [0x0bd0, 'DITHER'], [0x0b20, 'LINE_SMOOTH'], [0x0b10, 'POINT_SMOOTH'],
+    [0x0b24, 'LINE_STIPPLE'], [0x0b42, 'POLYGON_STIPPLE'], [0x0bf1, 'LOGIC_OP'], [0x809d, 'MULTISAMPLE'],
+  ]);
+  capability(cap, on) {
+    const gl = this.context;
+    const name = GLBridge.CAPS.get(cap);
+    const constant = name === undefined ? undefined : gl[name];
+    if (GLBridge.FIXED_FUNCTION_CAPS.has(cap)) {
+      this.fixedFunctionCaps.set(cap, { enabled: !!on, name: GLBridge.FIXED_FUNCTION_CAPS.get(cap) });
+      return;
+    }
+    if (constant === undefined)
+      throw new Error(`WebGL2 has no capability for GL token 0x${cap.toString(16)} (${on ? 'glEnable' : 'glDisable'})`);
+    this.call(on ? 'enable' : 'disable', constant);
+    this.capabilities.set(cap, { enabled: on, webgl: name });
+  }
+  enable(cap) { this.capability(cap, true); }
+  disable(cap) { this.capability(cap, false); }
+  /** State the Java/runtime report exposes: applied WebGL2 caps plus recorded desktop-only caps. */
+  capabilityState() {
+    const applied = {};
+    for (const [token, entry] of this.capabilities) applied[token.toString(16)] = entry;
+    const recorded = {};
+    for (const [token, entry] of this.fixedFunctionCaps) recorded[token.toString(16)] = entry;
+    return { applied, fixedFunctionRecorded: recorded };
+  }
   /**
    * WebGL2 exposes no desktop OpenGL version. This backend presents the API version 3.3 with the
    * WebGL 2.0 renderer comment, because WebGL2 has no fixed-function pipeline and the game's
@@ -142,9 +189,9 @@ export class GLBridge {
     [0x8dfd, 'MAX_FRAGMENT_UNIFORM_VECTORS'], [0x84d8, 'MAX_SAMPLES'],
   ]);
   static BOOL_ANSWERS = new Map([
-    [0x0b90, 'SCISSOR_TEST'], [0x0b91, 'CULL_FACE'], [0x0b92, 'DEPTH_TEST'],
-    [0x0bc2, 'BLEND'], [0x0be2, 'POLYGON_OFFSET_FILL'], [0x0ba7, 'RASTERIZER_DISCARD'],
-    [0x0bb8, 'SAMPLE_ALPHA_TO_COVERAGE'], [0x0bad, 'SAMPLE_MASK'],
+    [0x0c11, 'SCISSOR_TEST'], [0x0b44, 'CULL_FACE'], [0x0b71, 'DEPTH_TEST'], [0x0b90, 'STENCIL_TEST'],
+    [0x0be2, 'BLEND'], [0x8037, 'POLYGON_OFFSET_FILL'], [0x8c89, 'RASTERIZER_DISCARD'],
+    [0x809e, 'SAMPLE_ALPHA_TO_COVERAGE'], [0x80a0, 'SAMPLE_COVERAGE'],
   ]);
   intParameters(pname) {
     const gl = this.context;
@@ -714,3 +761,5 @@ export class GLBridge {
     return [...pixel];
   }
 }
+    this.capabilities = new Map(); // desktop capability token -> {enabled, webgl} actually applied
+    this.fixedFunctionCaps = new Map(); // desktop-only token -> last requested state, recorded not applied

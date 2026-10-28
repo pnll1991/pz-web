@@ -92,7 +92,16 @@ public final class JdkCompatibility implements ClassHolderTransformer {
             }
             case "java.io.Reader" -> forward(cls, context, "transferTo(Ljava/io/Writer;)J", false);
             case "java.nio.file.Path" -> forward(cls, context, "resolve(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;", false);
-            case "java.lang.Thread" -> { forward(cls, context, "onSpinWait()V", true); threads(cls,context); }
+            case "java.lang.Thread" -> {
+                forwardTo(cls, context, "onSpinWait()V", true, "port.runtime.JdkSupport", true);
+                // Thread.yield is a TeaVM @Async native that suspends the fiber whenever the
+                // 100 ms time slice expired. zombie.core.opengl.RenderThread#renderLoop calls it
+                // on every frame, and on WasmGC each suspension replays the fiber's pending-call
+                // chain on the JavaScript stack (round 28: 3370 Fiber::push cycles overflowed V8).
+                // Replacing it with the rate-limited cooperative yield bounds the replay depth.
+                forwardTo(cls, context, "yield()V", true, "port.runtime.JdkSupport", true);
+                threads(cls, context);
+            }
             case "java.io.FileInputStream" -> {
                 channel(cls, context, true);
                 // The pinned classlib returns a signed byte from read(). Keep

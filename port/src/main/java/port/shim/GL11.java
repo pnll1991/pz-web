@@ -15,8 +15,8 @@ public final class GL11 {
     public static void glViewport(int x, int y, int w, int h) { viewport(x, y, w, h); }
     public static int glGetError() { return getError(); }
 
-    public static void glEnable(int cap) { call1("enable", cap); }
-    public static void glDisable(int cap) { call1("disable", cap); }
+    public static void glEnable(int cap) { capability(cap, 1); }
+    public static void glDisable(int cap) { capability(cap, 0); }
     public static void glBlendFunc(int srcFactor, int dstFactor) { call2("blendFunc", srcFactor, dstFactor); }
     public static void glBlendFuncSeparate(int srcRGB, int dstRGB, int srcAlpha, int dstAlpha) {
         call4("blendFuncSeparate", srcRGB, dstRGB, srcAlpha, dstAlpha);
@@ -72,6 +72,13 @@ public final class GL11 {
 
     @JSBody(params={"name","a"}, script="globalThis.pzRuntime.gl.call(name,a);")
     private static native void call1(String name, int a);
+    /**
+     * glEnable/glDisable receive desktop tokens. port/runtime/gl.mjs translates them to the
+     * WebGL2 capability constant when one exists, and raises with the token otherwise, so the
+     * log shows which fixed-function feature this backend cannot provide.
+     */
+    @org.teavm.jso.JSBody(params={"cap","on"}, script="globalThis.pzRuntime.gl.capability(cap,on===1);")
+    private static native void capability(int cap, int on);
     @JSBody(params={"name","a","b"}, script="globalThis.pzRuntime.gl.call(name,a,b);")
     private static native void call2(String name, int a, int b);
     @JSBody(params={"name","a","b","c","d"}, script="globalThis.pzRuntime.gl.call(name,a,b,c,d);")

@@ -99,3 +99,32 @@ Cambios verificados parciales (se actualiza durante la ronda):
 - `port/shim/BrowserWindow.java`: puente `glfwJoystickPresent(I)Z`, `glfwGetJoystickName(I)String`, `glfwJoystickIsGamepad(I)Z`, `glfwGetGamepadName(I)String` (los tres primeros coinciden con los descriptores de `org.lwjgl.glfw.GLFW`, así `WindowCompatibility` los reenvía al bridge). Axes/buttons/hats/GUID/gamepad state siguen con el raise honesto.
 - `port/runtime/window.mjs`: espejo de la Gamepad API (`syncGamepads`, `refreshGamepads`, `joystickPresent/joystickName/joystickIsGamepad/gamepadName`), cola de eventos joystick kind 11 en `poll()`, listeners `gamepadconnected/gamepaddisconnected` que sólo piden re-sinc (`navigator.getGamepads()` está prohibido dentro de esos callbacks). Sin interacción del usuario Chrome reporta 0 gamepads: estado real, no stub. Slot ≥16 se registra una vez como `joystick_unrepresentable`.
 - Verificado: `mvn -f port/pom.xml compile` OK, `node --check port/runtime/window.mjs` OK, python 10 OK, npm 19 OK. Build `--with-game` en curso (`build-round27b-game.log`).
+
+## Ronda 28 (en curso) — iniciada 22:45:35 (-03)
+
+Cambios verificados (se actualiza durante la ronda):
+
+- `port/runtime/window.mjs`: **corrige el mapeo invertido de modos de input GLFW** (stop de la ronda 27b:
+  `Unsupported browser input mode: 208897`). `GLFW_CURSOR=208897` es el MODE y sus valores son
+  `212993` NORMAL / `212994` HIDDEN / `212995` DISABLED / `212996` CAPTURED; `208898`/`208899` son
+  STICKY_KEYS/STICKY_MOUSE_BUTTONS y `208901` RAW_MOUSE_MOTION. DISABLED pide pointer lock real
+  (nunca afirma que obtuvo el lock); CAPTURED lanza con su identidad. Eventos nuevos
+  `input_mode` y estado `pointerLock/pointerLockPending/pointerLockError`.
+- `port/web/game.mjs`: `main(['-nosound'])` (camino documentado del propio juego: `Core.soundDisabled`
+  ⇒ `GameWindow.mainThreadInit` instala `DummySoundManager`/`DummyAmbientStreamManager`) y
+  `Error.stackTraceLimit = Infinity`. Verificado: el `UnsatisfiedLinkError` de FMOD desaparece y la
+  traza real del RangeError quedó visible.
+- Diagnóstico confirmado con la traza completa (10134 líneas, 3370 ciclos
+  `Fiber::reversePush/Fiber::push/Arrays::copyOf` bajo `Thread::switchContext <- Thread::yield <-
+  zombie.core.opengl.RenderThread::renderLoop`): TeaVM 0.16.0 reanade la cadena de pending calls de
+  la fibra en el stack de JavaScript en cada suspend/resume, así que un loop que suspende en cada
+  iteración desborda V8. `--js-flags=--stack-size` **crashea** Chrome (medido), no es opción.
+- `port/src/main/java/port/runtime/JdkSupport.java` (nuevo método `yield()` cooperativo rate-limited,
+  `YIELD_GRANT = 64`, suspende vía `Thread.sleep(0)`) + `JdkCompatibility` sustituye ahora también
+  `java.lang.Thread#yield()V` (era el punto de suspensión real del render loop; `onSpinWait` ya
+  estaba forward). `mvn -f port/pom.xml compile` OK.
+- `port/runtime/gl.mjs` + `port/shim/GL11.java`: `glEnable/glDisable` traducen tokens de escritorio a
+  la capability WebGL2 real (`CAPS`: SCISSOR_TEST/CULL_FACE/DEPTH_TEST/STENCIL_TEST/BLEND/
+  POLYGON_OFFSET_FILL/RASTERIZER_DISCARD/SAMPLE_ALPHA_TO_COVERAGE/SAMPLE_MASK) y registran el estado;
+  un token sin capability WebGL2 **lanza con su identidad** en vez de ignorarse (elimina
+  `WebGL: INVALID_ENUM: enable: invalid capability` sin simular éxito). `node --check` y `mvn compile` OK.
