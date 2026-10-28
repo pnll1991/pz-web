@@ -334,3 +334,37 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   `@JSFunctor` a un `@JSBody`, copiar su convención de llamada en vez de adivinar.
 - **Mejor enfoque**: `setTimeout(function(){resume();}, ...)`; verificar el tipo de functor leyendo
   un shim existente del repo antes de escribir el `@JSBody`.
+
+## 2026-10-28 — Ronda 32
+- Error: `pkill -f 'scripts/build.sh'` mató mi propio build en primer plano porque el patrón coincidió también con la línea de comando del wrapper que lo ejecutaba (y con la llamada que hizo el pkill: rc=143).
+- Evitar: usar `pkill -f` con un patrón que aparece en el propio comando/shell de la sesión.
+- Mejor enfoque: matizar procesos por PID verificado con `ps -eo pid,etime,args --sort=-rss | grep ...` y matar solo el PID del java/maven, nunca por substring del script.
+- Error: lancé el build largo con `setsid ... &` dentro de `exec_command`; al cerrar la sesión murió y el log quedó congelado en `DEPENDENCY_ANALYSIS` (recaída del aprendizaje de la ronda 19).
+- Evitar: builds largos en segundo plano sin verificación de vida.
+- Mejor enfoque: correrlos en la sesión en primer plano y monitorear con `stat -c '%y' log` en llamadas separadas.
+- Error: `--with-game` falló por faltar `PZ_HOME` en el entorno de esa llamada; y reescribí `BrowserProgress.java` con un `cat >>` que duplicó el bloque (dos `}`).
+- Evitar: asumir variables de entorno y appending sin releer el archivo.
+- Mejor enfoque: exportar `PZ_HOME` en cada comando de build y verificar el archivo final (`tail`) antes de compilar.
+- Error: el `pulse(int)` nuevo fue declarado `@JSBody native` y el transformer le inyectó llamadas; TeaVM abortó con `port.shim.BrowserProgress.pulse(I)V: Method is not annotated with org.teavm.interop.Import` porque las llamadas agregadas después de la fase JSO no vuelven a transformarse.
+- Evitar: inyectar `InvokeInstruction` directo a un método `@JSBody`.
+- Mejor enfoque: envoltorio Java normal (`pulse` → `pulseNative` con `@JSBody`), como ya exige este repositorio para todos los puentes JSO.
+
+## 2026-10-28 — Ronda 32 (segunda mitad)
+- Error: `InvocationType` de TeaVM 0.16.0 sólo tiene `VIRTUAL` y `SPECIAL` (verificado con `javap`),
+  y no existe `ConstantInstruction` ni `ValueType.booleanConstant(...)`; mi inyección de un flag usaba
+  `InvocationType.STATIC` y compilar falló.
+  Evitar: inventar enums/clases del modelo de TeaVM.
+  Mejor enfoque: para un flag booleano inyectado, usar `IntegerConstantInstruction` + `InvocationType.SPECIAL`
+  hacia un método estático propio del shim (misma forma que `BrowserProgress.pulse`), y comprobar el enum
+  con `javap -p -classpath .toolchain/m2/org/teavm/teavm-core/0.16.0/teavm-core-0.16.0.jar org.teavm.model.instructions.InvocationType`.
+- Error: quité el suspend del yield y la página quedó en busy-loop: Playwright `evaluate` y `screenshot`
+  colgaban (`timeout` rc=124) y el log no avanzaba.
+  Evitar: asumir que "no suspender" deja correr el event loop de JS. Con fibras TeaVM el fiber activo
+  acapara la pila y el loop de JS nunca vuelve.
+  Mejor enfoque: medir con un diag que envuelva `page.evaluate`/`screenshot` en `Promise.race` con timeout
+  (`port/target/diag64.mjs`) y volcar `console`+`pageerror` antes de evaluar; así se distingue
+  "crasheó" de "nunca devuelve el control".
+- Error: corrí `python3 -m unittest discover -s tests/python` sin `source scripts/env.sh` → 2 errores por
+  herramientas ausentes.
+  Evitar: suites del repo sin el toolchain local en PATH.
+  Mejor enfoque: `source scripts/env.sh` primero (10 tests OK).

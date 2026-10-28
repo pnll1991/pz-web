@@ -58,17 +58,30 @@ public final class JdkSupport {
     private static long yieldCalls;
     public static long yieldCount() { return yieldCalls; }
 
+    /**
+     * Round 32: true while a render-context item is waiting for the render thread, i.e. while the
+     * game fiber is parked in RenderContextQueueItem#waitUntilFinished -> Object#wait. The render
+     * fiber must not suspend in that window: TeaVM 0.16.0 keeps a single static
+     * `Fiber.lastPendingCall`, and a parked game fiber plus a suspending render fiber produces the
+     * `RuntimeError: array element access out of bounds` at Fiber::popInt that rounds 31/32 measured.
+     * The flag is written only by observer injections (StartupProgress), never by hand.
+     */
+    // Round 32: the flag now lives in JS (globalThis.pzRenderItemPending), written by the observer
+    // injections and read by BrowserYield.suspendRequested(), so the yield decision is one JS read.
+
+
     /** `yield` is a restricted identifier: the only legal call is the qualified JdkSupport.yield(). */
     public static void yield() {
         yieldCalls++;
         if (yieldCalls % YIELD_GRANT != 0) return;
+        if (!port.shim.BrowserYield.suspendRequested()) return;
         try {
             // Round 31: Thread.sleep(0L) suspends the fiber but TeaVM 0.16.0 registers no timer for
             // it on WasmGC (the page creates exactly one setTimeout: the renderThread start), so the
             // suspended render fiber was never resumed and the game thread stayed parked on
             // RenderContextQueueItem.waitLock. BrowserYield.pause suspends on a real macrotask, which
             // the browser event loop does fire.
-            port.shim.BrowserYield.pause(0);
+            port.shim.BrowserYield.pause();
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
         }

@@ -32,6 +32,21 @@ try {
   const build = await response.json();
   if (!build.success || build.mode !== 'game-main') throw new Error('La compilación real del juego está bloqueada. Consultá el reporte local de TeaVM.');
   if (!crossOriginIsolated) throw new Error('Faltan COOP/COEP.');
+  // Round 32: the boundary transformer emits int ids (port.shim.BrowserProgress.pulse(int)) because
+  // a String constant injected in a frame that resumes after a suspend is still unmaterialized on
+  // WasmGC and crashed the module (diag56). Decode the ids here, before boot.wasm runs, so the
+  // diagnostics keep their label shape. A missing map only silences the diagnostics; it never
+  // changes the game.
+  try {
+    const pulseResponse = await fetch('/game/pulse-map.json');
+    if (pulseResponse.ok) globalThis.pzPulseLabels = await pulseResponse.json();
+  } catch (error) { console.warn('pulse-map no disponible:', error.message); }
+  // Round 32: suspending the render fiber corrupts TeaVM's fiber state while the game fiber is
+  // also parked (see port/shim/BrowserYield). Round 32 measurement: with suspension OFF the page
+  // never returns to the JS event loop (Playwright evaluate/screenshot both time out, diag64), so the
+  // default is suspension ON; the wasm gate skips the suspend while a render-context item is in
+  // flight, which is the only window where two fibers are parked. '?suspend=0' disables it.
+  globalThis.pzYieldSuspend = new URLSearchParams(location.search).get('suspend') !== '0';
   const canvas = document.getElementById('game-canvas');
   canvas.hidden = false;
   const vfs = await new VirtualFileSystem().open();

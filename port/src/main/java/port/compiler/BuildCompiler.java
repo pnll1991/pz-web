@@ -114,6 +114,16 @@ public final class BuildCompiler {
                     .append(": ").append(text.getText()).append('\n');
             }
             write(port, reports, "teavm-diagnostics.txt", problems.toString());
+            // Round 32: the boundary transformer now emits int ids (see StartupProgress). Publish
+            // the id -> label table next to the game module so the browser can decode the pulses
+            // into pzGameProgress/pzGameTrace/pzGameCounts labels. Emitted even when the module was
+            // rejected, so a failed build never leaves a stale map.
+            if (game) {
+                String pulseMap = StartupProgress.pulseMapJson();
+                Files.writeString(reports.resolve("pulse-map.json"), pulseMap);
+                Files.writeString(port.resolve("target").resolve("pulse-map.json"), pulseMap);
+                Files.writeString(output.resolve("pulse-map.json"), pulseMap);
+            }
             StringBuilder jdkProblems = new StringBuilder("Scope: " + mode + "; compilation reachability is not runtime evidence.\n");
             for (String line : problems.toString().split("\n")) {
                 if (line.contains("java.") || line.contains("javax.") || line.contains("jdk.") || line.contains("sun.")) {
