@@ -68,6 +68,7 @@ export class GLBridge {
     this.nextHandle = 1; // 0 is reserved for "none", as in desktop GL
     this.lost = false;
     this.capabilities = new Map(); // desktop capability token -> {enabled, webgl} actually applied
+    this.fixedFunctionCaps = new Map(); // desktop-only token -> last requested state, recorded not applied
     canvas.addEventListener('webglcontextlost', event => { event.preventDefault(); this.lost = true; });
     canvas.addEventListener('webglcontextrestored', () => {
       // Resource reconstruction is not implemented yet: do not continue with invalid handles.
@@ -761,5 +762,3 @@ export class GLBridge {
     return [...pixel];
   }
 }
-    this.capabilities = new Map(); // desktop capability token -> {enabled, webgl} actually applied
-    this.fixedFunctionCaps = new Map(); // desktop-only token -> last requested state, recorded not applied

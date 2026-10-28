@@ -247,6 +247,62 @@ def patch_backend(package):
     print("TeaVM: honor forced nullable inference for all coroutine stack results")
 
 
+def patch_fiber():
+    """The fiber's own stack growth must never be a coroutine."""
+    path = "org/teavm/runtime/Fiber.java"
+    with zipfile.ZipFile(ROOT / f".toolchain/downloads/teavm-core-{VERSION}-sources.jar") as package:
+        source = package.read(path).decode("utf-8")
+    old = """        } else if (objectTop + 1 == objectValues.length) {
+            objectValues = Arrays.copyOf(objectValues, objectValues.length * 3 / 2);
+        }"""
+    new = """        } else if (objectTop + 1 == objectValues.length) {
+            objectValues = growObjectStack(objectValues);
+        }"""
+    assert source.count(old) == 1
+    source = source.replace(old, new)
+    marker = "    public static void reversePush(int value, Fiber fiber) {"
+    helper = """    // Local change: growing with Arrays.copyOf(T[], int) is fatal here. That classlib method
+    // allocates through Array.newInstance(componentType, n), whose getClass() is asynchronous, so
+    // TeaVM turns copyOf into a coroutine whose prologue calls Fiber.reversePush -> Fiber.push,
+    // which grows the very same full stack again: unbounded mutual recursion until V8 throws
+    // "RangeError: Maximum call stack size exceeded" (measured in round 29: 3369 cycles of
+    // java.util.Arrays::copyOf / Fiber::push / Fiber::reversePush inside
+    // zombie.core.opengl.RenderThread::renderLoop). A concrete Object[] allocation is an
+    // allocation intrinsic that never suspends, so the growth stays synchronous.
+    private static Object[] growObjectStack(Object[] values) {
+        Object[] result = new Object[values.length * 3 / 2];
+        for (int i = 0; i < values.length; ++i) {
+            result[i] = values[i];
+        }
+        return result;
+    }
+
+"""
+    assert source.count(marker) == 1
+    source = source.replace(marker, helper + marker)
+    # The concrete Object[] allocation makes Array<java.lang.Object>@new reachable even when
+    # Array.newInstance is not, and then the upstream generator adds a null supertype.
+    generator_path = "org/teavm/backend/wasm/generate/classes/WasmGCNewArrayFunctionGenerator.java"
+    with zipfile.ZipFile(ROOT / f".toolchain/downloads/teavm-core-{VERSION}-sources.jar") as generator_package:
+        generator = generator_package.read(generator_path).decode("utf-8")
+    old = "functionType.getSupertypes().add(classInfoType.newArrayFunctionType());"
+    new = """var declared = classInfoType.newArrayFunctionType();
+            if (declared != null) {
+                functionType.getSupertypes().add(declared);
+            }"""
+    assert generator.count(old) == 2
+    generator = generator.replace(old, new)
+    generator_destination = ROOT / "port/target/generated-sources/teavm" / generator_path
+    generator_destination.parent.mkdir(parents=True, exist_ok=True)
+    generator_destination.write_text(
+        "// Local change: the declared newArray supertype only exists when Array.newInstance is reachable.\n"
+        + generator)
+    print("TeaVM: array allocation function tolerates an undeclared newArray supertype")
+    destination = ROOT / "port/target/generated-sources/teavm" / path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("// Local change: synchronous fiber object-stack growth.\n" + source)
+    print("TeaVM: fiber object-stack growth no longer goes through the async Arrays.copyOf(T[],int)")
+
 def main():
     archive = ROOT / f".toolchain/downloads/teavm-core-{VERSION}-sources.jar"
     if not archive.exists():
@@ -278,6 +334,7 @@ def main():
     print(f"TeaVM {VERSION}: compact reflection caches (3); source SHA-256 {SHA256}")
     patch_monitor()
     patch_console()
+    patch_fiber()
 
 
 if __name__ == "__main__":

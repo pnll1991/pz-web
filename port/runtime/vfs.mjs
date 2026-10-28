@@ -24,6 +24,16 @@ const transactionDone = transaction => new Promise((resolve, reject) => {
   transaction.onerror = () => {}; // onabort is authoritative; never resolve failed transactions.
 });
 
+// Round 29: the main fiber parks inside DebugOptions#initMessaging(), whose last observed game
+// call was ZomboidFileSystem#getMessagingDirSub(). The XML writer then goes through java.io into
+// our own VFS, so /Zomboid mutations are traced here with the same ring the Java transformer
+// uses. Mounted /media writes are skipped so the boot preload cannot flood the ring.
+const ringTrace = (label) => {
+  const t = globalThis.pzGameTrace || (globalThis.pzGameTrace = []);
+  t.push({ label, time: performance.now() });
+  if (t.length > 400) t.splice(0, t.length - 400);
+};
+
 /** Preloaded synchronous reads, writable /Zomboid, atomic IndexedDB snapshots. */
 export class VirtualFileSystem {
   constructor({ name = 'pz-web-saves-v1', maxBytes = 256 * 1024 * 1024 } = {}) {
@@ -91,6 +101,7 @@ export class VirtualFileSystem {
     this.files.set(path, data.slice());
     this.metadata.set(path, { directory:false, modified:Date.now(), readOnly:!writable(path) });
     this.changed(path, existed ? 'modify' : 'create');
+    if (writable(path)) ringTrace(`vfs#store(${existed ? 'modify' : 'create'}) ${path} bytes=${data.byteLength}`);
   }
   mount(path, data) {
     path = normalizePath(path);
@@ -109,6 +120,7 @@ export class VirtualFileSystem {
     this.directories.add(path);
     this.metadata.set(path, { directory:true, modified:Date.now(), readOnly:false });
     this.changed(path, 'create');
+    ringTrace(`vfs#mkdir ${path}`);
     return true;
   }
   createFile(path) {
@@ -203,6 +215,7 @@ export class VirtualFileSystem {
   }
   flush() {
     if (!this.database) return Promise.reject(new Error('VFS must be opened before flush'));
+    ringTrace(`vfs#flush:entered pendingFiles=${[...this.files.keys()].filter(writable).length}`);
     const snapshot = [...this.files].filter(([key]) => writable(key)).map(([key, data]) => [key, data.slice()]);
     const metadata = [...this.metadata].filter(([key]) => writable(key)).map(([key, value]) => [key, { ...value }]);
     // Serialize flushes, but let the caller retry after an aborted transaction.

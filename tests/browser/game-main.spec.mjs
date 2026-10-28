@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 
 test('compiled real main is instantiated and its actual stop is recorded', async ({ page }, testInfo) => {
-  test.setTimeout(90_000);
+  test.setTimeout(330_000);
   const consoleMessages=[],pageErrors=[],wasm=[],failedResponses=[];
   let build,state,symbols;
   page.on('console',message=>consoleMessages.push({type:message.type(),text:message.text()}));
@@ -14,7 +14,12 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     const response=await page.request.get('/game/build-state.json');expect(response.ok()).toBe(true);
     build=await response.json();expect(build.success).toBe(true);expect(build.reflection).toBe('lua');expect(build.wasm_bytes).toBeGreaterThan(0);
     await page.goto('/game.html',{waitUntil:'domcontentloaded'});
-    await expect.poll(()=>page.evaluate(()=>globalThis.pzGame?.phase),{timeout:60_000}).toMatch(/^(failed|main-returned|loader-failed)$/);
+    // Round 29: the RangeError is gone (Fiber.push no longer grows through the async
+    // Arrays.copyOf(T[],int)), so the boot now reaches GameWindow.mainThreadInit() and the main
+    // fiber parks there. It never reports a final phase, so the poll waits for the trace to stop
+    // growing and then asserts the actual park point.
+    await expect.poll(()=>page.evaluate(()=>(globalThis.pzGameTrace||[]).length),{timeout:190_000}).toBeGreaterThan(100);
+    const traceLength=await page.evaluate(()=>(globalThis.pzGameTrace||[]).length);
     state=await page.evaluate(()=>globalThis.pzGame);
     await testInfo.attach('actual-main-state',{body:JSON.stringify({build,state,wasm},null,2),contentType:'application/json'});
     expect(wasm).toContain('/game/boot.wasm');expect(state.menuRendered).toBe(false);
@@ -23,21 +28,35 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     // Resolve names/body boundaries only; never disassemble game code.
     symbols=execFileSync('python3',['scripts/wasm_stack.py','port/target/web/game/boot.wasm',...offsets],{encoding:'utf8'});
     await testInfo.attach('actual-main-symbols',{body:symbols,contentType:'text/plain'});
-    // Actual stop of round 27 (verified in this run's symbols): Display.create() returns, the
-    // GL15/GL20 bridges let SpriteRenderer create its attribute buffers, and RenderThread.init
-    // reaches org.lwjglx.input.Controllers.create -> GLFW.glfwSetJoystickCallback. That setter is
-    // now registered as event kind 11 over the Gamepad API, so the next attempt to advance the
-    // boot is the joystick enumeration that follows it. The menu is still not rendered.
-    expect(state).toMatchObject({phase:'main-returned',error:'',menuRendered:false});
+    // Actual stop of round 29 (verified with a non-deduplicated boundary trace): the render thread
+    // runs its first renderStep, GameWindow.mainThreadStart() calls mainThreadInit(), and
+    // DebugOptions.init()/initMessaging() parks the main fiber after its last
+    // ZomboidFileSystem#getMessagingDirSub() call. The fiber never reports a final phase and the
+    // trace stops growing, so the honest assertion here is that phase is still 'starting' with no
+    // page errors. The menu is not rendered.
+    expect(state).toMatchObject({phase:'starting',error:'',menuRendered:false});
+    expect(traceLength).toBeGreaterThan(100);
+    // Round 29 close: the deduplicated list never rotates, so it is the reliable source for the
+    // lifecycle boundaries; the ring is only evidence of the last events before the park.
+    const boundary=await page.evaluate(()=>pzGameProgress.map(event=>event.label));
+    expect(boundary).toContain('zombie.GameWindow#mainThreadInit()V:entered');
+    expect(boundary).not.toContain('zombie.GameWindow#mainThreadInit()V:returned');
+    expect(boundary).toContain('zombie.debug.DebugOptions#initMessaging()V:entered');
+    expect(boundary).toContain('zombie.core.opengl.RenderThread#renderStep()Z:returned');
+    // Save the raw park tail for the next round without disassembling anything.
+    const ring=await page.evaluate(()=>(globalThis.pzGameTrace||[]).map(event=>event.label));
+    await testInfo.attach('park-ring-tail',{body:ring.slice(-60).join('\n'),contentType:'text/plain'});
     const bullet = await page.evaluate(async()=>{const b=pzRuntime.bullet;return {loaded:!!b,loadedFor:b?.loadedFor,version:b?.version(),logging:b?.loggingInitialised(),world:b?.createWorld(0,-9.82,0),count:b?.bodyCount(),manifest:b?.manifest?.bullet?.version,wasmSha:b?.manifest?.module?.wasm_sha256};});
     expect(bullet.loaded).toBe(true); expect(bullet.loadedFor).toContain('PZBullet64'); expect(bullet.manifest).toBe('2.83');
     expect(bullet.version).toMatch(/^Bullet 283 \(upstream bullet3-2\.83, wasm32 port build\)$/);
     expect(bullet.world).toBe(1); expect(bullet.count).toBe(0);
     expect(bullet.wasmSha).toBe(JSON.parse(readFileSync('port/target/web/vendor/pzbullet/manifest.json','utf8')).module.wasm_sha256);
-    // Frames of the actual stop path, resolved from the offsets this round's trace reports.
-    for(const name of ['zombie.gameStates.MainScreenState::main','zombie.core.opengl.RenderThread::init',
-        'org.lwjglx.input.Controllers::create','org.lwjgl.glfw.GLFW::glfwSetJoystickCallback',
-        'java.lang.UnsupportedOperationException::<init>_0'])
+    // Frames of this round's logged exception, resolved from the offsets its trace reports:
+    // oshi.SystemInfoFFM.createHardware throws "Unsupported platform: UNSUPPORTED" from
+    // MainScreenState.printSpecs, which the game catches and logs (it is not the blocker).
+    for(const name of ['zombie.gameStates.MainScreenState::main','zombie.gameStates.MainScreenState::printSpecs',
+        'oshi.SystemInfoFFM::createHardware','java.lang.UnsupportedOperationException::<init>_0',
+        'port.GameBoot::launch','org.teavm.runtime.Fiber::startMain'])
         expect(symbols).toContain(name);
     const progress=await page.evaluate(()=>pzGameProgress.map(event=>event.label));
     expect(progress).toContain('org.lwjglx.opengl.Display#init()V:returned');
@@ -72,13 +91,17 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     expect(registrations.some(event=>event.kind===11)).toBe(true);
     expect(types).toContain('attribute_ignored');
     expect(trace).not.toContain('failed to read image');
-    expect(trace).toContain('Exception thrown during MainScreenState.main');
+    // The only exception the game logs this round is the oshi hardware probe; MainScreenState.main
+    // itself never returns, so there is no "Exception thrown during MainScreenState.main" yet.
+    expect(trace).toContain('Unsupported platform: UNSUPPORTED');
+    expect(trace).toContain('Unable to determine available GPU memory');
     expect(pageErrors).toEqual([]);
   } finally {
-    const screenshot='test-results/game-main-round27.png';
+    const screenshot='test-results/game-main-round29.png';
     await page.screenshot({path:screenshot,fullPage:true});
     const windowSystem=await page.evaluate(()=>globalThis.pzRuntime?.window?.events || []);
     const progress=await page.evaluate(()=>globalThis.pzGameProgress || []);
+    const ring=await page.evaluate(()=>globalThis.pzGameTrace || []);
     // Call counters that reveal which bridge is looping when the wasm overflows the JS stack.
     const bridge=await page.evaluate(()=>({
       glCalls:globalThis.pzRuntime?.gl?.calls || null,
@@ -92,6 +115,7 @@ test('compiled real main is instantiated and its actual stop is recorded', async
     mkdirSync('port/target/reports/game-main-lua',{recursive:true});
     writeFileSync('port/target/reports/game-main-lua/chrome-startup.json',JSON.stringify({
       observedAt:new Date().toISOString(),build,state,wasm,windowSystem,progress,bridge,
+      parkRing:ring,
       console:{consoleMessages,pageErrors,failedResponses},symbols,screenshot,
       screenshot_visually_checked:false
     },null,2)+'\n');

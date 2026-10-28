@@ -214,3 +214,53 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Hecho: los wrappers públicos `GL11.glXxx` reenvían a `GL11C.glXxx` **native**; mapear `GL11` en `gl-overrides.tsv` no sirve para el juego. Las mappings deben apuntar a `org.lwjgl.opengl.GL11C` (y `GL12C/GL13C/GL15C/GL20C/GL21C/GL30C`, todas presentes en el jar).
 - Hecho: en el jar pinneado **no existe** ninguna implementación concreta de `org.lwjgl.system.FunctionProvider` (`SharedLibraryImpl` no está); el provider debe construirse en IR sobre una clase sustituida (`GL$1 extends SharedLibrary$Delegate`, `linux.LinuxLibrary extends SharedLibrary$Default`).
 - Hecho: `ThreadLocalUtil.<clinit>` y `GL.setCapabilities` dependen de JNI/`MemoryUtil.memAddress(CustomBuffer)`; hay que sustituir ambos (no-op / `address()J`) o el camino de capacidades lanza aunque el provider sea correcto.
+
+## 2026-10-28 — Ronda 29
+- Error: la Ronda 28 dejó dos líneas (`this.capabilities` / `this.fixedFunctionCaps`) escritas
+  **después** de la llave de cierre de `class GLBridge` en `port/runtime/gl.mjs`, lo que producía
+  `TypeError: Cannot set properties of undefined (setting 'capabilities')` al importar el módulo y
+  hacía fallar las 5 pruebas Chrome en cascada (`loader-failed`). `node --check` NO lo detecta
+  (es error de runtime, no de sintaxis). Mejor enfoque: validar todo módulo editado con
+  `node -e "import('./port/runtime/gl.mjs')"`, no solo con `node --check`.
+- Error: asumí que un build previo estaba usable. El corte duro de 4 h de la Ronda 28 ocurrió
+  *durante* el build: `build-round28f-game.log` truncado en `TeaVM progress=3990` y
+  `port/target/web/game/build-state.json = {"success":false,"status":"running"}` sin `boot.wasm`.
+  Mejor enfoque: al empezar cada ronda, leer `build-state.json` y verificar que exista
+  `port/target/web/game/boot.wasm`; si no, reconstruir antes de cualquier prueba.
+- Hecho operativo: `scripts/build.sh` copia `port/runtime/*.mjs → port/target/web/runtime/`
+  **después** de `mvn`, así que editar `port/runtime` exige `cp port/runtime/*.mjs
+  port/target/web/runtime/` o un build nuevo; probar contra `port/target` sin ese cp usa código viejo.
+- Error de herramienta: `scripts/wasm_stack.py` exige offsets con prefijo `0x`; sin prefijo
+  resuelve 0 o falla silenciosamente. Mejor enfoque: pasar siempre `0x...`.
+- Corrección (Ronda 29): la nota anterior sobre `scripts/wasm_stack.py` era falsa. Su CLI hace
+  `int(value,0)`, por lo que acepta decimales **y** `0x...`; los offsets decimales resuelven bien
+  (verificado con 6227728 fillInStackTrace, 27792179 printSpecs, 9936031 main). Mejor enfoque:
+  verificar el comportamiento real de un script antes de documentar un requisito de formato.
+- Error: interpreté la recursión del `RangeError` como "replay por iteración" del prólogo de
+  corutina. Era recursión mutua real `Arrays.copyOf(T[],int) → Array.newInstance(@Async) →
+  Fiber::reversePush → Fiber::push` (~3369 ciclos). Mejor enfoque: resolver la pila con
+  `wasm_stack.py` y contar frames repetidos antes de nombrar la causa.
+- Error: un `str.replace()` en `scripts/prepare_teavm.py` consumió `def main():` al insertar código
+  (el patrón ancla coincidía con esa línea). Mejor enfoque: tras insertar en .py, correr siempre
+  `python3 -c "import ast;ast.parse(open(path).read())"` antes de ejecutar el script.
+- Error en `patch_fiber()`: (a) se leía otro entry del source jar después de cerrar su `with`
+  (`package.read` fuera del bloque) → KeyError/ZipFile cerrado; hay que reabrir un segundo `ZipFile`
+  o mover la lectura dentro; (b) el patrón buscado en `WasmGCNewArrayFunctionGenerator.java` estaba
+  indentado, pero los 2 call sites tienen 4 y 8 espacios → el reemplazo no aplicaba y el guard
+  `declared != null` perdía el prefijo. Mejor enfoque: buscar el patrón sin indentación y verificar
+  el número de sustituciones.
+- Hecho: parchar `Fiber.java` hace alcanzable `Array<Object>@new` sin pasar por `Array.newInstance`,
+  lo que exige parchar también `WasmGCNewArrayFunctionGenerator.java` (devolvía `null` tipo de
+  newArrayFunctionType → 2 NPE en `CompilerRegressionTest`). Ahora 6/6 OK.
+- Hecho: la lista `pzGameProgress` deduplica por label y **no** muestra el punto de park. Para
+  cazar fibras parked hace falta un anillo sin dedup (`pzGameTrace`, cap 400) y, si el loop de
+  render rota el anillo, las fronteras se leen de la lista deduplicada.
+- Error operativo: el navegador empaquetado de Playwright no está instalado. Mejor enfoque: lanzar
+  con `executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome'` más los args swiftshader
+  en los scripts de diagnóstico propios (`port/target/diag*.mjs`).
+- Error operativo: queda un dev-server colgado en 8092 dentro del sandbox y Playwright dice
+  "port already used". Mejor enfoque: `PZ_REAL_TEST_PORT=8093` para la suite real y 8091 para la de
+  plataforma, manteniendo `test-results/platform` y `test-results/real` separados.
+- Error de cuenta: el handoff decía "3 h 30 min transcurridos"; `grep 'lanzando ronda' supervisor.log`
+  + `date` dieron 2 h 33 min. Mejor enfoque: calcular el tiempo restante con esas dos lecturas
+  reales antes de decidir "solo cierre documentado".

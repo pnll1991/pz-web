@@ -128,3 +128,113 @@ Cambios verificados (se actualiza durante la ronda):
   POLYGON_OFFSET_FILL/RASTERIZER_DISCARD/SAMPLE_ALPHA_TO_COVERAGE/SAMPLE_MASK) y registran el estado;
   un token sin capability WebGL2 **lanza con su identidad** en vez de ignorarse (elimina
   `WebGL: INVALID_ENUM: enable: invalid capability` sin simular éxito). `node --check` y `mvn compile` OK.
+
+## Ronda 29 (en curso) — iniciada 00:45:26 (-03), límite de corte 03:45
+
+Estado de partida verificado:
+- HEAD vigilante `775e558` (Ronda 28). `git status` limpio al arrancar.
+- La Ronda 28 quedó cortada a las 4 h **durante** su último build: `build-round28f-game.log` se
+  truncó en `TeaVM progress=3990` y por eso `port/target/web/game/` solo tiene
+  `build-state.json = {"success":false,"status":"running"}` (sin `boot.wasm`). Su última prueba
+  Chrome real sí quedó registrada (`verification-round28d-real.log`, 00:42):
+  `phase:'main-returned'`, `error:''`, stop exacto
+  `WebGL2 has no capability for GL token 0xde1 (glEnable)` en
+  `zombie.core.Core::init → GL11.glEnable` con `port.shim.GL11::glEnable` en la traza.
+- El parche posterior de la Ronda 28 ya está en el repo: `port/runtime/gl.mjs` traduce tokens de
+  capability de escritorio a WebGL2 (`CAPS`/`FIXED_FUNCTION_CAPS` con valores verificados por
+  `javap -constants`: SCISSOR_TEST 0x0c11, CULL_FACE 0x0b44, DEPTH_TEST 0x0b71, STENCIL_TEST 0x0b90,
+  BLEND 0x0be2, POLYGON_OFFSET_FILL 0x8037, RASTERIZER_DISCARD 0x8c89, SAMPLE_ALPHA_TO_COVERAGE 0x809e,
+  SAMPLE_COVERAGE 0x80a0, SAMPLE_MASK 0x80b0) y **registra** las fixed-function sin equivalencia
+  WebGL2 (`TEXTURE_2D` 0x0de1, FOG, LIGHTING, etc.) en `fixedFunctionCaps`. `node --check` OK.
+
+Acciones de esta ronda:
+1. Build `--with-game` en primer plano (`build-round29-game.log`), único camino posible porque no
+   hay `boot.wasm` utilizable. En curso desde el primer comando.
+
+2. **Bug encontrado y corregido (causa del `loader-failed` de las 5 pruebas al empezar la ronda)**:
+   el parche final de la Ronda 28 dejó dos líneas de `this.capabilities/this.fixedFunctionCaps`
+   escritas **después** de la llave de cierre de `class GLBridge` en `port/runtime/gl.mjs`, así que
+   el módulo lanzaba `TypeError: Cannot set properties of undefined (setting 'capabilities')` al
+   importar (`node -e import(...)` lo confirma; `node --check` NO lo detecta porque es error de
+   runtime, no de sintaxis). Fix: las dos líneas van ahora en el constructor y se eliminó el bloque
+   huérfano del final del archivo (764 líneas). Copiado a `port/target/web/runtime/gl.mjs`.
+3. Build `--with-game` en primer plano terminado 01:02: `EXIT=0`, `success:true`,
+   `wasm_bytes:144335949`, `reachable_classes:10235`, `reachable_methods:72919`,
+   `process_peak_rss_kib:7636636` (bajo el límite), `compile_ms:796352`.
+4. **Causa REAL del RangeError corregida (no era "replay por iteración")**: la traza de 10133 líneas
+   muestra 3369 ciclos `java.util.Arrays::copyOf → Fiber::push → Fiber::reversePush`, es decir
+   **recursión mutua infinita** del crecimiento del stack de la fibra. `TArrays.copyOf(T[],int)` de
+   TeaVM asigna con `Array.newInstance(componentType,n)` y ese `getClass()` es asíncrono, así que
+   TeaVM convierte `copyOf` en corutina cuyo prólogo llama `Fiber::reversePush → Fiber::push`; como
+   se llama justo cuando el array está lleno, vuelve a crecer el mismo array → recursión hasta el
+   límite de V8. Fix en la fuente fijada vía `scripts/prepare_teavm.py::patch_fiber()`: `Fiber.push`
+   usa un helper propio `growObjectStack` (allocación concreta `new Object[n*3/2]` + copia manual),
+   que es un intrinsic de asignación y nunca suspende. `python3 scripts/prepare_teavm.py` OK.
+5. `python3 scripts/prepare_teavm.py` OK: imprime las 5 líneas de TeaVM + la del fiber + la del
+   generator. Dos arreglos necesarios: (a) el `package.read` del generator quedaba fuera del `with`
+   del source jar (`ValueError: Attempt to use ZIP archive that was already closed`) -> se abre un
+   segundo `ZipFile`; (b) el patrón de reemplazo del generator debe ir **sin** la indentación
+   original (los dos call sites tienen 4 y 8 espacios) -> se busca `functionType.getSupertypes().add(
+   classInfoType.newArrayFunctionType());` y se reemplaza con el guard `declared != null` conservando
+   el prefijo de indentación. Verificado en `port/target/generated-sources/teavm/...` (2 sitios).
+6. `mvn -f port/pom.xml test -Dtest=CompilerRegressionTest -o`: **6 tests OK** (antes 2 NPE en
+   `prepareTypes` por `newArrayFunctionType()==null`). Los otros 45 tests JVM ya pasaban.
+   Nota: al insertar esa función consumí por error la línea `def main():` (NameError en el build);
+   restaurada y verificada con `python3 -c "import ast; ast.parse(...)"`.
+7. Build `--with-game` Ronda 29c terminado 02:25 (`build-round29c-game.log`): `EXIT=0`,
+   `success:true`, `wasm_bytes:144335411`, `reachable_classes:10235`, `reachable_methods:72920`,
+   `compile_ms:346888`, `process_peak_rss_kib:7114668`.
+8. **El `RangeError: Maximum call stack size exceeded` DESAPARECIÓ** (el fix de `Fiber.push`
+   funciona). Chrome (`verification-round29c-real.log`, `observedAt 2026-10-28T05:26:47Z`): 4 pass
+   en `real-game.spec.mjs`; `game-main.spec.mjs` falla ahora con `phase:'starting'` (nunca llega a
+   un estado final en 60 s), `pageErrors:[]`. Avance nuevo del boot: además de Display/Logger/
+   Bullet/Display#create aparece `zombie.GameWindow#InitGameThread()V:entered/returned`; GL 267
+   calls, swapCount 2, 39 eventos de ventana (joystick kind 11 registrado, input_mode 208897).
+9. Stop visible nuevo: `java.lang.UnsupportedOperationException: Unsupported platform: UNSUPPORTED`
+   lanzado por `oshi.SystemInfoFFM::createHardware` (desde `MainScreenState::printSpecs` en
+   `MainScreenState::main`), resuelto con `scripts/wasm_stack.py` sobre los offsets de
+   `Throwable.java:` (6219430 fillInStackTrace, 15268115 Throwable::<init>, 6300801 Exception::<init>,
+   6192791 RuntimeException::<init>, 6179357 UnsupportedOperationException::<init>_0, 73390099
+   oshi.SystemInfoFFM::createHardware, 72055835/62739231/62739275 lambda get, 63142302/63142704
+   Memoizer$1::get, 62365006 SystemInfoFFM::getHardware, 27774642 printSpecs, 9925543 main,
+   74419148 port.GameBoot::launch). **El juego lo captura yloguea y el boot sigue**: no es el bloqueo.
+10. **Bloqueo actual**: tras `InitGameThread` la fibra principal queda suspendida para siempre.
+    Verificado con diagnósticos Playwright propios (`port/target/diag29.mjs`, `port/target/diag30.mjs`
+    sobre el dev-server 8092): 120 s esperando, `phase:'starting'`, contadores GL/swap/eventos
+    congelados (267/2/39), `pageErrors:[]`, 432 requestAnimationFrame (el JS sigue libre), y un único
+    `setTimeout` creado por `org.teavm.runtime.EventQueue::offerWasmGC` en t=4823 que **sí fireó**
+    (4845). No hay ningún timer pendiente => la fibra está parked en una espera de monitor/join que
+    nadie notificará (no es un loop ni un sleep).
+11. Cierre de Ronda 29 (03:20-03:23): la suite real `PZ_REAL_TEST_PORT=8093 npx playwright test
+    --config playwright.game.config.mjs` pasa **5/5** (`verification-round29f-real.log`), con las
+    aserciones adaptadas al park real (`phase:'starting'`, `mainThreadInit:entered` sin `returned`,
+    `DebugOptions#initMessaging:entered`, `RenderThread#renderStep:returned`, `pageErrors:[]`).
+    `npm test` 19/19 y `python3 -m unittest discover -s tests/python` OK (10 pruebas, requiere
+    `source scripts/env.sh` para tener `javac` en PATH; sin env fallan 2 por `FileNotFoundError`).
+12. Instrumentación ampliada para hallar el park (build en curso `build-round29h-game.log`):
+    `StartupProgress.CLASSES` suma `zombie.PredicatedFileWatcher`, `zombie.debug.DebugOptionsXml`,
+    `zombie.util.PZXmlUtil`, `zombie.XMLDocument`, `java.io.File`, `java.io.FileOutputStream`,
+    `java.io.BufferedWriter`, `java.io.OutputStreamWriter`, `java.io.FileWriter` y
+    `java.lang.Thread` (así un `sleep`/`yield`/`wait` se ve como frontera y no se infiere);
+    `port/runtime/vfs.mjs` agrega `ringTrace()` sobre el mismo anillo `pzGameTrace` para
+    `store()` de rutas `/Zomboid` escribibles, `mkdir()` y `flush():entered` (el preload de
+    `/media` no inunda el anillo). La spec lee ahora las fronteras de `pzGameProgress` (no rota)
+    y guarda el anillo crudo en el reporte (`parkRing`) + adjunto `park-ring-tail`.
+13. Build `build-round29h-game.log` (03:29:34, 6:27 min): `EXIT=0`, `success:true`,
+    `wasm_bytes:144501580`, peak RSS 7.1 GiB con la instrumentación ampliada. Chrome con el anillo
+    nuevo (`port/target/diag33.mjs`, `diag34.mjs`, puerto 8092) acota el park: la última frontera
+    del juego es `zombie.util.PZXmlUtil#createNewDocument()Lorg/w3c/dom/Document;:returned` dentro
+    de `PZXmlUtil#write()` (tras `tryWrite`, `DebugOptionsXml#<init>`, `PZXmlUtil#<clinit>`,
+    `PredicatedFileWatcher#<init>` y `DebugFileWatcher#add` ya retornados). No hay ninguna frontera
+    `java.io.FileOutputStream`/`vfs#store`: el park está **antes** de abrir el archivo, dentro de
+    nuestro código compat `javax.xml`/`org.w3c.dom`/`port.shim.BrowserDom`. Además `java.lang.Thread`
+    muestra que el render thread sí arranca y corre (`Thread#start`, `lambda$start$0`, `yield`,
+    `sleep`, `getStackTrace`), por lo que el `Thread.yield` de `mainThreadInit` no es el bloqueo.
+14. Suite real tras el build nuevo: `verification-round29h/i/j` fallan y `verification-round29k-real.log`
+    (03:49) pasa **5/5**. Las causas fueron nuestras, no del juego: (a) `page.screenshot` excedía el
+    timeout de 90 s porque resolver símbolos de una pila de 10 000+ frames con el classlib instrumentado
+    tardaba más; (b) el poll del anillo esperaba `pzGameTrace` pero Chrome tarda ~115 s en instanciar
+    los 144 MB de wasm bajo presión de RAM. Ajustado a `test.setTimeout(330_000)` y poll
+    `{timeout:190_000}`. Reporte `port/target/reports/game-main-lua/chrome-startup.json` ahora incluye
+    `parkRing` (400 eventos) y deja `state {phase:'starting',error:'',menuRendered:false}`,
+    `pageErrors:[]`.
