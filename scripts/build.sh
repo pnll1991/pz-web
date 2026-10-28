@@ -14,3 +14,13 @@ cp port/web/* port/target/web/
 cp port/runtime/*.mjs port/target/web/runtime/
 python3 scripts/copy_web_vendor.py
 python3 scripts/prepare_sqlite.py
+# Gate (docs/notes-from-code.md): Thread.currentThread/setCurrentThread deben ser sincrónicos.
+# Si contienen ops de Fiber, Fiber.suspend hace popInt sobre un int-stack que nunca pusheó.
+if [ -f port/target/web/game/boot.wasm ]; then
+  python3 scripts/wasmfn.py port/target/web/game/boot.wasm \
+    'java.lang.Thread::currentThread' 'java.lang.Thread::setCurrentThread' | tee port/target/reports/thread-fiber-gate.txt
+  if grep -q 'fiberops: True' port/target/reports/thread-fiber-gate.txt; then
+    echo "GATE FAIL: Thread::currentThread/setCurrentThread son corutinas (Fiber ops). Ver docs/notes-from-code.md" >&2
+    exit 1
+  fi
+fi
