@@ -750,3 +750,5 @@ y si `flushInvokeQueue()` ejecuta el item pendiente (lo que liberaría el `waitL
    `maxStartDepth`, `nestedStarts`. Build de medición `build-round33b-game.log` en curso.
    Nota: un parche previo dejó basura al final de `scripts/prepare_teavm.py` (líneas fuera de Python);
    corregido recortando el archivo tras `main()` — ver AGENT_LEARNINGS.
+## Ronda 34 — iniciada 14:40:59 (-03), límite de corte 18:40
+1. 14:45 — Ronda 34: aplicado el fix de la nota de Code en `port/compat/java/lang/ThreadGroup.java`: `WeakHashMap`→`IdentityHashMap` (claves Thread y grupos; no llama `hashCode/equals` virtuales), eliminados todos los `synchronized` del camino de `Thread.<init>/start/isAlive/getThreadGroup` y de `threads()/stackTraces()`. Motivo registrado en el comentario del archivo (monitores y colecciones hasheadas hacían `registerDefault` async → `Thread.<clinit>` async → `currentThread/setCurrentThread` corrutinas → `Fiber::popInt` fuera de rango).

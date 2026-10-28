@@ -2,14 +2,28 @@ package port.compat.java.lang;
 
 import java.util.*;
 
-/** Group metadata and lifecycle for TeaVM cooperative threads, with weak membership. */
+/**
+ * Group metadata and lifecycle for TeaVM cooperative threads.
+ *
+ * Round 34 (docs/notes-from-code.md): nothing reachable from {@code Thread.<init>},
+ * {@code Thread.<clinit>}, {@code start}, {@code isAlive} or {@code getThreadGroup} may suspend.
+ * TeaVM's AsyncMethodFinder marks a method async when any callee (including every virtual target)
+ * is async, and a {@code <clinit>} that is async turns the statics that trigger class
+ * initialization -- {@code Thread.currentThread}/{@code setCurrentThread} -- into coroutines.
+ * {@code Fiber.suspend} calls {@code Thread.currentThread()} during a resume, and that coroutine
+ * prologue does {@code Fiber.popInt} on a stack it never pushed: "array element access out of
+ * bounds" in Chrome. Therefore this class uses no {@code synchronized}, no {@code wait}, and no
+ * hashed collections that call virtual {@code hashCode}/{@code equals} (WeakHashMap does).
+ * Membership is identity-keyed and strong; threads are cooperative (one JS thread), so a monitor
+ * here would protect nothing.
+ */
 public class ThreadGroup implements Thread.UncaughtExceptionHandler {
     private static final ThreadGroup ROOT = new ThreadGroup(null, "browser", true);
     private record Member(ThreadGroup group, boolean started) { }
-    private static final Map<Thread,Member> MEMBERS = new WeakHashMap<>();
+    private static final Map<Thread,Member> MEMBERS = new IdentityHashMap<>();
     private final String name;
     private final ThreadGroup parent;
-    private final Set<ThreadGroup> children = Collections.newSetFromMap(new WeakHashMap<>());
+    private final Set<ThreadGroup> children = Collections.newSetFromMap(new IdentityHashMap<>());
     private int maximumPriority = Thread.MAX_PRIORITY;
     public ThreadGroup(String name) { this(groupOf(Thread.currentThread()),name); }
     public ThreadGroup(ThreadGroup parent, String name) { this(Objects.requireNonNull(parent),name,false); }
@@ -32,30 +46,28 @@ public class ThreadGroup implements Thread.UncaughtExceptionHandler {
     public static void registerDefault(Thread thread) {
         Thread current = Thread.currentThread();
         // TThread creates main before assigning its static currentThread field.
-        // No thread can contend yet, and an asynchronous monitor cannot have a
-        // null owner. Keep this bootstrap path outside the normal monitor.
+        // No thread can contend yet (single cooperative JS thread, no suspension between the
+        // reads and writes below), so no monitor is needed here or in the methods of this class.
         if (current == null) {
             MEMBERS.put(thread,new Member(ROOT,true));
             return;
         }
-        synchronized (ThreadGroup.class) {
-            ThreadGroup group = groupOf(current);
-            MEMBERS.put(thread,new Member(group == null ? ROOT : group,false));
-        }
+        ThreadGroup group = groupOf(current);
+        MEMBERS.put(thread,new Member(group == null ? ROOT : group,false));
     }
-    public static synchronized void assign(Thread thread, ThreadGroup group) {
+    public static void assign(Thread thread, ThreadGroup group) {
         if (group != null) MEMBERS.put(thread,new Member(group,false));
     }
-    public static synchronized void beforeStart(Thread thread) {
+    public static void beforeStart(Thread thread) {
         Member member = MEMBERS.get(thread);
         if (member != null && member.started) throw new IllegalThreadStateException("Thread already started");
         MEMBERS.put(thread,new Member(member == null ? ROOT : member.group,true));
     }
-    public static synchronized boolean alive(Thread thread, boolean running) {
+    public static boolean alive(Thread thread, boolean running) {
         Member member = MEMBERS.get(thread);
         return running && (member == null || member.started);
     }
-    public static synchronized ThreadGroup groupOf(Thread thread) {
+    public static ThreadGroup groupOf(Thread thread) {
         if (thread == null) return ROOT;
         Member member = MEMBERS.get(thread);
         if (member == null) return ROOT;
@@ -66,15 +78,13 @@ public class ThreadGroup implements Thread.UncaughtExceptionHandler {
     }
     private List<Thread> threads(boolean recurse) {
         var result = new ArrayList<Thread>();
-        synchronized (ThreadGroup.class) {
-            for (var entry : MEMBERS.entrySet()) {
-                var member = entry.getValue();
-                if (member.started && entry.getKey().isAlive() && (recurse ? parentOf(member.group) : member.group == this)) result.add(entry.getKey());
-            }
+        for (var entry : MEMBERS.entrySet()) {
+            var member = entry.getValue();
+            if (member.started && entry.getKey().isAlive() && (recurse ? parentOf(member.group) : member.group == this)) result.add(entry.getKey());
         }
         return result;
     }
-    public static synchronized Map<Thread,StackTraceElement[]> stackTraces() {
+    public static Map<Thread,StackTraceElement[]> stackTraces() {
         var result = new HashMap<Thread,StackTraceElement[]>();
         for(var entry:MEMBERS.entrySet())if(entry.getValue().started && entry.getKey().isAlive())result.put(entry.getKey(),entry.getKey().getStackTrace());
         Thread current=Thread.currentThread();result.put(current,current.getStackTrace());return result;
