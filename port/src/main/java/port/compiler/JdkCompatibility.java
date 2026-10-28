@@ -7,6 +7,7 @@ import org.teavm.model.ClassHolderTransformer;
 import org.teavm.model.ClassHolderTransformerContext;
 import org.teavm.model.ElementModifier;
 import org.teavm.model.FieldHolder;
+import org.teavm.model.FieldReference;
 import org.teavm.model.MethodDescriptor;
 import org.teavm.model.MethodHolder;
 import org.teavm.model.MethodReference;
@@ -16,6 +17,7 @@ import org.teavm.model.emit.ValueEmitter;
 import org.teavm.model.instructions.ExitInstruction;
 import org.teavm.model.instructions.InvocationType;
 import org.teavm.model.instructions.InvokeInstruction;
+import org.teavm.model.instructions.PutFieldInstruction;
 
 /** Adds narrowly implemented JDK APIs; never replaces missing APIs with success. */
 public final class JdkCompatibility implements ClassHolderTransformer {
@@ -102,6 +104,21 @@ public final class JdkCompatibility implements ClassHolderTransformer {
                 forwardTo(cls, context, "yield()V", true, "port.runtime.JdkSupport", true);
                 threads(cls, context);
             }
+            case "java.lang.ThreadGroup" -> {
+                // Ronda 37: cuerpos de los accesores nativos que usa la resolucion perezosa del
+                // grupo (docs/notes-from-code.md). Son getfield/putfield puros sobre el campo
+                // $pzCreator inyectado en java.lang.Thread: ninguna llamada, ninguna excepcion.
+                var threadType = ValueType.object("java.lang.Thread");
+                var creatorGetter = cls.getMethod(new MethodDescriptor("creatorOf", threadType, threadType));
+                creatorGetter.getModifiers().remove(ElementModifier.NATIVE);
+                var getEmitter = ProgramEmitter.create(creatorGetter, context.getHierarchy());
+                getEmitter.var(1, threadType).getField("$pzCreator", threadType).returnValue();
+                var creatorClearer = cls.getMethod(new MethodDescriptor("forgetCreator", threadType, ValueType.VOID));
+                creatorClearer.getModifiers().remove(ElementModifier.NATIVE);
+                var clearEmitter = ProgramEmitter.create(creatorClearer, context.getHierarchy());
+                clearEmitter.var(1, threadType).setField("$pzCreator", clearEmitter.constantNull(threadType));
+                clearEmitter.exit();
+            }
             case "java.io.FileInputStream" -> {
                 channel(cls, context, true);
                 // The pinned classlib returns a signed byte from read(). Keep
@@ -122,12 +139,29 @@ public final class JdkCompatibility implements ClassHolderTransformer {
         var runnable = ValueType.object("java.lang.Runnable"); var string = ValueType.object("java.lang.String");
         var constructor = cls.getMethod(new MethodDescriptor("<init>",runnable,string,ValueType.VOID));
         var program = constructor.getProgram();
+        // Ronda 37 (docs/notes-from-code.md "segundo diagnóstico"): Thread.<init> ya NO llama a
+        // ThreadGroup.registerDefault. Con el juego, construir cualquier excepcion es async
+        // (Throwable::<init> -> fillInStackTrace -> Class::getName -> AbstractStringBuilder::insert
+        // -> [virt Object.toString] -> KahluaTableImpl::toString -> ... -> Thread::sleep), y todo lo
+        // alcanzable desde registerDefault (ThreadGroup::<clinit>, MEMBERS.get/put por interfaz,
+        // Thread.isAlive) puede despachar a ese codigo async. Eso hacia Thread::<clinit> async y
+        // convertia currentThread/setCurrentThread en corutinas -> Fiber::popInt fuera de rango.
+        // Ahora el constructor solo asigna $pzCreator = Thread.currentThread() (asignacion plana,
+        // sin llamadas de clase) y ThreadGroup resuelve el grupo de forma perezosa.
+        var creator = new FieldHolder("$pzCreator");
+        creator.setType(thread); creator.setLevel(AccessLevel.PUBLIC); cls.addField(creator);
+        var creatorRef = new FieldReference("java.lang.Thread", "$pzCreator");
         for (int i = 0; i < program.basicBlockCount(); i++) {
             var block = program.basicBlockAt(i);
             if (block.getLastInstruction() instanceof ExitInstruction exit) {
-                var register = new InvokeInstruction(); register.setType(InvocationType.SPECIAL);
-                register.setMethod(new MethodReference("java.lang.ThreadGroup","registerDefault",thread,ValueType.VOID));
-                register.setArguments(program.variableAt(0)); exit.insertPrevious(register);
+                var cur = program.createVariable();
+                var call = new InvokeInstruction(); call.setType(InvocationType.SPECIAL);
+                call.setMethod(new MethodReference("java.lang.Thread", "currentThread", thread));
+                call.setReceiver(cur);
+                var put = new PutFieldInstruction();          // this.$pzCreator = Thread.currentThread();
+                put.setInstance(program.variableAt(0)); put.setField(creatorRef);
+                put.setFieldType(thread); put.setValue(cur);
+                exit.insertPrevious(call); exit.insertPrevious(put);
             }
         }
         var start = cls.getMethod(new MethodDescriptor("start",ValueType.VOID)).getProgram();

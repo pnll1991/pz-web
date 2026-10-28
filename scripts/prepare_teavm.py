@@ -71,6 +71,141 @@ def patch_monitor():
         public void interrupted() {"""
     assert source.count("        @Override\n" + marker) == 1
     source = source.replace("        @Override\n" + marker, method)
+    # Round 37 diagnostics: the render fiber is parked in RenderContextQueueItem.invoke()'s
+    # monitorenter (Object.monitorEnterWait) while the game fiber is parked in the same object's
+    # Object.wait. Record the monitor state at every grant, wait, release, re-acquire and notify so
+    # the deadlock is identified instead of guessed. Ints only: a String constant in a replayed
+    # coroutine frame is not materialized yet (round 32), and StringBuilder.append is a coroutine.
+    diag_edits = [
+        ("""        Monitor monitor = o.monitor;
+        if (monitor.enteringThreads == null) {""",
+         """        Monitor monitor = o.monitor;
+        reportMonitor(3, monitor.id, monitor.owner == null ? 0 : (int) monitor.owner.getId(),
+                (int) thread.getId(), monitor.count,
+                monitor.enteringThreads == null ? 0 : monitor.enteringThreads.size(),
+                monitor.notifyListeners == null ? 0 : monitor.notifyListeners.size());
+        if (monitor.enteringThreads == null) {"""),
+        ("""            o.monitor.count += count;
+            callback.complete(null);
+            return;
+        } else if (o.monitor.owner == null) {""",
+         """            o.monitor.count += count;
+            reportMonitor(1, o.monitor.id, 0, (int) thread.getId(), o.monitor.count, 0, 0);
+            callback.complete(null);
+            return;
+        } else if (o.monitor.owner == null) {"""),
+        ("""            o.monitor.count += count;
+            callback.complete(null);
+            return;
+        }
+
+        Monitor monitor = o.monitor;""",
+         """            o.monitor.count += count;
+            reportMonitor(2, o.monitor.id, 0, (int) thread.getId(), o.monitor.count, 0, 0);
+            callback.complete(null);
+            return;
+        }
+
+        Monitor monitor = o.monitor;"""),
+        ("""    static void monitorEnter(TObject o, int count) {
+        if (o.monitor == null) {""",
+         """    static void monitorEnter(TObject o, int count) {
+        reportMonitor(10, o.monitor == null ? 0 : o.monitor.id,
+                o.monitor == null || o.monitor.owner == null ? 0 : (int) o.monitor.owner.getId(),
+                (int) TThread.currentThread().getId(), o.monitor == null ? 0 : o.monitor.count, 0,
+                o.monitor == null || o.monitor.notifyListeners == null ? 0
+                        : o.monitor.notifyListeners.size());
+        if (o.monitor == null) {"""),
+        ("""    static void monitorExit(TObject o, int count) {
+        if (o.isEmptyMonitor() || o.monitor.owner != TThread.currentThread()) {""",
+         """    static void monitorExit(TObject o, int count) {
+        reportMonitor(11, o.monitor == null ? 0 : o.monitor.id,
+                o.monitor == null || o.monitor.owner == null ? 0 : (int) o.monitor.owner.getId(),
+                (int) TThread.currentThread().getId(), o.monitor == null ? 0 : o.monitor.count, 0,
+                o.monitor == null || o.monitor.notifyListeners == null ? 0
+                        : o.monitor.notifyListeners.size());
+        if (o.isEmptyMonitor() || o.monitor.owner != TThread.currentThread()) {"""),
+        ("""    private static void createMonitor(TObject o) {""",
+         """    private static void createMonitor(TObject o) {
+        reportMonitor(12, 0, 0, (int) TThread.currentThread().getId(), 0, 0, 0);"""),
+        ("""    final void waitImpl(long timeout, int nanos, AsyncCallback<Void> callback) {
+        Monitor monitor = this.monitor;""",
+         """    final void waitImpl(long timeout, int nanos, AsyncCallback<Void> callback) {
+        Monitor monitor = this.monitor;
+        reportMonitor(4, monitor.id, monitor.owner == null ? 0 : (int) monitor.owner.getId(),
+                (int) TThread.currentThread().getId(), monitor.count,
+                monitor.enteringThreads == null ? 0 : monitor.enteringThreads.size(),
+                monitor.notifyListeners == null ? 0 : monitor.notifyListeners.size());"""),
+        ("""        monitor.owner = null;
+        if (monitor.enteringThreads != null && !monitor.enteringThreads.isEmpty()) {""",
+         """        monitor.owner = null;
+        reportMonitor(5, monitor.id, 0, (int) TThread.currentThread().getId(), monitor.count,
+                monitor.enteringThreads == null ? 0 : monitor.enteringThreads.size(),
+                monitor.notifyListeners == null ? 0 : monitor.notifyListeners.size());
+        if (monitor.enteringThreads != null && !monitor.enteringThreads.isEmpty()) {"""),
+        ("""            var enteringThreads = monitor.enteringThreads;
+            PlatformRunnable r = enteringThreads.remove();""",
+         """            var enteringThreads = monitor.enteringThreads;
+            reportMonitor(6, monitor.id, 0, (int) TThread.currentThread().getId(), monitor.count,
+                    enteringThreads.size(),
+                    monitor.notifyListeners == null ? 0 : monitor.notifyListeners.size());
+            PlatformRunnable r = enteringThreads.remove();"""),
+        ("""            if (currentThread.interruptHandler == this) {
+                currentThread.interruptHandler = null;
+            }
+            monitorEnterWait(obj, lockCount, callback);""",
+         """            if (currentThread.interruptHandler == this) {
+                currentThread.interruptHandler = null;
+            }
+            reportMonitor(7, obj.monitor == null ? 0 : obj.monitor.id, 0,
+                    (int) currentThread.getId(), obj.monitor == null ? 0 : obj.monitor.count, 0, 0);
+            monitorEnterWait(obj, lockCount, callback);"""),
+        ("""    @Rename("notify")
+    public final void notify0() {
+        if (!holdsLock(this)) {
+            throw new TIllegalMonitorStateException();
+        }
+        var listeners = monitor.notifyListeners;""",
+         """    @Rename("notify")
+    public final void notify0() {
+        if (!holdsLock(this)) {
+            throw new TIllegalMonitorStateException();
+        }
+        reportMonitor(8, monitor.id, (int) monitor.owner.getId(),
+                (int) TThread.currentThread().getId(), monitor.count,
+                monitor.enteringThreads == null ? 0 : monitor.enteringThreads.size(),
+                monitor.notifyListeners == null ? 0 : monitor.notifyListeners.size());
+        var listeners = monitor.notifyListeners;"""),
+        ("""    @Rename("notifyAll")
+    public final void notifyAll0() {
+        if (!holdsLock(this)) {
+            throw new TIllegalMonitorStateException();
+        }""",
+         """    @Rename("notifyAll")
+    public final void notifyAll0() {
+        if (!holdsLock(this)) {
+            throw new TIllegalMonitorStateException();
+        }
+        reportMonitor(9, monitor.id, (int) monitor.owner.getId(),
+                (int) TThread.currentThread().getId(), monitor.count,
+                monitor.enteringThreads == null ? 0 : monitor.enteringThreads.size(),
+                monitor.notifyListeners == null ? 0 : monitor.notifyListeners.size());"""),
+    ]
+    for old, new in diag_edits:
+        if source.count(old) != 1:
+            raise RuntimeError("Unexpected TeaVM monitor shape: " + old[:60])
+        source = source.replace(old, new)
+    js_diag = """    private static void reportMonitor(int phase, int objId, int ownerId, int threadId,
+            int count, int entering, int notify) {
+        port.shim.BrowserMonitor.record(phase, objId, ownerId, threadId, count, entering, notify);
+    }
+
+"""
+    marker = "    static boolean holdsLock(TObject o) {"
+    assert source.count(marker) == 1
+    source = source.replace(marker, js_diag + marker)
+
+
     destination = ROOT / "port/target/generated-sources/teavm" / path
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text("// Local change: restore monitor ownership on interrupted wait.\n" + source)
@@ -441,6 +576,10 @@ def patch_fiber():
         state = STATE_RESUMING;
         start();
     }"""
+    park_marker = "        PendingCall pendingCall = new PendingCall(call, lastPendingCall);"
+    assert source.count(park_marker) == 1
+    source = source.replace(park_marker, """        reportSuspend(fiber.fiberId, fiber.state, fiber.suspendCount, pendingDepth());
+""" + park_marker)
     assert source.count(resume_marker) == 1
     source = source.replace(resume_marker, """    void resume() {
         ++resumeCount;
@@ -450,8 +589,40 @@ def patch_fiber():
             ++doubleResumes;
         }
         state = STATE_RESUMING;
+        reportResume(fiberId, resumeCount, state, lastResumeFrom);
         start();
-    }""")
+    }
+
+    private static int pendingDepth() {
+        int depth = 0;
+        PendingCall call = lastPendingCall;
+        while (call != null) {
+            ++depth;
+            call = call.next;
+        }
+        return depth;
+    }
+
+    @JSBody(params = {"fiberId", "state", "suspendCount", "pendingDepth"},
+            script = "var rec = globalThis.pzFiberSuspend || (globalThis.pzFiberSuspend = {});"
+                    + " var entry = rec[fiberId] || (rec[fiberId] = {id: fiberId, suspends: 0,"
+                    + " resumes: 0, stacks: []});"
+                    + " entry.suspends = suspendCount; entry.state = state;"
+                    + " entry.pendingDepth = pendingDepth; entry.parked = true;"
+                    + " entry.t = performance.now();"
+                    + " var lines = String((new Error()).stack || '').split('\\\\n').slice(1, 26)"
+                    + "     .map(function (s) { return s.trim(); });"
+                    + " entry.stacks.push(lines);"
+                    + " if (entry.stacks.length > 6) { entry.stacks.shift(); }")
+    private static native void reportSuspend(int fiberId, int state, int suspendCount, int pendingDepth);
+
+    @JSBody(params = {"fiberId", "resumeCount", "state", "resumeFrom"},
+            script = "var rec = globalThis.pzFiberSuspend || (globalThis.pzFiberSuspend = {});"
+                    + " var entry = rec[fiberId] || (rec[fiberId] = {id: fiberId, suspends: 0,"
+                    + " resumes: 0, stacks: []});"
+                    + " entry.resumes = resumeCount; entry.state = state;"
+                    + " entry.resumeFrom = resumeFrom; entry.parked = false;")
+    private static native void reportResume(int fiberId, int resumeCount, int state, int resumeFrom);""")
     start_marker = """    private void start() {
         Fiber former = current;
         current = this;"""
@@ -502,7 +673,8 @@ def patch_fiber():
     destination = ROOT / "port/target/generated-sources/teavm" / path
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(
-        "// Local change: synchronous fiber object-stack growth; deferred cross-fiber resume.\n"
+        "// Local change: synchronous fiber object-stack growth; deferred cross-fiber resume;\n"
+        "// per-fiber park diagnostics (pzFiberSuspend) added in round 37.\n"
         + source)
     print("TeaVM: fiber object-stack growth no longer goes through the async Arrays.copyOf(T[],int)")
     print("TeaVM: AsyncCallbackImpl resumes through EventQueue instead of nesting start() in another fiber")

@@ -1,7 +1,10 @@
 # exact virtual resolution: vtable slots filled via  global.get X@vt ; ref.func F ; struct.set VT<T> field
 import sys, runpy, collections, re, heapq
 ROOTS=sys.argv[2].split(','); sys.argv=[sys.argv[0]]+sys.argv[1:2]
-m=runpy.run_path('/tmp/code-agent/asyncchain.py', run_name='lib')
+import os
+_lib=os.path.join(os.path.dirname(os.path.abspath(__file__)),'asyncchain.py')
+if not os.path.exists(_lib): _lib='/tmp/code-agent/asyncchain.py'
+m=runpy.run_path(_lib, run_name='lib')
 fn=m['fn']; byname=m['byname']; scan=m['scan']; FIB=m['FIB']; nimports=m['nimports']; tn=m['tn']; data=m['data']; leb=m['leb']; bodies=m['bodies']; fields=m['fields']; gl=m['gl']
 slots=collections.defaultdict(set)
 for bi,(bs,bz) in enumerate(bodies):
