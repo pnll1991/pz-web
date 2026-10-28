@@ -42,3 +42,8 @@ Cada ronda se corta sola a las 4 horas exactas y, hasta ahora, ninguna llegó a 
 ## OBLIGATORIO: notas del agente Code (desde la ronda 34)
 - Antes de tocar el handoff de hilos, leé `docs/notes-from-code.md`. Ahí está la causa raíz verificada del crash `Fiber::popInt` (Thread.currentThread/setCurrentThread vueltos corrutinas por el registro synchronized + WeakHashMap del ThreadGroup compat en JdkCompatibility.threads()), el fix recomendado y un repro mínimo. El script de verificación está en `tools/code-agent/wasmfn.py`.
 - Aplicá ese fix primero, sin stubs, y agregá el chequeo de build que propone. Anotá el resultado en STATUS.md.
+
+## OBLIGATORIO: segundo diagnóstico de Code (GATE FAIL del build con juego)
+- El fix de ThreadGroup de la ronda 34 NO alcanza: con el juego, Thread::<clinit> -> <init> -> ThreadGroup::registerDefault sigue siendo async (excepciones -> fillInStackTrace -> ... -> KahluaTableImpl::toString -> UIManager$Sync::endFrame -> Thread.sleep). Leé la sección "Ronda 35…" de `docs/notes-from-code.md`.
+- Aplicá ese fix tal cual: en JdkCompatibility.threads() dejá de inyectar registerDefault(this); inyectá el campo $pzCreator en Thread (solo asignación al final del constructor) y resolvé el grupo tarde con los accesores nativos que muestran las notas. Sin stubs.
+- Después hacé UN solo build --with-game (nunca dos en paralelo). Esperado: gate con fiberops False y `python3 tools/code-agent/probe8.py port/target/web/game/boot.wasm 'java.lang.Thread::<clinit>'` imprimiendo `no seed`. Anotá el resultado en STATUS.md.

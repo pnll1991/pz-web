@@ -105,3 +105,133 @@ Ubicación: **`/workspace/fiber-repro` en el box de Grok Bot** (no en agente47).
 | sync + ResumeEvent ronda 33 | sí / sí | **crash** igual | **crash** igual |
 | sync + reorder de `Fiber.suspend` | sí / sí | **se cuelga** sin error (queda `PENDING`) | `SINGLE_OK` |
 | **plain + Fiber stock (fix)** | **no / no** | **`REPRO_OK`** (`GAME_DONE sum=20300`, `iter=201 processed=200`) | **`SINGLE_OK`** |
+
+---
+
+## Ronda 35: por qué el gate sigue en FAIL con `--with-game` (análisis de Code, 28-oct)
+
+### Resumen
+
+El fix de la ronda 34 (sin `synchronized`, `IdentityHashMap`) era correcto pero no suficiente. Los monitores **no** son el problema: en TeaVM 0.16 nunca siembran async (ver "Detalle de AsyncMethodFinder"). El problema es que en el build con juego **construir cualquier excepción ya es async**. `Thread.<init>` sigue llamando a `ThreadGroup.registerDefault`, y todo lo que toca `ThreadGroup` (su `<clinit>`, `IdentityHashMap`, `Collections.newSetFromMap`, `Objects.requireNonNull`, `Map.get/put` por interfaz, `Thread.isAlive`) puede lanzar o despachar a código async del juego.
+
+La única solución robusta es que **`Thread.<init>`/`<clinit>` no llamen a nada de `ThreadGroup`**.
+
+### Cadena exacta (game `boot.wasm` 15:06, 143.218.714 B)
+
+Analizada con resolución exacta de slots de vtable: se parsean los `global.get X@vt; ref.func F; struct.set VT<T> campo` del propio wasm y se siguen los thunks `@caller`. Se excluyen `Object.monitorEnter/monitorExit(Object)`, igual que hace TeaVM.
+
+1. **Entrada a Thread (todas llamadas directas):** `Thread::<clinit>` → `Thread::<init>_3` → `Thread::<init>_1` → **`ThreadGroup::registerDefault`**. Es la inyección de `JdkCompatibility.threads()`.
+   - Es la única arista async que sale de `Thread`.
+   - `DefaultUncaughtExceptionHandler::<init>` y `Object::<init>` son síncronos.
+   - `currentThread`/`setCurrentThread` son coroutines solo porque llaman a `Thread@initializer`.
+2. **Desde `registerDefault` hay tres caminos async independientes.** Arreglar uno solo no alcanza:
+   - **a)** `[clinit] ThreadGroup::<clinit>` → `ThreadGroup::<init>_1` → `Collections::newSetFromMap` / `IdentityHashMap::<init>` / `Objects::requireNonNull`. Todos construyen `IllegalArgumentException`/`NullPointerException` → `Throwable::<init>_0`.
+   - **b)** `MEMBERS.put` por interfaz. En el wasm aparece como `VT<pl.mjaron.tinyloki.ILogListener>.put`: es la tabla de interfaz canonicalizada, no tiene que ver con tinyloki. Entre sus implementaciones hay varias async, p. ej. `WeakHashMap::put` → `Object.equals` virtual.
+   - **c)** `groupOf` → `Map.get` por interfaz y `Thread.isAlive` → `ThreadGroup::alive` (otra vez `Map.get`).
+3. **Por qué `Throwable::<init>` es async (despacho por vtable de clase, exacto):**
+   - `Throwable::<init>` → `[virt VT<Throwable>.fillInStackTrace] Throwable::fillInStackTrace` → `Class::getName` → `StringBuilder::append` → `AbstractStringBuilder::append` → `[virt VT<AbstractStringBuilder>.insert_13] AbstractStringBuilder::insert_9` (insert de un `Object`) → **`[virt VT<Object>.toString]`** → un `toString()` del juego que suspende.
+   - El camino más corto es `se.krka.kahlua.j2se.KahluaTableImpl::toString` → `rawget` → `zombie.ui.UIManager::debugBreakpoint` → `[virt] UIManager$Sync::endFrame` → `Thread::sleep` (`@Async`).
+   - El call graph de TeaVM es por type-flow pero **no sensible al contexto**. Basta con que en algún lugar del juego se haga `sb.append(objetoConToStringAsync)` para que el callsite `toString()` dentro de `AbstractStringBuilder.insert(int,Object)` quede async.
+   - De ahí se vuelven async `Class.getName`, `fillInStackTrace` y **todos los constructores de excepción**. Por extensión, también todo método del JDK que pueda lanzar: `String.charAt`, `String.<init>`, `Objects.checkFromIndexSize`, `Integer.toString`, etc.
+   - La componente fuertemente conexa que contiene a `Throwable::<init>` tiene **13.191 funciones async**.
+4. **Por qué el `boot.wasm` chico sale limpio:** sin el juego no existe ningún override async de `toString`/`equals`/`hashCode`/`run` que fluya a esos callsites, así que `Throwable.<init>` es síncrono y `ThreadGroup` también.
+
+Herramientas usadas, todas de solo lectura y fuera del repo, en `/tmp/code-agent` de agente47:
+- `probe8.py <wasm> raiz1,raiz2`: Dijkstra hasta un llamador de `Fiber::suspend`, con slots de vtable exactos.
+- `probe9.py <wasm> <func>`: subgrafo async con los destinos de cada slot virtual.
+- `probe5.py <wasm> funcs...`: callees y si cada uno es coroutine.
+- `probe7.py <wasm> <func>`: tamaño de la SCC.
+
+Advertencia: las llamadas por interfaz se resuelven por nombre de slot, así que sobreaproximan. Las de vtable de clase son exactas respecto de la jerarquía, pero TeaVM usa type-flow, que es más fino. La cadena de `Throwable` va toda por vtables de clase y además está reproducida (ver más abajo).
+
+### Detalle de AsyncMethodFinder (teavm-core 0.16.0)
+
+- `find()` asigna `hasAsyncMethods = findAsyncMethods()` **antes** de sembrar los `@Async`. `findAsyncMethods()` solo mira métodos que ya están en `asyncMethods`, que en ese momento está vacío, así que **siempre devuelve false**.
+- Consecuencias:
+  - el bloque que siembra métodos con monitor (`hasMonitor`) es código muerto;
+  - en `add()`, `Object.monitorEnter/monitorExit(Object)` (1 parámetro) **nunca propagan** a sus llamadores.
+- Por eso quitar `synchronized` en la ronda 34 no cambió nada en el build con juego. La propagación real viene de `@Async` (`Thread.sleep`, `Object.wait`, `Thread.yield`, ...) a través de callsites virtuales y de interfaz.
+
+### Fix mínimo propuesto (real, sin stubs)
+
+`Thread.<init>` solo guarda **quién lo creó**, con un campo inyectado y sin ninguna llamada a `ThreadGroup`. La pertenencia se resuelve de forma perezosa en `ThreadGroup` (`groupOf`/`beforeStart`/`alive`/`handler`), que nunca están en la cadena de `<clinit>`. `assign` (constructor con grupo) no cambia.
+
+En `JdkCompatibility.threads()`, en lugar de inyectar `registerDefault(this)`:
+
+```java
+var creator = new FieldHolder("$pzCreator");
+creator.setType(thread); creator.setLevel(AccessLevel.PUBLIC);
+cls.addField(creator);
+var creatorRef = new FieldReference("java.lang.Thread", "$pzCreator");
+for (int i = 0; i < program.basicBlockCount(); i++) {
+    var block = program.basicBlockAt(i);
+    if (block.getLastInstruction() instanceof ExitInstruction exit) {
+        var cur = program.createVariable();
+        var call = new InvokeInstruction(); call.setType(InvocationType.SPECIAL);
+        call.setMethod(new MethodReference("java.lang.Thread", "currentThread", thread));
+        call.setReceiver(cur);
+        var put = new PutFieldInstruction();          // this.$pzCreator = Thread.currentThread();
+        put.setInstance(program.variableAt(0)); put.setField(creatorRef);
+        put.setFieldType(thread); put.setValue(cur);
+        exit.insertPrevious(call); exit.insertPrevious(put);
+    }
+}
+```
+
+En `ThreadGroup.java` (compat), con dos accesores `native` cuyo cuerpo genera `JdkCompatibility` cuando transforma `java.lang.ThreadGroup`:
+
+```java
+// cuerpo generado: return t.$pzCreator;  /  t.$pzCreator = null;
+private static native Thread creatorOf(Thread t);
+private static native void forgetCreator(Thread t);
+
+private static Member member(Thread thread) {
+    Member member = MEMBERS.get(thread);
+    if (member == null) {                      // equivalente perezoso del antiguo registerDefault
+        Thread creator = creatorOf(thread);
+        ThreadGroup group = creator == null ? ROOT : groupOf(creator);
+        member = new Member(group == null ? ROOT : group, creator == null); // sin creador = hilo bootstrap/main
+        MEMBERS.put(thread, member);
+        forgetCreator(thread);                 // no retener al creador
+    }
+    return member;
+}
+// groupOf / beforeStart / alive usan member(thread) en vez de MEMBERS.get(thread); se borra registerDefault.
+```
+
+```java
+// en JdkCompatibility, case "java.lang.ThreadGroup":
+var get = cls.getMethod(new MethodDescriptor("creatorOf", thread, thread));
+get.getModifiers().remove(ElementModifier.NATIVE);
+var e = ProgramEmitter.create(get, context.getHierarchy());
+e.var(1, thread).getField("$pzCreator", thread).returnValue();
+var clear = cls.getMethod(new MethodDescriptor("forgetCreator", thread, ValueType.VOID));
+clear.getModifiers().remove(ElementModifier.NATIVE);
+e = ProgramEmitter.create(clear, context.getHierarchy());
+e.var(1, thread).setField("$pzCreator", e.constantNull(thread)); e.exit();
+```
+
+- **Única diferencia semántica:** el grupo se hereda del creador la primera vez que se consulta (o en `start()`), no en el instante del `new`. Solo cambia algo si el creador muere antes de que el hijo sea consultado o arrancado. En ese caso el hijo cae en `ROOT`, que es lo mismo que ya hacía `registerDefault` con un creador muerto (`groupOf` → `null` → `ROOT`).
+- **No hay que intentar** volver "segura" a `ThreadGroup` evitando excepciones y llamadas virtuales. Cualquier `requireNonNull`, colección o `toString` futuro lo vuelve a romper, porque en el build con juego todo lo que puede lanzar es async.
+
+### Cómo se verificó
+
+1. **Análisis del artefacto real.** `port/target/web/game/boot.wasm` (15:06) con las herramientas de `/tmp/code-agent` (cadena de arriba). No se compiló nada del juego ni se tocó el repo, salvo este append.
+2. **Repro en la box** (`/workspace/fiber-repro`, teavm-maven-plugin 0.16.0, WasmGC):
+   - `Group34` es un análogo de la `ThreadGroup` de la ronda 34: `IdentityHashMap`, `newSetFromMap`, `requireNonNull`, `Map` por interfaz, sin monitores.
+   - El "veneno" es una clase con `toString()` que hace `Thread.yield()`, pasada a `new StringBuilder().append(obj)`.
+   - Se cuenta `Fiber::popInt` por función en el `.wat`:
+
+| modo | `currentThread` / `setCurrentThread` | `Thread::<init>` | `Throwable::<init>` / `Class::getName` / `Group34::<clinit>` / `groupOf` |
+|---|---|---|---|
+| `r34` (inyecta `registerDefault`) | **coroutine / coroutine** (= gate FAIL del juego) | coroutine | coroutine |
+| `field` (fix: `$pzCreator` + resolución perezosa) | **sync / sync** | sync | siguen coroutine (no importa) |
+
+   - Esto reproduce en chico exactamente el FAIL del juego. Sin el `append(obj)` todo sale sync, igual que el `boot.wasm` chico.
+   - El fix funciona aunque `Throwable.<init>` y `ThreadGroup` sigan siendo async.
+   - **Pendiente:** no corrí el repro en Chrome. Con el veneno, ese repro choca antes con la recursión `Fiber::push` → `Arrays::copyOf` → `Fiber::reversePush`, que en el proyecto ya está resuelta con `patch_fiber()`. Al meter ese mismo parche en mi jar con una sola clase reemplazada, el backend de TeaVM tira un NPE en `WasmTypeGraphBuilder`.
+3. **Para validar en el build real**, después de aplicar el fix y en una corrida `--with-game` (nunca en paralelo con otra):
+   - el gate de `scripts/build.sh` debe dar `fiberops: False` para `currentThread` y `setCurrentThread`;
+   - `python3 /tmp/code-agent/probe8.py port/target/web/game/boot.wasm 'java.lang.Thread::<clinit>'` debe imprimir `no seed`;
+   - `probe5.py ... 'java.lang.Thread::<init>_1'` debe listar solo callees `fiber False`.
+   - Opcional y definitivo: instrumentar en la copia de `prepare_teavm.py` el `AsyncMethodFinder.add()` para imprimir `stack` (ya construye un `CallStack` y nunca lo usa) cuando `methodRef` sea de `java.lang.Thread`.
