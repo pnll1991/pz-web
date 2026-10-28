@@ -17,6 +17,19 @@ const PORT_PROVIDED = new Set([
   'glBufferSubData', 'glGetBufferSubData', 'glMapBuffer', 'glUnmapBuffer', 'glGetBufferParameteriv',
   'glGetBufferPointerv', 'glGenQueries', 'glDeleteQueries', 'glIsQuery', 'glBeginQuery', 'glEndQuery',
   'glGetQueryiv', 'glGetQueryObjectiv', 'glGetQueryObjectuiv',
+  // GL20 shaders/programs/uniforms and the GL30 VAO natives: port.shim.GL20 drives the bridge
+  // methods below, so every name here has a real implementation over WebGL2.
+  'glCreateProgram', 'glDeleteProgram', 'glIsProgram', 'glCreateShader', 'glDeleteShader',
+  'glIsShader', 'glAttachShader', 'glDetachShader', 'glShaderSource', 'glCompileShader',
+  'glLinkProgram', 'glUseProgram', 'glValidateProgram', 'glGetShaderiv', 'glGetProgramiv',
+  'glGetShaderInfoLog', 'glGetProgramInfoLog', 'glGetUniformLocation', 'glGetAttribLocation',
+  'glUniform1f', 'glUniform2f', 'glUniform3f', 'glUniform4f', 'glUniform1i', 'glUniform2i',
+  'glUniform3i', 'glUniform4i', 'glUniform1fv', 'glUniform2fv', 'glUniform3fv', 'glUniform4fv',
+  'glUniform1iv', 'glUniform2iv', 'glUniform3iv', 'glUniform4iv', 'glUniformMatrix2fv',
+  'glUniformMatrix3fv', 'glUniformMatrix4fv', 'glEnableVertexAttribArray',
+  'glDisableVertexAttribArray', 'glVertexAttribPointer', 'glVertexAttrib1f', 'glVertexAttrib2f',
+  'glVertexAttrib3f', 'glVertexAttrib4f', 'glGenVertexArrays', 'glDeleteVertexArrays',
+  'glBindVertexArray', 'glDrawArrays', 'glDrawElements',
 ]);
 
 /** WebGL2 context and object handles; unsupported entrypoints must throw. */
@@ -30,6 +43,13 @@ export class GLBridge {
     this.scissorBox = [0, 0, canvas.width, canvas.height];
     this.buffers = new Map(); // GL handle -> {buffer,size,target}
     this.queries = new Map(); // GL handle -> {query,target}
+    this.shaders = new Map(); // GL handle -> {shader,type,source,compiled,log}
+    this.programs = new Map(); // GL handle -> {program,shaders:Set,log,linked,used}
+    this.attribs = new Map(); // attribute index -> {enabled,size,...} recorded by glVertexAttribPointer
+    this.locations = new Map(); // location handle -> WebGLUniformLocation (0 means "no location")
+    this.boundElements = null; // last ELEMENT_ARRAY_BUFFER handle (drawElements needs it)
+    this.vertexArrays = new Map(); // GL handle -> WebGLVertexArrayObject (GL30 natives)
+    this.boundArrays = null; // last ARRAY_BUFFER handle bound by bindBuffer (needed by attrib pointers)
     this.nextHandle = 1; // 0 is reserved for "none", as in desktop GL
     this.lost = false;
     canvas.addEventListener('webglcontextlost', event => { event.preventDefault(); this.lost = true; });
@@ -186,8 +206,14 @@ export class GLBridge {
     const gl = this.context;
     if (target !== gl.ARRAY_BUFFER && target !== gl.ELEMENT_ARRAY_BUFFER)
       throw new Error(`Unsupported WebGL2 buffer target: 0x${target.toString(16)}`);
-    if (handle === 0) { this.call('bindBuffer', target, null); return; }
-    this.call('bindBuffer', target, this.bufferEntry(handle, 'bindBuffer').buffer);
+    if (handle === 0) {
+      this.call('bindBuffer', target, null);
+      if (target === gl.ARRAY_BUFFER) this.boundArrays = null; else this.boundElements = null;
+      return;
+    }
+    const buffer = this.bufferEntry(handle, 'bindBuffer').buffer;
+    this.call('bindBuffer', target, buffer);
+    if (target === gl.ARRAY_BUFFER) this.boundArrays = buffer; else this.boundElements = buffer;
   }
   isBuffer(handle) { return this.buffers.has(handle); }
   bufferData(target, size, data) {
@@ -345,6 +371,274 @@ export class GLBridge {
     else if (['ivec2','ivec3','ivec4','bvec2','bvec3','bvec4'].includes(type)) this.call(`uniform${type.at(-1)}iv`,location,new Int32Array(value));
     else if (['mat2','mat3','mat4'].includes(type)) this.call(`uniformMatrix${type.at(-1)}fv`,location,false,new Float32Array(value));
     else throw new Error(`Unsupported uniform default type: ${type}`);
+  }
+  /* --- GL20 shaders, programs and uniforms over WebGL2 (docs/decisions.md) ------------
+   * The desktop GL20 natives are replaced by port.shim.GL20, which drives these bridge
+   * methods. Handles are monotonic and 0 means "none", as in desktop GL. Desktop shader
+   * source is GLSL ES 1.00-style; port/runtime/glsl.mjs translates it to GLSL ES 3.00
+   * before compilation, so no source is passed to WebGL2 unverified.
+   */
+  shaderEntry(handle, what) {
+    const entry = this.shaders.get(handle);
+    if (entry === undefined) throw new Error(`Unknown shader handle for ${what}: ${handle}`);
+    return entry;
+  }
+  programEntry(handle, what) {
+    const entry = this.programs.get(handle);
+    if (entry === undefined) throw new Error(`Unknown program handle for ${what}: ${handle}`);
+    return entry;
+  }
+  createShader(type) {
+    const gl = this.context;
+    if (type !== gl.VERTEX_SHADER && type !== gl.FRAGMENT_SHADER)
+      throw new Error(`Unsupported WebGL2 shader type: 0x${type.toString(16)}`);
+    const handle = this.nextHandle++;
+    this.shaders.set(handle, { shader: this.call('createShader', type), type, source: '', compiled: false, log: '' });
+    return handle;
+  }
+  deleteShader(handle) {
+    const entry = this.shaders.get(handle);
+    if (entry === undefined) return; // deleting an unknown handle is a no-op, as in desktop GL
+    this.shaders.delete(handle);
+    this.call('deleteShader', entry.shader);
+  }
+  isShader(handle) { return this.shaders.has(handle); }
+  /**
+   * Desktop sources arrive as [pointer,length] pairs read from the arena. Each block is
+   * UTF-8-decoded here and translated to GLSL ES 3.00 (glsl.mjs); the concatenated result
+   * is what WebGL2 compiles, mirroring how the driver concatenates the strings.
+   */
+  shaderSource(handle, pointers, lengths, bytes, base) {
+    const entry = this.shaderEntry(handle, 'shaderSource');
+    const stage = entry.type === this.context.VERTEX_SHADER ? 'vertex' : 'fragment';
+    const parts = [];
+    for (let i = 0; i < pointers.length; i++) {
+      // `bytes` is the view that starts at `base`; the pointers are absolute arena addresses.
+      const start = pointers[i] - base;
+      parts.push(new TextDecoder('utf-8').decode(bytes.subarray(start, start + lengths[i])));
+    }
+    const translated = translateShader(parts.join('\n'), stage);
+    entry.source = translated.source;
+    entry.replacements = translated.replacements;
+    entry.uniformDefaults = translated.uniformDefaults;
+    entry.compiled = false;
+    entry.log = '';
+    this.call('shaderSource', entry.shader, entry.source);
+  }
+  compileShader(handle) {
+    const entry = this.shaderEntry(handle, 'compileShader');
+    if (entry.source === '') throw new Error(`Shader ${handle} compiled without source`);
+    this.call('compileShader', entry.shader);
+    entry.compiled = this.call('getShaderParameter', entry.shader, this.context.COMPILE_STATUS) ? true : false;
+    entry.log = String(this.call('getShaderInfoLog', entry.shader) ?? '');
+  }
+  createProgram() {
+    const handle = this.nextHandle++;
+    this.programs.set(handle, { program: this.call('createProgram'), shaders: new Set(), log: '', linked: false });
+    return handle;
+  }
+  deleteProgram(handle) {
+    const entry = this.programs.get(handle);
+    if (entry === undefined) return;
+    this.programs.delete(handle);
+    for (const [location, value] of this.locations) if (value.program === entry.program) this.locations.delete(location);
+    this.call('deleteProgram', entry.program);
+  }
+  isProgram(handle) { return this.programs.has(handle); }
+  attachShader(programHandle, shaderHandle) {
+    const program = this.programEntry(programHandle, 'attachShader');
+    const shader = this.shaderEntry(shaderHandle, 'attachShader');
+    program.shaders.add(shaderHandle);
+    program.linked = false;
+    this.call('attachShader', program.program, shader.shader);
+  }
+  detachShader(programHandle, shaderHandle) {
+    const program = this.programEntry(programHandle, 'detachShader');
+    const shader = this.shaderEntry(shaderHandle, 'detachShader');
+    program.shaders.delete(shaderHandle);
+    this.call('detachShader', program.program, shader.shader);
+  }
+  linkProgram(handle) {
+    const program = this.programEntry(handle, 'linkProgram');
+    this.call('linkProgram', program.program);
+    program.linked = this.call('getProgramParameter', program.program, this.context.LINK_STATUS) ? true : false;
+    program.log = String(this.call('getProgramInfoLog', program.program) ?? '');
+  }
+  useProgram(handle) {
+    if (handle === 0) { this.call('useProgram', null); return; }
+    this.call('useProgram', this.programEntry(handle, 'useProgram').program);
+  }
+  validateProgram(handle) {
+    const program = this.programEntry(handle, 'validateProgram');
+    this.call('validateProgram', program.program);
+  }
+  /** Desktop shader/program parameter tokens answered from real WebGL2 parameters. */
+  shaderParameter(handle, pname) {
+    const gl = this.context, entry = this.shaderEntry(handle, 'getShaderiv');
+    const answers = new Map([
+      [0x8b8d, gl.COMPILE_STATUS], [0x8b81, gl.SHADER_TYPE], [0x8b85, gl.DELETE_STATUS],
+      [0x8b86, gl.INFO_LOG_LENGTH], [0x8b87, gl.INFO_LOG_LENGTH], [0x8ae2, gl.SHADER_SOURCE_LENGTH],
+    ]);
+    const constant = answers.get(pname);
+    if (constant === undefined) throw new Error(`Unsupported WebGL2 shader parameter: 0x${pname.toString(16)}`);
+    const value = gl.getShaderParameter(entry.shader, constant);
+    if (pname === 0x8b8d) return [entry.compiled ? 1 : 0]; // this bridge records the compile result
+    if (pname === 0x8b81) return [entry.type];
+    if (pname === 0x8b86 || pname === 0x8b87) return [entry.log.length + 1]; // desktop log length includes NUL
+    if (pname === 0x8b85) return [1]; // the handle is live while it is in this map
+    if (pname === 0x8ae2) return [entry.source.length + 1];
+    return [typeof value === 'boolean' ? (value ? 1 : 0) : Number(value)];
+  }
+  programParameter(handle, pname) {
+    const gl = this.context, entry = this.programEntry(handle, 'getProgramiv');
+    const answers = new Map([
+      [0x8a86, gl.LINK_STATUS], [0x8b85, gl.DELETE_STATUS], [0x8b86, gl.INFO_LOG_LENGTH],
+      [0x8b87, gl.INFO_LOG_LENGTH], [0x8a87, gl.VALIDATE_STATUS], [0x8a8a, gl.ACTIVE_ATTRIBUTES],
+      [0x8a8b, gl.ACTIVE_UNIFORMS], [0x8b88, gl.ATTACHED_SHADERS], [0x8e20, gl.TRANSFORM_FEEDBACK_BUFFER_COUNT],
+    ]);
+    const constant = answers.get(pname);
+    if (constant === undefined) throw new Error(`Unsupported WebGL2 program parameter: 0x${pname.toString(16)}`);
+    if (pname === 0x8a86) return [entry.linked ? 1 : 0]; // this bridge records the link result
+    if (pname === 0x8b88) return [entry.shaders.size];
+    if (pname === 0x8b85) return [1];
+    if (pname === 0x8b86 || pname === 0x8b87) return [entry.log.length + 1];
+    return [Number(gl.getProgramParameter(entry.program, constant))];
+  }
+  shaderInfoLog(handle) {
+    const entry = this.shaderEntry(handle, 'getShaderInfoLog');
+    if (entry.log === '') entry.log = String(this.call('getShaderInfoLog', entry.shader) ?? '');
+    return entry.log;
+  }
+  programInfoLog(handle) {
+    const entry = this.programEntry(handle, 'getProgramInfoLog');
+    if (entry.log === '') entry.log = String(this.call('getProgramInfoLog', entry.program) ?? '');
+    return entry.log;
+  }
+  /**
+   * Desktop uniform/attribute names and pointers become WebGL2 locations. A location handle
+   * is monotonic and 0 means "no such location" (WebGL2 returns null), matching the desktop
+   * GLint contract the game checks for.
+   */
+  uniformLocation(programHandle, name) {
+    const program = this.programEntry(programHandle, 'getUniformLocation');
+    const location = this.call('getUniformLocation', program.program, name);
+    if (location === null) return 0;
+    const handle = this.nextHandle++;
+    this.locations.set(handle, { location, program: program.program });
+    return handle;
+  }
+  locationOf(handle, what) {
+    const entry = this.locations.get(handle);
+    if (entry === undefined) throw new Error(`Unknown uniform location ${handle} for ${what}`);
+    return entry.location;
+  }
+  attribLocation(programHandle, name) {
+    const program = this.programEntry(programHandle, 'getAttribLocation');
+    const index = this.call('getAttribLocation', program.program, name);
+    return index === null || index === undefined ? -1 : Number(index);
+  }
+  /**
+   * Desktop uniform setters take count + arena pointer; WebGL2 takes an array. The Float32Array
+   * / Int32Array views come from the arena block (same mechanism as port.shim.GL15).
+   */
+  uniformfv(handle, count, values) { this.call('uniform1fv', this.locationOf(handle, 'uniform1fv'), values.subarray(0, count)); }
+  uniform2fv(handle, count, values) { this.call('uniform2fv', this.locationOf(handle, 'uniform2fv'), values.subarray(0, count * 2)); }
+  uniform3fv(handle, count, values) { this.call('uniform3fv', this.locationOf(handle, 'uniform3fv'), values.subarray(0, count * 3)); }
+  uniform4fv(handle, count, values) { this.call('uniform4fv', this.locationOf(handle, 'uniform4fv'), values.subarray(0, count * 4)); }
+  uniform1iv(handle, count, values) { this.call('uniform1iv', this.locationOf(handle, 'uniform1iv'), values.subarray(0, count)); }
+  uniform2iv(handle, count, values) { this.call('uniform2iv', this.locationOf(handle, 'uniform2iv'), values.subarray(0, count * 2)); }
+  uniform3iv(handle, count, values) { this.call('uniform3iv', this.locationOf(handle, 'uniform3iv'), values.subarray(0, count * 3)); }
+  uniform4iv(handle, count, values) { this.call('uniform4iv', this.locationOf(handle, 'uniform4iv'), values.subarray(0, count * 4)); }
+  uniformMatrix(handle, count, transpose, values, size) {
+    if (transpose) throw new Error('WebGL2 cannot transpose a uniform matrix (transpose=true)');
+    this.call(`uniformMatrix${size}fv`, this.locationOf(handle, 'uniformMatrixfv'), false, values.subarray(0, count * size * size));
+  }
+  /* --- Vertex attributes -------------------------------------------------------------
+   * glEnable/DisableVertexAttribArray track the attribute index; glVertexAttribPointer needs
+   * a bound ARRAY_BUFFER because WebGL2 offsets are buffer-relative (the desktop native's
+   * pointer argument is an offset in the bound buffer). An offset that is not a whole
+   * multiple of the element stride raises rather than silently misreading the buffer.
+   */
+  enableAttrib(index) {
+    if (index < 0) throw new Error(`Attribute index out of range: ${index}`);
+    this.call('enableVertexAttribArray', index);
+    const entry = this.attribs.get(index) || {};
+    entry.enabled = true;
+    this.attribs.set(index, entry);
+  }
+  disableAttrib(index) {
+    if (index < 0) throw new Error(`Attribute index out of range: ${index}`);
+    this.call('disableVertexAttribArray', index);
+    const entry = this.attribs.get(index) || {};
+    entry.enabled = false;
+    this.attribs.set(index, entry);
+  }
+  vertexAttribPointer(index, size, type, normalized, stride, offset) {
+    const gl = this.context;
+    if (index < 0) throw new Error(`Attribute index out of range: ${index}`);
+    const webglType = GLBridge.attribType(type);
+    const elementBytes = GLBridge.attribElementBytes(webglType);
+    if (offset % elementBytes !== 0)
+      throw new Error(`Attribute offset ${offset} is not a multiple of the ${elementBytes}-byte element size`);
+    if (this.boundArrays === null)
+      throw new Error(`glVertexAttribPointer needs a bound ARRAY_BUFFER (attribute ${index}, offset ${offset})`);
+    this.call('vertexAttribPointer', index, size, webglType, !!normalized, stride, offset);
+    this.attribs.set(index, { enabled: true, size, type: webglType, normalized: !!normalized, stride, offset });
+  }
+  // WebGL2 reuses the desktop tokens for these data types, so the mapping is the identity
+  // restricted to the subset WebGL2 actually accepts.
+  static attribType(type) {
+    const map = new Map([[0x1400, 0x1400], [0x1401, 0x1401], [0x1402, 0x1402], [0x1403, 0x1403],
+      [0x1404, 0x1404], [0x1405, 0x1405], [0x1406, 0x1406]]);
+    const value = map.get(type);
+    if (value === undefined) throw new Error(`Unsupported WebGL2 attribute type: 0x${type.toString(16)}`);
+    return value;
+  }
+  static attribElementBytes(webglType) {
+    if (webglType === 0x1406 || webglType === 0x1404 || webglType === 0x1405) return 4; // FLOAT, INT, UNSIGNED_INT
+    if (webglType === 0x1402 || webglType === 0x1403) return 2; // SHORT, UNSIGNED_SHORT
+    return 1; // BYTE, UNSIGNED_BYTE
+  }
+  /* --- GL30 vertex array objects ------------------------------------------------------ */
+  genVertexArrays(count) {
+    const handles = new Int32Array(count);
+    for (let i = 0; i < count; i++) {
+      const handle = this.nextHandle++;
+      this.vertexArrays.set(handle, this.call('createVertexArray'));
+      handles[i] = handle;
+    }
+    return handles;
+  }
+  deleteVertexArrays(handles) {
+    for (let i = 0; i < handles.length; i++) {
+      const vao = this.vertexArrays.get(handles[i]);
+      if (vao === undefined) continue;
+      this.vertexArrays.delete(handles[i]);
+      this.call('deleteVertexArray', vao);
+    }
+  }
+  bindVertexArray(handle) {
+    if (handle === 0) { this.call('bindVertexArray', null); return; }
+    const vao = this.vertexArrays.get(handle);
+    if (vao === undefined) throw new Error(`Unknown vertex array handle: ${handle}`);
+    this.call('bindVertexArray', vao);
+  }
+  /* --- Draw calls (GL11 natives) ------------------------------------------------------ */
+  drawElements(mode, count, type, indices) {
+    if (this.boundElements === null)
+      throw new Error('glDrawElements needs a bound ELEMENT_ARRAY_BUFFER');
+    const webglType = GLBridge.indexType(type);
+    const elementBytes = webglType === 0x1405 ? 4 : webglType === 0x1403 ? 2 : 1;
+    if (indices % elementBytes !== 0)
+      throw new Error(`Index offset ${indices} is not a multiple of the ${elementBytes}-byte index size`);
+    // As in desktop GL, `indices` is an offset into the bound ELEMENT_ARRAY_BUFFER.
+    this.call('drawElements', mode, count, webglType, indices);
+  }
+  static indexType(type) {
+    const map = new Map([[0x1401, 0x1401], [0x1403, 0x1403], [0x1405, 0x1405]]);
+    const value = map.get(type);
+    if (value === undefined) throw new Error(`Unsupported WebGL2 index type: 0x${type.toString(16)}`);
+    return value;
   }
   drawProbe() {
     const gl = this.context;

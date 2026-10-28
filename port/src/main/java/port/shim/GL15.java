@@ -32,9 +32,9 @@ public final class GL15 {
     }
     public static void nglDeleteBuffers(int count, long buffers) {
         if (count <= 0) return;
-        int[] handles = new int[count];
-        for (int i = 0; i < count; i++) handles[i] = NativeMemory.memGetInt(buffers + 4L * i);
-        deleteBuffersNative(Int32Array.fromJavaArray(handles));
+        Int32Array handles = Int32Array.create(count);
+        for (int i = 0; i < count; i++) handles.set(i, NativeMemory.memGetInt(buffers + 4L * i));
+        deleteBuffersNative(handles);
     }
     public static void glBindBuffer(int target, int buffer) { bindNative(target, buffer); }
     public static boolean glIsBuffer(int buffer) { return isBufferNative(buffer) != 0; }
@@ -73,9 +73,9 @@ public final class GL15 {
     }
     public static void nglDeleteQueries(int count, long queries) {
         if (count <= 0) return;
-        int[] handles = new int[count];
-        for (int i = 0; i < count; i++) handles[i] = NativeMemory.memGetInt(queries + 4L * i);
-        deleteQueriesNative(Int32Array.fromJavaArray(handles));
+        Int32Array handles = Int32Array.create(count);
+        for (int i = 0; i < count; i++) handles.set(i, NativeMemory.memGetInt(queries + 4L * i));
+        deleteQueriesNative(handles);
     }
     public static boolean glIsQuery(int query) { return isQueryNative(query) != 0; }
     public static void glBeginQuery(int target, int query) { beginQueryNative(target, query); }
