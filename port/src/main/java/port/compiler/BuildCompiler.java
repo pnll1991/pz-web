@@ -83,6 +83,7 @@ public final class BuildCompiler {
             tool.getTransformers().add(LwjglPlatformCompatibility.class.getName());
             tool.getTransformers().add(JdkCompatibility.class.getName());
             tool.getTransformers().add(CurrencyCompatibility.class.getName());
+            tool.getTransformers().add(StateParamCallerCompatibility.class.getName());
             tool.getTransformers().add(PolymorphicCalls.class.getName());
             tool.getTransformers().add(MemoryCompatibility.class.getName());
             tool.getTransformers().add(WindowCompatibility.class.getName());

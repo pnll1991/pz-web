@@ -35,6 +35,32 @@ Es falta de assets de la copia fijada, no un bug del port; el juego lo catchea y
 
 Cambios de esta ronda (en orden, cada uno verificado):
 
+### Ronda 48 (inicio 11:33:58, corte duro 15:33)
+- Aplicado el fix de Code "Ronda 47: AttackState": `port/src/main/java/port/runtime/StateParamCaller.java`
+  (pila de clases llamada + `callerClass()`, falla si no hay call-site instrumentado) y
+  `port/src/main/java/port/compiler/StateParamCallerCompatibility.java` (envuelve cada `invokestatic
+  zombie.ai.State$Param.of*` con `enter(C)`/`exit()`; reemplaza el único `StackWalker.walk(Function)Object`
+  de `Param.<init>(String,Class,Supplier)V` por `callerClass()`; falla el build si la forma del bytecode
+  cambia o si hay call-sites fuera de `zombie.ai.states.*`). Registrado en `BuildCompiler` tras
+  `CurrencyCompatibility`. `mvn -f port/pom.xml compile` OK.
+- Scan del jar fijado (fuera de git, sólo conteos): 50 clases con call-sites, **207 sitios**, todos en
+  `zombie.ai.states.*` (ClimbOverFenceState 16, GrappledThrownOutWindowState 15, PlayerDraggingCorpse 12).
+- Check offline `tools/stateparam/Check.java` sobre `zombie.ai.State$Param` + 4 clases: `Param.<init>`
+  `walk=false callerClass=true`, `enter=44 exit=44 == factorySites=44` → **OK** (sin stack en runtime).
+- Build **única** con juego `build-round48-game.log`: BUILD SUCCESS (6:52 min), gate PASS
+  (`Thread::currentThread/setCurrentThread fiberops: False`), `wasm_bytes=143118755`, RSS pico 5.89 GiB.
+  Verificación pedida por la nota: `wasmfn.py boot.wasm 'zombie.ai.State$Param::<init>'` ya **no** llama
+  `java.lang.StackWalker::walk` y sí `port.runtime.StateParamCaller::callerClass`; y
+  `zombie.ai.states.AttackState::<clinit>` llama `StateParamCaller::enter/exit` + `State$Param::ofBool`.
+- Chrome (`diag136.mjs`, 110 s, `diag136.log`): **desapareció el trap de `Class::isAssignableFrom`**
+  (`exposeStatics` pasó los `*State`; `LuaManager#init` entered/returned, `initFonts` 2× returned,
+  `checkRequiredLibraries` returned, phase `starting`, swap 2). Queda **un solo**
+  `RuntimeError: dereferencing a null pointer`, ahora en el RenderThread:
+  `SpriteRenderer$RingBuffer$StateRun::render` ← `RingBuffer::render` ← `buildStateDrawBuffer` ←
+  `postRender` ← `lockStepRenderStep`. DebugLog 28.567 B: 8× `java.io.FileNotFoundException`,
+  1× `UnsupportedOperationException: Unsupported platform: UNSUPPORTED` (oshi),
+  1× `UnsatisfiedLinkError: ... missing for RakNet64`.
+
 
 ## Resumen del estado real hoy (actualizado en la ronda 42)
 
