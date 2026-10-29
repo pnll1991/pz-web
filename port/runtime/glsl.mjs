@@ -207,7 +207,39 @@ export function translateShader(source, stage, { defines = {} } = {}) {
   // Fragment stage: the generated pzFragColor is the fragment colour the alpha test must judge.
   const usesFragColor = replacements.has('gl_FragColor');
   let alphaTestHeader = '';
-  if (stage === 'fragment' && usesFragColor) {
+  // A unit without main() is a desktop "library" shader object (e.g. puddles_common.frag.glsl) that
+  // desktop GL links next to the unit holding main(). gl.mjs merges such units per stage at link time,
+  // and the alpha test is injected there, into the merged source that owns main().
+  const hasMain = ast.program.some(node => node.type === 'function' &&
+    node.prototype?.header?.name?.identifier === 'main' && Array.isArray(node.body?.statements));
+  // GLSL 1.10/1.20 allows non-constant initializers on plain globals (e.g. `float x = Uniform[0].y;`),
+  // GLSL ES 3.00 does not. Desktop semantics are "evaluated before main() runs", so such initializers
+  // become assignments at the top of main(), in declaration order. A library unit (no main) carries
+  // them in globalInits and gl.mjs places them in the merged main().
+  const globalInits = [];
+  for (const node of ast.program) {
+    if (node.type !== 'declaration_statement' && node.type !== 'declarator_list') continue;
+    const list = node.type === 'declaration_statement' ? node.declaration : node;
+    if (list?.type !== 'declarator_list') continue;
+    const qualifiers = list.specified_type?.qualifiers ?? [];
+    if (qualifiers.length > 0) continue; // const/uniform/in/out keep their own rules
+    for (const declaration of list.declarations ?? []) {
+      if (!declaration.initializer || declaration.quantifier) continue;
+      let isConstant = true;
+      try { constant(declaration.initializer); } catch { isConstant = false; }
+      if (isConstant) continue;
+      globalInits.push(`${declaration.identifier.identifier} = ${generate(declaration.initializer).trim()};`);
+      delete declaration.initializer; delete declaration.equal;
+    }
+  }
+  if (globalInits.length > 0 && hasMain) {
+    const statements = parse(`#version 300 es\nvoid pzGlobalInit(){${globalInits.join('\n')}}`, {quiet:true, stage})
+      .program.find(node => node.type === 'function')?.body?.statements ?? [];
+    if (statements.length !== globalInits.length) throw new Error('Global initializer hoist failed to parse');
+    const main = ast.program.find(node => node.type === 'function' && node.prototype?.header?.name?.identifier === 'main');
+    main.body.statements.unshift(...statements);
+  }
+  if (stage === 'fragment' && usesFragColor && hasMain) {
     const call = parse('#version 300 es\nvoid pzAlphaTestMain(){pzAlphaTestDiscard();}', {quiet:true, stage})
         .program.find(node => node.type === 'function')?.body?.statements ?? [];
     if (call.length !== 1) throw new Error('Alpha-test call statement failed to parse');
@@ -227,5 +259,5 @@ export function translateShader(source, stage, { defines = {} } = {}) {
   const output = generate(ast);
   // Parse the generated output as well; WebGL compile/link remains authoritative.
   parse(output, {quiet:true,stage});
-  return {source:output,replacements:[...replacements].sort(),declarations:[...declarations],uniformDefaults,alphaTestEmulated:injectedAlphaTest};
+  return {source:output,replacements:[...replacements].sort(),declarations:[...declarations],uniformDefaults,alphaTestEmulated:injectedAlphaTest,hasMain,globalInits:hasMain?[]:globalInits};
 }

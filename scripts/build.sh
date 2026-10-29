@@ -23,4 +23,27 @@ if [ -f port/target/web/game/boot.wasm ]; then
     echo "GATE FAIL: Thread::currentThread/setCurrentThread son corutinas (Fiber ops). Ver docs/notes-from-code.md" >&2
     exit 1
   fi
+  # Gate (ronda 50): el patch de zombie.util.StringUtils debe haber reemplazado el regex.
+  # TeaVM recursa (ReluctantGroupQuantifierSet) por expansión y revienta la pila de JS en
+  # CraftRecipe::LoadIO -> ScriptManager::Load. Un transformer que no matchea no deja nada.
+  python3 scripts/wasmfn.py port/target/web/game/boot.wasm \
+    'zombie.util.StringUtils::containsWhitespace' 'zombie.util.StringUtils::removeWhitespace' \
+    | tee port/target/reports/stringutils-gate.txt
+  if grep -q 'java.lang.String::matches\|java.lang.String::replaceAll' port/target/reports/stringutils-gate.txt \
+     || ! grep -q 'StringUtilsBridge' port/target/reports/stringutils-gate.txt; then
+    echo "GATE FAIL: el patch de StringUtils no se aplicó (sigue usando regex). Ver AGENT_LEARNINGS.md ronda 50" >&2
+    exit 1
+  fi
+
+  # Gate (ronda 50): los assert del juego deben estar desactivados, como en JVM sin -ea.
+  # TeaVM responde desiredAssertionStatus() con true, así que javac's $assertionsDisabled queda
+  # false y un assert de XuiSkin$EntityUiStyle mató el MainThread con AssertionError (diag148).
+  python3 scripts/wasmfn.py port/target/web/game/boot.wasm \
+    'zombie.scripting.ui.XuiSkin$EntityUiStyle::<clinit>' 'zombie.scripting.ui.XuiSkin::<clinit>' \
+    'zombie.core.textures.Texture::<clinit>' 'zombie.core.SpriteRenderer$RingBuffer$StateRun::<clinit>' \
+    | tee port/target/reports/assertions-gate.txt
+  if grep -q 'desiredAssertionStatus' port/target/reports/assertions-gate.txt; then
+    echo "GATE FAIL: AssertionDisabledCompatibility no se aplicó (queda desiredAssertionStatus en <clinit>)" >&2
+    exit 1
+  fi
 fi

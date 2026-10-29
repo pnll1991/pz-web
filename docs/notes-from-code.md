@@ -396,3 +396,98 @@ Método: sin build ni cambios al repo. Playwright contra :8092 (`/tmp/code-agent
 4. **`invokeOnRenderContext` 7 entradas / 6 salidas.** El 7.º llamado se hace inmediatamente después de `setTexturePackLookup` (t ≈ 114.94 s). Su predicado de espera (`lambda$invokeOnRenderContext$0`) corre, pero el trap de StateRun.render ocurre en ese mismo frame, así que el fiber nunca se reanuda. **Es consecuencia del trap, no una causa aparte** (verificado por la secuencia de timestamps; el llamador exacto se infiere del orden en `GameWindow.init`). Fix: ninguno propio. Se resuelve con los shaders.
 5. **Siguiente freno (verificado):** con los shaders montados, `ShaderUnit.compile` ahora llega a GL y falla con `Unsupported WebGL2 shader parameter: 0x8b84` (`INFO_LOG_LENGTH`) → `RenderContextQueueException` → `defaultShader` null → el mismo trap. Confirma que **el fix de `gl.mjs` (tabla pname de Ronda 49) es obligatorio junto con los shaders**: `shaderParameter` debe soportar 0x8B81 COMPILE_STATUS, 0x8B84 INFO_LOG_LENGTH, 0x8B88 SHADER_SOURCE_LENGTH, 0x8B4F SHADER_TYPE y 0x8B80 DELETE_STATUS. `programParameter` debe soportar 0x8B82/0x8B83/0x8B84/0x8B85/0x8B86/0x8B87/0x8B89 y 0x8B80. INFO_LOG_LENGTH sale de `getShaderInfoLog().length+1` (0 si está vacío).
    Después de eso (inferido): la compilación de los demás shaders del menú (`media/shaders/**`) y la carga de las texturas del menú desde UI/UI2.pack.
+
+## Ronda 50: shader vacío
+
+**No es una lectura vacía.** En diag148 `/media/shaders` tiene 196 entradas, no falta ningún archivo, y `default.vert`/`default.frag` compilan y linkean (programa 257 OK). El que falla es **puddles**.
+
+**Causa:** `ShaderUnit.compile`, por cada `#include "x.h"`, carga además `x.glsl` como **otra unidad del mismo stage** ("Loading additional shader unit", constante `.glsl` en el bytecode) y la attachea al mismo programa. Desktop GL permite varios shader objects por stage y resuelve `puddlesMain()` al linkear. GLSL ES / WebGL2 no lo permite: cada shader necesita su propio `main()`.
+- Vert 337 = `puddles_common.vert.glsl` → `Missing main()`.
+- Vert 338 = `puddles_*.vert`, que solo tiene el prototipo → `puddlesMain() ... is undefined`.
+- Frag 339 = `puddles_common.frag.glsl`: `glsl.mjs:222` lanza "Fragment shader has no main() to attach the alpha test" antes de `shaderSource`. Por eso la fuente queda **len 0**: no es un problema de Reader, charset ni pack.
+- Hay 30 shaders con `#include`, así que el problema es general.
+
+**Fix exacto (bridge, `runtime/gl.mjs` + `glsl.mjs`; el juego no se toca):**
+1. `glsl.mjs`: si la unidad no tiene `main()`, marcarla como *librería*. No inyectar el alpha test ni lanzar error.
+2. `compileShader` de una librería: guardar la fuente traducida y validarla de verdad, compilando `fuente + "\nvoid main(){}"` en un shader temporal. Reportar ese COMPILE_STATUS y ese info log. No es un éxito falso.
+3. `linkProgram`: por stage, tomar la única unidad con `main()` y concatenarle el cuerpo de las librerías attacheadas del mismo stage (sin `#version`/`precision`; los prototipos se pueden quedar). Compilar ese shader fusionado e inyectarle el alpha test solo ahí (frag). Linkear con los fusionados y mapearlos al handle del programa. Si un stage tiene 0 o más de 1 `main()`, fallar el link con un log claro.
+4. Al hacer `detach`/`delete` de unidades, invalidar la caché fusionada.
+
+**Verificado:** trail GL de diag148 (fuentes, logs, len 0 en el frag 339), los archivos `puddles_common.*.{h,glsl}` de la instalación y las constantes de `ShaderUnit`. **Inferido:** que la fusión compila. Se espera que sí, porque `.h` solo trae prototipos y `.glsl` las definiciones. No lo probé en Chrome.
+
+**Warnings de items** (`InvalidParameterException: Sharpness/HeadCondition is not a valid parameter in item: …`, ×2 cada uno): son del parser de scripts de items de 42.x. El juego los captura, los loguea y sigue. **Tolerados, no bloquean.** Son datos vanilla, no hay que tocarlos.
+
+**Siguiente:** después de puddles vienen los demás shaders con `#include` (30) por el mismo camino, y luego `invokeOnRenderContext` 14 entradas / 12 salidas, que probablemente sean las mismas llamadas de compile que esperan.
+
+## Ronda 50b: parche probado
+
+- **Parche:** `/datos/Projects/pz-web-code/patches/ronda50-shader-merge.patch`. Son 253 líneas y solo tocan `port/runtime/gl.mjs` y `port/runtime/glsl.mjs`, contra HEAD 212361e.
+- **Cómo aplicarlo**, desde `/datos/Projects/pz-web`: `git apply /datos/Projects/pz-web-code/patches/ronda50-shader-merge.patch`. `git apply --check` ya pasa.
+
+### Qué hace
+
+- **Unidades sin `main()`:**
+  - Las unidades de librería (`*.glsl` que se cargan por cada `#include`) se compilan como una sonda: la fuente más un `main` vacío.
+  - Es una validación real. Solo se toleran los errores de funciones no definidas que la unidad tiene prototipadas, porque desktop las resuelve al linkear.
+- **`linkProgram`:**
+  - Hace un merge por stage: un único `#version`, después las librerías y al final la unidad con `main`.
+  - Traduce y compila el resultado una sola vez. El alpha test se inyecta solo en el frag mergeado.
+- **Errores claros:** si un stage tiene 0 o más de un `main()`, `linkProgram` falla con un log explícito.
+- **Invalidación:** los shaders mergeados se invalidan con detach, delete, `shaderSource` o recompile. También al borrar el program.
+- **Nuevo (`glsl.mjs`):**
+  - Los inicializadores globales no constantes, que GLSL 1.20 permite y ES 3.00 no (por ejemplo `float wetLand = PuddlesParams[1].y*...`), se pasan a asignaciones al principio de `main()`, en el mismo orden en que se declaran.
+  - En una librería quedan en `globalInits` y terminan dentro del `main` mergeado.
+- **Tablas de pname:** ya estaban completas en HEAD; no hubo que cambiarlas.
+
+### Qué se verificó
+
+- Corrida de Playwright de 220 s contra :8092, con `gl.mjs` y `glsl.mjs` overrideados desde el worktree. La salida del build no se tocó.
+- 0 errores de "no main()" o "Missing main()".
+- Links: 2 de 2 OK, incluido puddles. En la corrida anterior, sin el hoist, puddles fallaba con "global variable initializers must be constant expressions".
+- No hubo pageerror ni trap.
+- El boot avanza hasta la carga de items y scripts, igual que antes. Los shaders de vehicle todavía no se alcanzan.
+
+### Próximo freno
+
+1. `Java_org_lwjgl_opengl_GL12C_nglDrawRangeElements__IIIIIJ` tira UnsupportedOperationException: falta en el bridge GL. Ahora `invokeOnRenderContext` queda en 14 entradas y 12 retornos; antes eran 14 y 14. Hay que implementarlo con `drawRangeElements` de WebGL2.
+2. `FluidContainerScript` da "missing no-arg constructor" por la reflexión de TeaVM. Por eso se eliminan los items con fluidos (Wine2, JuiceLemon, etc.).
+3. Los InvalidParameterException de items (Sharpness/HeadCondition) siguen siendo tolerables.
+
+## Ronda 51: drawRangeElements y FluidContainerScript
+
+**Parche:** `/datos/Projects/pz-web-code/patches/ronda51-drawrange.patch`.
+- Es **acumulativo**: incluye todo ronda50 más lo de esta ronda, contra HEAD 212361e. Se aplica solo, sin ronda50: `git apply /datos/Projects/pz-web-code/patches/ronda51-drawrange.patch`.
+- Verificado que aplica sobre un HEAD limpio.
+- **Ojo:** en main, `port/runtime/glsl.mjs` tiene un cambio sin commitear de la ronda (17:24, `alphaTestDeferred`) que choca con el hunk de glsl. Hay que elegir uno de los dos: el merge real de ronda50 reemplaza ese workaround.
+
+### 1. Draw calls
+- **Causa:** ningún draw call estaba ruteado. `tools/glgen/generate.py` no mapeaba `GL11C.glDrawArrays`, `GL11C.nglDrawElements` ni `GL12C.nglDrawRangeElements`, así que `FailFastNatives` las convertía en UnsupportedOperationException. `GLBridge.drawElements` existía, pero nada lo llamaba.
+- **Uso real en el jar del juego** (búsqueda en el bytecode):
+  - `glDrawRangeElements`: VBORenderer, IsoPuddles, IsoWater, WorldMapVBOs.
+  - `glDrawElements` y `glDrawElementsInstanced`: VertexBufferObject.
+  - `glDrawArrays`: VisibilityPolygon2.
+  - `glDrawArraysInstanced`: Particles.
+  - `glMultiDrawElements` y `glDrawElementsBaseVertex`: 0 usos. No se implementaron.
+- **Cambios:**
+  - `generate.py`: nuevo `DRAW_DIRECT`, con esas 3 natives apuntando a `port.shim.GL11`.
+  - `GL11.java`: `glDrawArrays`, `nglDrawElements` y `nglDrawRangeElements` llaman al bridge. `indices` es el offset en bytes dentro del ELEMENT_ARRAY_BUFFER bindeado. Si es negativo o mayor que int, raise con la identidad de la native.
+  - `gl.mjs`: `drawRangeElements` y `drawArrays`, con la misma validación que `drawElements` (buffer bindeado, tipo de índice, alineación del offset).
+- **Verificado en Chrome** con un contexto WebGL2 real, sin build:
+  - `drawRangeElements` con offset 2: getError 0 y píxel rojo.
+  - Offset impar: error claro.
+  - Sin buffer bindeado: error claro.
+  - `drawElements`: también OK.
+- **No verificado:** el ruteo Java. Necesita un build del juego (regenerar `gl-overrides.tsv` y recompilar). Después del build hay que confirmar que no aparece la UnsupportedOperationException y que `invokeOnRenderContext` entra y retorna la misma cantidad de veces (ahora 14 contra 12).
+- **Probable siguiente freno:** los draws instanced (`glDrawElementsInstanced` y `glDrawArraysInstanced`, en GL31C/ARB), que siguen sin mapear.
+
+### 2. FluidContainerScript "missing no-arg constructor"
+- **Causa:**
+  - `ComponentType.CreateComponentScript` va a `ComponentScriptFactory$ScriptConstructor.findConstructor`.
+  - Ese método prueba `ClassReflection.getConstructor()` y después `getDeclaredConstructor()` + `setAccessible(true)`.
+  - Todos los `ComponentScript` y los `Component` (por ejemplo `FluidContainer`, creado por `ComponentFactory$ComponentPool`) tienen el constructor sin argumentos **private**.
+  - `ReflectionConfiguration.setup()` solo hace `reflectablePublicMembers()` sobre `reflection.txt`, así que TeaVM no emite metadata de ese constructor.
+  - La clase sí está en `reflection.txt`.
+  - Fluid es simplemente el primer `ComponentType` que se crea. Attributes, CraftLogic, SpriteConfig, Parts y los demás fallarían igual.
+- **Fix:** ya está en el parche.
+  - En `ReflectionConfiguration.setup()` se agrega `selectClasses(clases de reflection.txt que extienden zombie.scripting.entity.ComponentScript o zombie.entity.Component).reflectableMethods(m -> m.isConstructor() && m.parameters().isEmpty())`.
+  - Requiere build del juego. No está compilado ni probado.

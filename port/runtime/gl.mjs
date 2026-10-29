@@ -1,5 +1,24 @@
 import { translateShader } from './glsl.mjs';
 
+/** Function names that a desktop GLSL unit only prototypes (`void f(void);`) without defining. */
+function declaredOnlyFunctions(raw) {
+  const text = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const declared = new Set(), defined = new Set();
+  for (const m of text.matchAll(/\b[A-Za-z_]\w*\s+([A-Za-z_]\w*)\s*\([^()]*\)\s*([;{])/g))
+    (m[2] === ';' ? declared : defined).add(m[1]);
+  for (const name of defined) declared.delete(name);
+  return declared;
+}
+/** True when every error in a compile log is an unresolved call to a function this unit prototypes. */
+function onlyUnresolvedPrototypes(log, prototypes) {
+  if (!prototypes || prototypes.size === 0) return false;
+  const errors = String(log).split('\n').filter(line => /ERROR/.test(line));
+  return errors.length > 0 && errors.every(line => {
+    const m = /Function (\w+)\(.*\) called by .* is undefined/.exec(line) || /'(\w+)' : no matching overloaded function found/.exec(line);
+    return m !== null && prototypes.has(m[1]);
+  });
+}
+
 /**
  * GL entrypoints this backend implements beyond raw WebGL2. Keep in sync with the mappings in
  * tools/glgen/generate.py and the wrappers in port.shim.GL11: an address is only handed out for
@@ -40,7 +59,7 @@ const PORT_PROVIDED = new Set([
   'glUniformMatrix3fv', 'glUniformMatrix4fv', 'glEnableVertexAttribArray',
   'glDisableVertexAttribArray', 'glVertexAttribPointer', 'glVertexAttrib1f', 'glVertexAttrib2f',
   'glVertexAttrib3f', 'glVertexAttrib4f', 'glGenVertexArrays', 'glDeleteVertexArrays',
-  'glBindVertexArray', 'glDrawArrays', 'glDrawElements',
+  'glBindVertexArray', 'glDrawArrays', 'glDrawElements', 'glDrawRangeElements',
   // Capability names of check_GL20 that WebGL2 does not expose as methods. port.shim.GL20 really
   // implements the ones the game uses; the desktop-only introspection natives raise with their own
   // identity instead of answering (docs/decisions.md), so no value is invented.
@@ -1037,6 +1056,7 @@ export class GLBridge {
   deleteShader(handle) {
     const entry = this.shaders.get(handle);
     if (entry === undefined) return; // deleting an unknown handle is a no-op, as in desktop GL
+    this.invalidateMerged(handle);
     this.shaders.delete(handle);
     this.call('deleteShader', entry.shader);
   }
@@ -1077,8 +1097,14 @@ export class GLBridge {
   }
   finishShaderSource(handle, stage, parts) {
     const entry = this.shaderEntry(handle, 'shaderSource');
-    const translated = translateShader(parts.join('\n'), stage);
+    entry.raw = parts.join('\n');
+    entry.stage = stage;
+    const translated = translateShader(entry.raw, stage);
     entry.source = translated.source;
+    entry.hasMain = translated.hasMain === true;
+    entry.globalInits = translated.globalInits ?? [];
+    entry.prototypes = declaredOnlyFunctions(entry.raw);
+    this.invalidateMerged(handle);
     entry.replacements = translated.replacements;
     entry.uniformDefaults = translated.uniformDefaults;
     entry.alphaTest = translated.alphaTestEmulated === true;
@@ -1089,9 +1115,29 @@ export class GLBridge {
   compileShader(handle) {
     const entry = this.shaderEntry(handle, 'compileShader');
     if (entry.source === '') throw new Error(`Shader ${handle} compiled without source`);
-    this.call('compileShader', entry.shader);
-    entry.compiled = this.call('getShaderParameter', entry.shader, this.context.COMPILE_STATUS) ? true : false;
-    entry.log = String(this.call('getShaderInfoLog', entry.shader) ?? '');
+    this.invalidateMerged(handle);
+    if (entry.hasMain) {
+      this.call('compileShader', entry.shader);
+      entry.compiled = this.call('getShaderParameter', entry.shader, this.context.COMPILE_STATUS) ? true : false;
+      entry.log = String(this.call('getShaderInfoLog', entry.shader) ?? '');
+    } else {
+      // Library unit (no main()): GLSL ES rejects it alone, so validate it for real by compiling it
+      // with an empty main() appended. The merged per-stage shader built at link is authoritative.
+      const probe = this.call('createShader', entry.type);
+      try {
+        this.call('shaderSource', probe, `${entry.source}\nvoid main(){\n${entry.globalInits.join('\n')}\n}\n`);
+        this.call('compileShader', probe);
+        entry.compiled = this.call('getShaderParameter', probe, this.context.COMPILE_STATUS) ? true : false;
+        entry.log = String(this.call('getShaderInfoLog', probe) ?? '');
+      } finally { this.call('deleteShader', probe); }
+    }
+    entry.linkDeferred = false;
+    if (!entry.compiled && onlyUnresolvedPrototypes(entry.log, entry.prototypes)) {
+      // Desktop GL resolves functions that are only prototyped in this unit at link time (from
+      // another attached unit of the same stage); GLSL ES reports it at compile. Every other error
+      // still fails the compile. The link step compiles the merged stage and reports its log.
+      entry.compiled = true; entry.linkDeferred = true; entry.log = '';
+    }
     if (this.shaderTrail.length < 400)
       this.shaderTrail.push({ kind: 'compile', handle, type: entry.type, ok: entry.compiled,
         log: entry.log, source: entry.compiled ? '' : entry.source.slice(0, 1200) });
@@ -1105,6 +1151,7 @@ export class GLBridge {
   deleteProgram(handle) {
     const entry = this.programs.get(handle);
     if (entry === undefined) return;
+    this.dropMerged(entry);
     this.programs.delete(handle);
     for (const [location, value] of this.locations) if (value.program === entry.program) this.locations.delete(location);
     this.call('deleteProgram', entry.program);
@@ -1118,19 +1165,78 @@ export class GLBridge {
     // A fragment shader carrying the injected alpha-test discard makes the program able to honour
     // the recorded glAlphaFunc state; see useProgram/applyAlphaTest.
     if (shader.alphaTest === true) program.alphaTest = true;
-    this.call('attachShader', program.program, shader.shader);
+    this.dropMerged(program);
   }
   detachShader(programHandle, shaderHandle) {
     const program = this.programEntry(programHandle, 'detachShader');
     const shader = this.shaderEntry(shaderHandle, 'detachShader');
+    void shader;
     program.shaders.delete(shaderHandle);
-    this.call('detachShader', program.program, shader.shader);
+    program.linked = false;
+    this.dropMerged(program);
+  }
+  /** Drops the WebGL attachments/merged shaders built by the last link of this program. */
+  dropMerged(program) {
+    for (const gl of program.glAttached ?? []) this.call('detachShader', program.program, gl);
+    for (const merged of program.merged ?? []) this.call('deleteShader', merged);
+    program.glAttached = []; program.merged = [];
+  }
+  /** A shader unit changed (new source, recompile, delete): every program using it must re-merge. */
+  invalidateMerged(shaderHandle) {
+    for (const program of this.programs.values())
+      if (program.shaders.has(shaderHandle) && (program.merged?.length ?? 0) > 0) { this.dropMerged(program); program.linked = false; }
+  }
+  /**
+   * Desktop GL may attach several shader objects per stage (PZ loads "x.glsl" for each
+   * #include "x.h" as an extra unit). WebGL2 takes one shader per stage, so each stage is
+   * rebuilt here: the single unit with main() plus the library units, merged from their
+   * desktop sources and translated once (alpha test injected only into this merged fragment).
+   * Returns an error string, or '' on success.
+   */
+  buildStages(program) {
+    this.dropMerged(program);
+    let alphaTest = false;
+    for (const type of [this.context.VERTEX_SHADER, this.context.FRAGMENT_SHADER]) {
+      const units = [...program.shaders].map(h => [h, this.shaders.get(h)]).filter(([, e]) => e && e.type === type);
+      if (units.length === 0) continue;
+      const mains = units.filter(([, e]) => e.hasMain);
+      const name = type === this.context.VERTEX_SHADER ? 'vertex' : 'fragment';
+      if (mains.length !== 1)
+        return `${name} stage has ${mains.length} units with main() (handles ${units.map(([h]) => h).join(',')}); exactly one is required`;
+      let gl = mains[0][1].shader;
+      if (units.length > 1 || mains[0][1].linkDeferred) {
+        // One #version on top, then library units (their globals must be declared before main()
+        // assigns hoisted initializers), then the unit that owns main().
+        const versionRe = /^[ \t]*#[ \t]*version\b.*$/m;
+        const version = (mains[0][1].raw.match(versionRe) ?? units.map(([, e]) => e.raw.match(versionRe)).find(Boolean) ?? [''])[0];
+        const raw = [version, ...units.filter(([, e]) => !e.hasMain).map(([, e]) => e), mains[0][1]]
+          .map(e => typeof e === 'string' ? e : e.raw.replace(versionRe, '')).join('\n');
+        let translated;
+        try { translated = translateShader(raw, name); }
+        catch (error) { return `merged ${name} stage failed to translate: ${error.message}`; }
+        gl = this.call('createShader', type);
+        program.merged.push(gl);
+        this.call('shaderSource', gl, translated.source);
+        this.call('compileShader', gl);
+        if (!this.call('getShaderParameter', gl, this.context.COMPILE_STATUS))
+          return `merged ${name} stage (handles ${units.map(([h]) => h).join(',')}) failed to compile: ${this.call('getShaderInfoLog', gl)}`;
+        if (translated.alphaTestEmulated) alphaTest = true;
+      } else if (mains[0][1].alphaTest) alphaTest = true;
+      this.call('attachShader', program.program, gl);
+      program.glAttached.push(gl);
+    }
+    program.alphaTest = alphaTest;
+    return '';
   }
   linkProgram(handle) {
     const program = this.programEntry(handle, 'linkProgram');
-    this.call('linkProgram', program.program);
-    program.linked = this.call('getProgramParameter', program.program, this.context.LINK_STATUS) ? true : false;
-    program.log = String(this.call('getProgramInfoLog', program.program) ?? '');
+    const stageError = this.buildStages(program);
+    if (stageError) { program.linked = false; program.log = stageError; }
+    else {
+      this.call('linkProgram', program.program);
+      program.linked = this.call('getProgramParameter', program.program, this.context.LINK_STATUS) ? true : false;
+      program.log = String(this.call('getProgramInfoLog', program.program) ?? '');
+    }
     const sources = [];
     for (const h of program.shaders) {
       const s = this.shaders.get(h);
@@ -1225,19 +1331,11 @@ export class GLBridge {
     if (program.linked) program.linked = false; // desktop: binding after linking is ignored
     this.call('bindAttribLocation', program.program, index, name);
   }
-  /** glGetAttachedShaders: WebGL2's own list, translated to this bridge's handles. */
+  /** glGetAttachedShaders: the desktop units the game attached (WebGL2 only sees the per-stage
+   * shaders built at link, see buildStages), in attach order. */
   attachedShaders(programHandle, maxCount) {
     const program = this.programEntry(programHandle, 'getAttachedShaders');
-    const webgl = this.call('getAttachedShaders', program.program) || [];
-    const byShader = new Map();
-    for (const [handle, entry] of this.shaders) byShader.set(entry.shader, handle);
-    const out = [];
-    for (const shader of webgl) {
-      if (out.length >= maxCount) break; // desktop: maxCount caps the writes, 0 writes nothing
-      const handle = byShader.get(shader);
-      if (handle !== undefined) out.push(handle);
-    }
-    return out;
+    return [...program.shaders].filter(h => this.shaders.has(h)).slice(0, Math.max(0, maxCount));
   }
   /** Name of an active uniform (kind 1) or attribute (kind 0), straight from WebGL2. */
   activeName(programHandle, index, kind) {
@@ -1495,6 +1593,17 @@ export class GLBridge {
     // As in desktop GL, `indices` is an offset into the bound ELEMENT_ARRAY_BUFFER.
     this.call('drawElements', mode, count, webglType, indices);
   }
+  drawRangeElements(mode, start, end, count, type, indices) {
+    if (this.boundElements === null)
+      throw new Error('glDrawRangeElements needs a bound ELEMENT_ARRAY_BUFFER');
+    if (end < start) throw new Error(`glDrawRangeElements end ${end} < start ${start}`);
+    const webglType = GLBridge.indexType(type);
+    const elementBytes = webglType === 0x1405 ? 4 : webglType === 0x1403 ? 2 : 1;
+    if (indices % elementBytes !== 0)
+      throw new Error(`Index offset ${indices} is not a multiple of the ${elementBytes}-byte index size`);
+    this.call('drawRangeElements', mode, start >>> 0, end >>> 0, count, webglType, indices);
+  }
+  drawArrays(mode, first, count) { this.call('drawArrays', mode, first, count); }
   static indexType(type) {
     const map = new Map([[0x1401, 0x1401], [0x1403, 0x1403], [0x1405, 0x1405]]);
     const value = map.get(type);

@@ -8,6 +8,21 @@ import org.teavm.extension.spi.reflection.SimpleReflectionPolicy;
 
 public final class ReflectionConfiguration extends SimpleReflectionPolicy {
     private record PublicApi(java.util.Set<String> signatures, java.util.Set<String> names) {}
+    /** Bases whose subclasses need their private no-arg constructors reflectable (see setup()). */
+    private static final java.util.Set<String> COMPONENT_BASES =
+            java.util.Set.of("zombie.scripting.entity.ComponentScript", "zombie.entity.Component");
+    /**
+     * Superclass walk by name. SimpleReflectionPolicy.extending(String) is NOT usable here: it calls
+     * {@code Objects.requireNonNull(environment.findClass(name))}, which throws NullPointerException
+     * while compiling the JVM regression probes (CompilerRegressionTest.nativeIntrinsicsCompileForReflection),
+     * where those game classes are not on the classpath at all.
+     */
+    private static boolean extendsAny(org.teavm.extension.introspect.IntrospectClass<?> cls,
+            java.util.Set<String> bases) {
+        for (var parent = cls.superclass(); parent != null; parent = parent.superclass())
+            if (bases.contains(parent.name())) return true;
+        return false;
+    }
     private final java.util.Map<String, java.util.Optional<PublicApi>> jdkApis = new java.util.HashMap<>();
     @Override public java.util.Collection<org.teavm.extension.introspect.IntrospectMember> classAccessibleMembers(
             org.teavm.extension.introspect.IntrospectClass<?> cls) {
@@ -62,6 +77,13 @@ public final class ReflectionConfiguration extends SimpleReflectionPolicy {
             }
             selectClasses(cls -> cls != null && java.util.Set.of("zombie.util.LazyValue", "zombie.util.ResettableLazyValue", "port.runtime.Task4Checks$HandleProbe").contains(cls.name())).reflectableFields(field -> true).reflectablePublicMethods();
             selectClasses(cls -> cls != null && names.contains(cls.name())).reflectablePublicMembers().foundByName();
+            // ComponentScriptFactory$ScriptConstructor and ComponentFactory$ComponentPool create entity
+            // components through ClassReflection.getDeclaredConstructor() + setAccessible(true); every
+            // ComponentScript/Component subclass declares a *private* no-arg constructor, which
+            // reflectablePublicMembers() leaves out ("missing no-arg constructor" for FluidContainerScript).
+            selectClasses(cls -> cls != null && names.contains(cls.name())
+                    && extendsAny(cls, COMPONENT_BASES))
+                .reflectableMethods(method -> method.isConstructor() && method.parameters().isEmpty());
         } catch (IOException error) {
             throw new IllegalStateException("Cannot read reflection configuration", error);
         }

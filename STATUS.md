@@ -570,3 +570,39 @@ Captura de esta ronda: `test-results/round40-final.png` (1280×720) — 876.098 
   `Pattern.compile("(.*?)\\s(.*?)")` y `replaceAll("\\s","")`: **2 pass**. `mvn compile` BUILD SUCCESS.
 - Nota: el mismo transformer podría activarse por descriptor en métodos privados con `(String)Z`; se
   restringió por nombre exacto + descriptor (`MethodDescriptor.parse`) para no tocar `isWhitespace`.
+
+## Ronda 50 (inicio 15:31:29, corte duro 19:31)
+- 15:35 Heredado de ronda 49 (`build-round49e-game.log` BUILD SUCCESS, boot.wasm 143.120.424 B,
+  `diag147.log`): sigue `RangeError: Maximum call stack size exceeded` (5504 frames) en
+  `ReluctantGroupQuantifierSet::matches ← String::matches ← StringUtils::containsWhitespace ←
+  CraftRecipe::LoadIO ← ScriptManager::Load ← GameWindow::initShared`. El fix de ronda 49
+  (`StringUtilsCompatibility`) estaba registrado en `BuildCompiler` pero **no se aplicaba**.
+- 15:52 Causa verificada (no hipótesis): `MethodDescriptor.parse` de TeaVM 0.16.0 recibe
+  `name(args)ret` **sin dos puntos**. `parse("containsWhitespace:(Ljava/lang/String;)Z")` guarda el
+  nombre como `"containsWhitespace:(Ljava/lang/String;)Z"`, así que `wanted.equals(method.getDescriptor())`
+  era `false` para los dos métodos y el transformer no reemplazaba nada (probes:
+  `/tmp/strtest/Check2` imprime `descEqualsWanted=false`; `/tmp/probe` TeaVMTool mínimo: sin el fix
+  `probe.wasm` contiene `ReluctantGroupQuantifierSet`, con el fix contiene `StringUtilsBridge`).
+- 15:58 Fix: `StringUtilsCompatibility` usa `parse("containsWhitespace(Ljava/lang/String;)Z")` y
+  `parse("removeWhitespace(Ljava/lang/String;)Ljava/lang/String;")`. Test nuevo
+  `port/src/test/java/port/TransformerPatchTest.java` (2 casos): ejecuta el transformer sobre la clase
+  leída del jar pinned y exige que el body quede **un solo invoke** a `port.runtime.text.StringUtilsBridge`,
+  más un test que documenta la trampa del parser (`parse` con `:` no es equals al descriptor real).
+  `mvn test -Dtest=TransformerPatchTest`: **2 pass**.
+- 16:03 Gate nuevo en `scripts/build.sh`: `wasmfn.py` sobre `boot.wasm` para
+  `zombie.util.StringUtils::{containsWhitespace,removeWhitespace}`; falla el build si todavía llaman
+  a `java.lang.String::matches`/`replaceAll` o si no aparecen en `StringUtilsBridge`
+  (`port/target/reports/stringutils-gate.txt`). Un transformer que no matchea no puede quedar silencioso.
+- 17:44 Ronda 51: aplicé el parche acumulativo de Code (`/datos/Projects/pz-web-code/patches/ronda51-drawrange.patch`)
+  sobre `port/runtime/{gl.mjs,glsl.mjs}` reverificados a 212361e (el workaround `alphaTestDeferred` de la ronda 50
+  quedó reemplazado por el merge real por stage; el parche no aplicaba con `git apply` porque el `.git` está read-only
+  para mi sandbox y porque esos dos archivos estaban modificados: los restauré con `git show 212361e:... > file` y
+  apliqué con `patch -p1`, exit 0). Trae además: `glDrawArrays`/`nglDrawElements`/`nglDrawRangeElements` en
+  `port.shim.GL11` + `DRAW_DIRECT` en `tools/glgen/generate.py` + `drawArrays`/`drawRangeElements` en gl.mjs, y los
+  constructores privados sin argumentos de `ComponentScript`/`Component` hechos reflectables.
+- 17:46 El parche rompió `CompilerRegressionTest.nativeIntrinsicsCompileForReflection` con `NullPointerException`
+  en `SimpleReflectionPolicy.extending(String)` (bytecode: `Objects.requireNonNull(environment.findClass(name))` ⇒ NPE
+  cuando `zombie.scripting.entity.ComponentScript` no está en el classpath de las probes JVM). Fix propio:
+  `ReflectionConfiguration.extendsAny(cls,bases)` camina `superclass()` por nombre, sin `findClass`.
+  `mvn test`: **50 tests, 0 fallos**. `npm test`: **39 pass** (adapté el test de glsl de la ronda 50 a
+  `hasMain`/`globalInits` y agregué un test de inicializadores globales no constantes).

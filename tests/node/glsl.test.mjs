@@ -42,3 +42,42 @@ test('scalar integer promotion respects variable scopes and array indices', () =
   assert.ok(result.source.includes('int data[2]'));
   assert.ok(result.source.includes('data[i]=x*2'));
 });
+
+test('a fragment helper unit without main() translates instead of throwing', () => {
+  // Round 50: zombie.core.opengl.ShaderUnit::compile turns every #include into its own
+  // ShaderUnit, so media/shaders/puddles_common.frag.glsl is handed to glShaderSource as a
+  // fragment-stage unit that only defines mainImage()/puddlesMain() and has no main().
+  // Throwing there killed RenderThread::invokeOnRenderContext (diag148.log); the helper must be
+  // translated verbatim and report the alpha-test gap honestly.
+  const helper = `#version 120
+    varying vec4 vertColour;
+    void mainImage(out vec4 c, in vec2 uv){c = vertColour*texture2D(sampler,uv);}
+    void puddlesMain(){gl_FragColor = vec4(1.0);}`;
+  const result = translateShader(helper, 'fragment');
+  assert.ok(result.source.startsWith('#version 300 es'));
+  assert.ok(result.source.includes('void puddlesMain'));
+  assert.ok(result.source.includes('pzFragColor'), 'gl_FragColor is still renamed in a helper unit');
+  assert.equal(result.alphaTestEmulated, false, 'nothing to attach the discard to');
+  assert.equal(result.hasMain, false, 'gl.mjs marks this unit as a library for the per-stage merge');
+  assert.ok(result.globalInits.length === 0);
+  // A unit that DOES have main() keeps the injected discard.
+  const withMain = translateShader('#version 120\nvoid main(){gl_FragColor=vec4(1.0);}', 'fragment');
+  assert.equal(withMain.alphaTestEmulated, true);
+  assert.equal(withMain.hasMain, true);
+  assert.ok(withMain.source.includes('pzAlphaTestDiscard()'));
+});
+
+test('non-constant global initializers move into main() (GLSL ES 3.00 forbids them)', () => {
+  // GLSL 1.20 allows `vec2 p = Uniform[0].y;` at global scope; ES 3.00 only allows constant
+  // expressions there, so the initializer becomes an assignment at the top of main().
+  const src = '#version 120\nuniform vec4 Uniform[2];\nvec2 p = Uniform[0].xy;\nvoid main(){gl_FragColor=vec4(p,0.0,1.0);}';
+  const result = translateShader(src, 'fragment');
+  assert.deepEqual(result.globalInits, [], 'a unit with main() hoists them itself');
+  assert.ok(result.source.indexOf('p = Uniform[0].xy') < result.source.indexOf('pzFragColor=vec4(p'),
+    'the assignment must run before main() uses p');
+  assert.ok(/vec2 p\s*;/.test(result.source), 'the global keeps its declaration without the initializer');
+  // Library units carry them so the merged source can place them in the merged main().
+  const lib = translateShader('#version 120\nuniform vec4 Uniform[2];\nvec2 p = Uniform[0].xy;\nvoid use(){gl_FragColor=vec4(p,0.0,1.0);}', 'fragment');
+  assert.equal(lib.hasMain, false);
+  assert.deepEqual(lib.globalInits, ['p = Uniform[0].xy;']);
+});

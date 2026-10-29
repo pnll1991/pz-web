@@ -95,8 +95,15 @@ GL30_DIRECT = {('nglGenVertexArrays','(IJ)V'), ('nglDeleteVertexArrays','(IJ)V')
     ('nglGenRenderbuffers','(IJ)V'), ('nglDeleteRenderbuffers','(IJ)V'),
     ('glIsRenderbuffer','(I)Z'), ('glBindRenderbuffer','(II)V'), ('glRenderbufferStorage','(IIII)V')}
 
+# Draw calls the game reaches (VBORenderer, IsoPuddles, IsoWater, WorldMapVBOs, VertexBufferObject,
+# VisibilityPolygon2). port.shim.GL11 forwards them to gl.mjs; offsets into the bound element buffer only.
+DRAW_DIRECT = {('org.lwjgl.opengl.GL11C','glDrawArrays','(III)V'),
+    ('org.lwjgl.opengl.GL11C','nglDrawElements','(IIIJ)V'),
+    ('org.lwjgl.opengl.GL12C','nglDrawRangeElements','(IIIIIJ)V')}
+
 
 def target_for(class_name, method_name, descriptor):
+    if (class_name, method_name, descriptor) in DRAW_DIRECT: return SCALAR
     if class_name == 'org.lwjgl.opengl.GL15C':
         return GL15 if (method_name, descriptor) in GL15_DIRECT else None
     if class_name == 'org.lwjgl.opengl.GL20C':

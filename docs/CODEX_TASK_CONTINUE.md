@@ -73,3 +73,29 @@ Detalle en docs/notes-from-code.md, sección 'Ronda 49b: próximos frenos'.
 4. invokeOnRenderContext que no vuelve es consecuencia del trap de StateRun; no es un bug aparte.
 5. Queda 1 FileNotFoundException sin identificar (probablemente LuaManager.init): hookear readFile para loguear la ruta.
 Hacer UN solo build después de 1+2 y probar en Chrome.
+
+## Séptimo diagnóstico de Code (ronda 50, "Fragment shader has no main()")
+Detalle en docs/notes-from-code.md, sección 'Ronda 50: shader vacío'. El shader NO está vacío: PZ compila cada include x.glsl como una unidad aparte del mismo stage y las une al enlazar. WebGL2 no lo soporta. Afecta a 30 shaders (el primero es puddles). glsl.mjs:222 lanza el error antes de shaderSource.
+Arreglarlo en el bridge, sin tocar el juego:
+1. glsl.mjs: una unidad sin main() se marca como librería (sin error y sin inyectarle el alpha test).
+2. compileShader: para validar una librería, compilarla en un shader temporal con `void main(){}` y devolver ese estado y ese log.
+3. linkProgram, por stage: tomar la única unidad con main(), sumarle el cuerpo de sus librerías (sin #version ni precision), compilar ese shader unido, inyectar el alpha test solo en el frag unido y enlazar. Si hay 0 o más de un main() en un stage, fallar con un log claro.
+4. Invalidar el shader unido al separar o borrar unidades.
+Los warnings de ítems (Sharpness, HeadCondition) los tolera el juego, no tocarlos. Después: UN build y probar en Chrome.
+
+## Regla: decompilaciones siempre en /tmp
+Toda salida de vineflower u otro decompilador va SIEMPRE a /tmp/..., nunca dentro del repo. Pasarle los argumentos bien (no dejar que un flag como --method=... termine usándose como carpeta de salida). Antes de terminar la ronda, verificar con `git status` que no haya carpetas nuevas raras en la raíz.
+
+## Ronda 50b: parche de Code YA PROBADO (aplicar primero en la ronda 51)
+El merge de shaders (diagnóstico séptimo) ya está implementado y probado en Chrome por Code. Antes de hacer cualquier otra cosa:
+  git apply --check /datos/Projects/pz-web-code/patches/ronda50-shader-merge.patch && git apply /datos/Projects/pz-web-code/patches/ronda50-shader-merge.patch
+Solo toca port/runtime/gl.mjs y glsl.mjs. Si el check falla porque la ronda 50 ya cambió esos archivos, integrarlo a mano. No reimplementar el merge desde cero.
+Próximos frenos (detalle en docs/notes-from-code.md, sección 'Ronda 50b'): (1) falta GL12C_nglDrawRangeElements en el bridge (Code está preparando el parche); (2) FluidContainerScript da 'missing no-arg constructor' en la reflexión de TeaVM.
+
+## Ronda 51: REEMPLAZA a la sección 'Ronda 50b'. Usar el parche acumulativo de Code
+Aplicar /datos/Projects/pz-web-code/patches/ronda51-drawrange.patch en vez de ronda50-shader-merge.patch. Está hecho contra 212361e y trae:
+- el merge de shaders;
+- el mapeo en generate.py de glDrawArrays, nglDrawElements y nglDrawRangeElements a port.shim.GL11, más drawArrays y drawRangeElements en gl.mjs;
+- los constructores privados sin argumentos expuestos para reflexión (FluidContainerScript y las otras subclases de ComponentScript/Component que están en reflection.txt).
+El workaround alphaTestDeferred que la ronda 50 metió en glsl.mjs choca con el parche, y el merge lo reemplaza. Si `git apply --check` falla, revertí glsl.mjs y gl.mjs a la versión de 212361e (`git checkout 212361e -- port/runtime/glsl.mjs port/runtime/gl.mjs`) y aplicalo. Si falla en otro archivo, integralo a mano.
+Después: UN build --with-game y verificar en Chrome tres cosas: que no aparezca nglDrawRangeElements, que invokeOnRenderContext entre y retorne la misma cantidad de veces, y que no vuelva el error de FluidContainerScript. El próximo freno probable son los draws instanced, que todavía no están mapeados. Detalle en docs/notes-from-code.md, sección 'Ronda 51'.

@@ -28,3 +28,5 @@ __pycache__/
 /sdk/
 supervisor.log
 local-run-*.log
+
+/--method=*/

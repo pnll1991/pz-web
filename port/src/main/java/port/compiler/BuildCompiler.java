@@ -88,6 +88,7 @@ public final class BuildCompiler {
             tool.getTransformers().add(MemoryCompatibility.class.getName());
             tool.getTransformers().add(BufferUtilsCompatibility.class.getName());
             tool.getTransformers().add(StringUtilsCompatibility.class.getName());
+            tool.getTransformers().add(AssertionDisabledCompatibility.class.getName());
             tool.getTransformers().add(WindowCompatibility.class.getName());
             tool.getTransformers().add(GLCompatibility.class.getName());
             tool.getTransformers().add(StbCompatibility.class.getName());

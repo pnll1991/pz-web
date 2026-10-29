@@ -229,4 +229,31 @@ public final class GL11 {
     private static native void getTexImageNative(int target, int level, int format, int type, Uint8Array data);
     @JSBody(params={"target","level"}, script="return globalThis.pzRuntime.gl.texLevelBytes(level);")
     private static native int getTexImageBytesNative(int target, int level);
+
+    // --- Draw calls (GL11C/GL12C natives reached by VBORenderer, IsoPuddles, IsoWater, WorldMapVBOs,
+    // VertexBufferObject and VisibilityPolygon2). With an ELEMENT_ARRAY_BUFFER bound, desktop GL
+    // reads `indices` as a byte offset into it, which is exactly WebGL2's offset argument. A client
+    // memory pointer (no element buffer bound) has no WebGL2 equivalent: gl.mjs raises for it.
+    public static void glDrawArrays(int mode, int first, int count) { drawArraysNative(mode, first, count); }
+    public static void nglDrawElements(int mode, int count, int type, long indices) {
+        drawElementsNative(mode, count, type, offset(indices, "org.lwjgl.opengl.GL11C#nglDrawElements(IIIJ)V"));
+    }
+    public static void nglDrawRangeElements(int mode, int start, int end, int count, int type, long indices) {
+        drawRangeElementsNative(mode, start, end, count, type,
+            offset(indices, "org.lwjgl.opengl.GL12C#nglDrawRangeElements(IIIIIJ)V"));
+    }
+    private static int offset(long indices, String identity) {
+        if (indices < 0 || indices > Integer.MAX_VALUE)
+            throw new UnsupportedOperationException("WebGL2 draws only from a bound ELEMENT_ARRAY_BUFFER offset, got "
+                + indices + ": " + identity);
+        return (int) indices;
+    }
+    @JSBody(params={"mode","first","count"}, script="globalThis.pzRuntime.gl.drawArrays(mode,first,count);")
+    private static native void drawArraysNative(int mode, int first, int count);
+    @JSBody(params={"mode","count","type","indices"},
+        script="globalThis.pzRuntime.gl.drawElements(mode,count,type,indices);")
+    private static native void drawElementsNative(int mode, int count, int type, int indices);
+    @JSBody(params={"mode","start","end","count","type","indices"},
+        script="globalThis.pzRuntime.gl.drawRangeElements(mode,start,end,count,type,indices);")
+    private static native void drawRangeElementsNative(int mode, int start, int end, int count, int type, int indices);
 }

@@ -19,8 +19,12 @@ public final class StringUtilsCompatibility implements ClassHolderTransformer {
         var own = context.getHierarchy().getClassSource().get("port.runtime.text.StringUtilsBridge");
         if (own == null) throw new IllegalStateException("StringUtils bridge missing");
         var replacements = java.util.Map.of(
-            "containsWhitespace", MethodDescriptor.parse("containsWhitespace:(Ljava/lang/String;)Z"),
-            "removeWhitespace", MethodDescriptor.parse("removeWhitespace:(Ljava/lang/String;)Ljava/lang/String;"));
+            // TeaVM's MethodDescriptor.parse takes "name(args)ret" with NO colon (verified:
+            // parse("containsWhitespace:(...)Z") yields a descriptor that is not equals() to
+            // MethodHolder.getDescriptor(), so the round-49 version matched nothing and boot.wasm
+            // still called java.lang.String::matches).
+            "containsWhitespace", MethodDescriptor.parse("containsWhitespace(Ljava/lang/String;)Z"),
+            "removeWhitespace", MethodDescriptor.parse("removeWhitespace(Ljava/lang/String;)Ljava/lang/String;"));
         for (var method : cls.getMethods()) {
             if (!method.hasModifier(ElementModifier.STATIC)) continue;
             var wanted = replacements.get(method.getName());
