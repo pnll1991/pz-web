@@ -71,11 +71,259 @@ def patch_monitor():
         public void interrupted() {"""
     assert source.count("        @Override\n" + marker) == 1
     source = source.replace("        @Override\n" + marker, method)
+    # Round 40 (platform only, no game rules touched): the monitor's two queues must NOT be
+    # classlib collections. Measured on boot.wasm (build round38d) with tools/code-agent:
+    # java.util.ArrayDeque::add/addFirst/addLast/clear/offer/offerLast/peek/remove/removeFirst/
+    # removeLast/pop/push are all compiled as TeaVM COROUTINES (Fiber ops in their bodies), because
+    # grow/Objects.requireNonNull -> Throwable::fillInStackTrace -> Class::getName -> StringBuilder
+    # -> KahluaTableImpl::toString -> UIManager$Sync::endFrame -> Thread::sleep reaches a suspension
+    # seed (probe8 cost 16 from ArrayDeque::addLast). TeaVM inserts a suspension point at EVERY async
+    # call, so inside Object.waitImpl's own @Async body `monitor.notifyListeners.add(listener)` parked
+    # the game fiber before the listener existed, and inside monitorEnterWait's body
+    # `monitor.enteringThreads.add(...)` parked the render fiber before the waiter existed. Neither
+    # fiber ever registered itself, so no release could grant either one -- exactly what diag84d.log
+    # and diag85d.log show: phase 16 = 1 but phase 3 = 0, pzAsync.offers = 2 for the whole run
+    # (Thread::start and BrowserYield's resume only), invoke entered 1 / returned 0, swap stuck at 2.
+    # The queues below are plain field writes on concrete classes: no method call, therefore no
+    # suspension point.
+    struct_edits = [
+        ("""    static class Monitor {
+        static final int MASK = 0x80000000;
+
+        Queue<PlatformRunnable> enteringThreads;
+        Queue<NotifyListener> notifyListeners;""",
+         """    static class Monitor {
+        static final int MASK = 0x80000000;
+
+        EnteringQueue enteringThreads;
+        NotifyQueue notifyListeners;"""),
+        ("""    interface NotifyListener extends PlatformRunnable, EventQueue.Event {""",
+         """    // Intrusive FIFO of monitorenter waiters. Every operation is a field write on a concrete
+    // class: an async call anywhere here would park the fiber that is only trying to register.
+    static final class EnteringQueue {
+        EnteringRequest head;
+        EnteringRequest tail;
+        int size;
+
+        boolean isEmpty() {
+            return head == null;
+        }
+
+        int size() {
+            return size;
+        }
+
+        void add(EnteringRequest request) {
+            request.next = null;
+            if (tail == null) {
+                head = request;
+                tail = request;
+            } else {
+                tail.next = request;
+                tail = request;
+            }
+            ++size;
+        }
+
+        EnteringRequest remove() {
+            EnteringRequest request = head;
+            if (request == null) {
+                return null;
+            }
+            head = request.next;
+            if (head == null) {
+                tail = null;
+            }
+            request.next = null;
+            --size;
+            return request;
+        }
+    }
+
+    static final class EnteringRequest implements PlatformRunnable {
+        EnteringRequest next;
+        final TObject object;
+        final TThread thread;
+        final int count;
+        final AsyncCallback<Void> callback;
+
+        EnteringRequest(TObject object, TThread thread, int count, AsyncCallback<Void> callback) {
+            this.object = object;
+            this.thread = thread;
+            this.count = count;
+            this.callback = callback;
+        }
+
+        @Override
+        public void run() {
+            TThread.setCurrentThread(thread);
+            Monitor monitor = monitorOf(object);
+            if (monitor == null) {
+                callback.complete(null);
+                return;
+            }
+            monitor.owner = thread;
+            monitor.count += count;
+            callback.complete(null);
+        }
+    }
+
+    // Intrusive FIFO of Object.wait listeners, same reason as EnteringQueue.
+    static final class NotifyQueue {
+        NotifyListenerImpl head;
+        NotifyListenerImpl tail;
+        int size;
+
+        boolean isEmpty() {
+            return head == null;
+        }
+
+        int size() {
+            return size;
+        }
+
+        void add(NotifyListenerImpl listener) {
+            listener.next = null;
+            if (tail == null) {
+                head = listener;
+                tail = listener;
+            } else {
+                tail.next = listener;
+                tail = listener;
+            }
+            ++size;
+        }
+
+        NotifyListenerImpl remove() {
+            NotifyListenerImpl listener = head;
+            if (listener == null) {
+                return null;
+            }
+            head = listener.next;
+            if (head == null) {
+                tail = null;
+            }
+            listener.next = null;
+            --size;
+            return listener;
+        }
+    }
+
+    interface NotifyListener extends PlatformRunnable, EventQueue.Event {"""),
+        ("""        Monitor monitor = o.monitor;
+        if (monitor.enteringThreads == null) {
+            monitor.enteringThreads = new ArrayDeque<>();
+        }
+        monitor.enteringThreads.add(() -> {
+            TThread.setCurrentThread(thread);
+            o.monitor.owner = thread;
+            o.monitor.count += count;
+            callback.complete(null);
+        });""",
+         """        Monitor monitor = o.monitor;
+        if (monitor.enteringThreads == null) {
+            monitor.enteringThreads = new EnteringQueue();
+        }
+        monitor.enteringThreads.add(new EnteringRequest(o, thread, count, callback));"""),
+        ("""        var listener = new NotifyListenerImpl(this, callback, monitor.count);
+        if (monitor.notifyListeners == null) {
+            monitor.notifyListeners = new ArrayDeque<>();
+        }""",
+         """        var listener = new NotifyListenerImpl(this, callback, monitor.count);
+        if (monitor.notifyListeners == null) {
+            monitor.notifyListeners = new NotifyQueue();
+        }"""),
+        ("""        final TObject obj;
+        final AsyncCallback<Void> callback;""",
+         """        NotifyListenerImpl next;
+        final TObject obj;
+        final AsyncCallback<Void> callback;"""),
+    ]
+    for old, new in struct_edits:
+        if source.count(old) != 1:
+            raise RuntimeError("Unexpected TeaVM monitor shape (struct): " + old[:60])
+        source = source.replace(old, new)
     # Round 37 diagnostics: the render fiber is parked in RenderContextQueueItem.invoke()'s
     # monitorenter (Object.monitorEnterWait) while the game fiber is parked in the same object's
     # Object.wait. Record the monitor state at every grant, wait, release, re-acquire and notify so
     # the deadlock is identified instead of guessed. Ints only: a String constant in a replayed
     # coroutine frame is not materialized yet (round 32), and StringBuilder.append is a coroutine.
+    # Round 40 (second blocker, measured in diag87.log on the round40 build): the render-thread
+    # fiber now runs the whole render loop (flushInvokeQueue 376768/376768, invoke returned 1, the
+    # contended monitorenter phases 15/16 are gone), but the MainThread fiber is parked at
+    # Fiber::suspend <- Object::waitImpl <- Object::wait <- RenderContextQueueItem::waitUntilFinished
+    # with suspends 1 / resumes 0, and the monitor is NEVER released (owner stays thread 2, which is
+    # why the only notify on that lock is the re-entrant 9:2 and phases 3/7/13 stay 0).
+    # Cause, same class of bug as the queues above: Object.monitorExit(o,count) IS a coroutine here,
+    # because its error path calls `new TIllegalMonitorStateException()`, and Throwable::<init> ->
+    # fillInStackTrace -> Class::getName -> StringBuilder -> KahluaTableImpl::toString ->
+    # UIManager$Sync::endFrame -> Thread::sleep makes the whole constructor async (probe5 on the
+    # round40 wasm: monitorExit_0 fiber True, the only Fiber suspension seed sitting after the
+    # release lines). TeaVM suspends at that call, so waitImpl registers the listener (phase 4 = 1)
+    # and parks before `monitor.count -= count; monitor.owner = null` ever runs.
+    # Fix: release the monitor through a helper with NO method call that can suspend -- plain field
+    # writes, isEmptyMonitor() (fiber False, measured) and EventQueue.offer (fiber False). Semantics
+    # are the same as monitorExit(o, monitor.count): count drops to 0, owner clears, waiters get the
+    # deferred drain. No game rules touched; the exception path is not needed here because wait()
+    # already checked holdsLock() in wait0 before calling waitImpl.
+    wait_release_edits = [
+        ("""        monitorExit(this, monitor.count);
+    }""",
+         """        releaseForWait(monitor);
+    }
+
+    private static void releaseForWait(Monitor monitor) {
+        monitor.count = 0;
+        monitor.owner = null;
+        reportMonitor(5, monitor.id, 0, (int) TThread.currentThread().getId(), monitor.count,
+                monitor.enteringThreads == null ? 0 : monitor.enteringThreads.size(),
+                monitor.notifyListeners == null ? 0 : monitor.notifyListeners.size());
+        if (monitor.enteringThreads != null && !monitor.enteringThreads.isEmpty()) {
+            EventQueue.offer(() -> waitForOtherThreads(monitor.object));
+            return;
+        }
+        monitor.object.isEmptyMonitor();
+    }"""),
+        ("""        EnteringQueue enteringThreads;
+        NotifyQueue notifyListeners;""",
+         """        EnteringQueue enteringThreads;
+        NotifyQueue notifyListeners;
+        // Round 40: releaseForWait needs the owning object to drain waiters, and the upstream
+        // Monitor has no back reference. Assigned once in createMonitor (plain field write).
+        TObject object;"""),
+    ]
+    for old, new in wait_release_edits:
+        if source.count(old) != 1:
+            raise RuntimeError("Unexpected TeaVM monitor shape (wait release): " + old[:60])
+        source = source.replace(old, new)
+    # createMonitor must set the back reference on every branch.
+    create_marker = """    private static void createMonitor(TObject o) {
+        if (PlatformDetector.isWebAssemblyGC()) {
+            int hashCode = o.wasmGCIdentity();
+            o.monitor = new Monitor();
+            o.monitor.id = hashCode;
+        } else if (PlatformDetector.isLowLevel()) {
+            int hashCode = hashCodeLowLevel(o);
+            o.monitor = new Monitor();
+            o.monitor.id = hashCode;
+        } else {
+            o.monitor = new Monitor();
+        }
+    }"""
+    assert source.count(create_marker) == 1
+    assert create_marker.count("""        } else {
+            o.monitor = new Monitor();
+        }
+    }""") == 1
+    source = source.replace(create_marker, create_marker.replace(
+        """        } else {
+            o.monitor = new Monitor();
+        }
+    }""", """        } else {
+            o.monitor = new Monitor();
+        }
+        o.monitor.object = o;
+    }"""))
     diag_edits = [
         ("""        Monitor monitor = o.monitor;
         if (monitor.enteringThreads == null) {""",
@@ -145,8 +393,8 @@ def patch_monitor():
          """            if (currentThread.interruptHandler == this) {
                 currentThread.interruptHandler = null;
             }
-            reportMonitor(7, obj.monitor == null ? 0 : obj.monitor.id, 0,
-                    (int) currentThread.getId(), obj.monitor == null ? 0 : obj.monitor.count, 0, 0);
+            reportMonitor(7, monitorIdOr0(obj), 0, (int) currentThread.getId(),
+                    monitorCountOr0(obj), 0, 0);
             monitorEnterWait(obj, lockCount, callback);"""),
         ("""    @Rename("notify")
     public final void notify0() {
@@ -240,29 +488,21 @@ def patch_monitor():
             if (monitor.enteringThreads != null && !monitor.enteringThreads.isEmpty()) {
                 EventQueue.offer(() -> waitForOtherThreads(o));
             }"""),
-        ("""        monitor.enteringThreads.add(() -> {
-            TThread.setCurrentThread(thread);
-            o.monitor.owner = thread;
-            o.monitor.count += count;
-            callback.complete(null);
-        });""",
-         """        monitor.enteringThreads.add(() -> {
-            TThread.setCurrentThread(thread);
-            o.monitor.owner = thread;
-            o.monitor.count += count;
-            callback.complete(null);
-        });
+        # Round 40: the enqueue itself is now the plain `new EnteringRequest(...)` above (no
+        # suspension point), so the deferred drain is offered right after the waiter is registered.
+        ("""        monitor.enteringThreads.add(new EnteringRequest(o, thread, count, callback));""",
+         """        monitor.enteringThreads.add(new EnteringRequest(o, thread, count, callback));
         if (PlatformDetector.isLowLevel() || PlatformDetector.isWebAssemblyGC()) {
             EventQueue.offer(() -> waitForOtherThreads(o));
         } else {
             Platform.postpone(() -> waitForOtherThreads(o));
         }"""),
-        ("""            reportMonitor(7, obj.monitor == null ? 0 : obj.monitor.id, 0,
-                    (int) currentThread.getId(), obj.monitor == null ? 0 : obj.monitor.count, 0, 0);
+        ("""            reportMonitor(7, monitorIdOr0(obj), 0, (int) currentThread.getId(),
+                    monitorCountOr0(obj), 0, 0);
             monitorEnterWait(obj, lockCount, callback);""",
-         """            reportMonitor(7, obj.monitor == null ? 0 : obj.monitor.id, 0,
-                    (int) currentThread.getId(), obj.monitor == null ? 0 : obj.monitor.count, 0, 0);
-            Monitor free = obj.monitor;
+         """            reportMonitor(7, monitorIdOr0(obj), 0, (int) currentThread.getId(),
+                    monitorCountOr0(obj), 0, 0);
+            Monitor free = monitorOf(obj);
             if (free != null && free.owner == null) {
                 free.owner = currentThread;
                 free.count += lockCount;
@@ -300,6 +540,31 @@ def patch_monitor():
 
     private static int notifySize(Monitor monitor) {
         return monitor == null || monitor.notifyListeners == null ? 0 : monitor.notifyListeners.size();
+    }
+
+    // Round 40 (root cause of the `RuntimeError: unreachable` in NotifyListenerImpl::run): TeaVM's
+    // BaseClassesTransformation rewrites getfield/putfield of java.lang.Object::monitor into the
+    // getMonitor/setMonitor intrinsics ONLY inside methods of java.lang.Object, and
+    // WasmGCClassGenerator.fillSimpleClassFields deliberately skips that field, so getFieldIndex()
+    // is -1 for every other class. WasmGCInstructionGenerationVisitor.loadNormalField/storeNormalField
+    // then emit `unreachable`, truncating the body: the verified wasm of java.lang.Object$
+    // NotifyListenerImpl::run traps right after `local.get 0; struct.get field=3 obj` (rel 219) and
+    // java.lang.Object$EnteringRequest::run right after `struct.get field=3 object` (rel 86). Neither
+    // nested access is in Object's own methods, so both were dead code paths (phases 3/6/7/13/14 = 0
+    // and the game fiber never resumed). Reading/writing the monitor through these helpers keeps the
+    // access inside java.lang.Object, where the intrinsic applies.
+    static Monitor monitorOf(TObject o) {
+        return o.monitor;
+    }
+
+    static int monitorIdOr0(TObject o) {
+        Monitor monitor = o.monitor;
+        return monitor == null ? 0 : monitor.id;
+    }
+
+    static int monitorCountOr0(TObject o) {
+        Monitor monitor = o.monitor;
+        return monitor == null ? 0 : monitor.count;
     }
 
 """

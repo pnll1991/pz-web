@@ -407,3 +407,26 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Observación útil: el anillo `pzMonitorLog` + `pzMonitorCounts` por fase permitió ver la secuencia
   `9 → 4(waitImpl) → 9(owner=0) → 15 → 16` sin saturar el anillo (fase 5 excluida), y los frames de
   Java del discriminaron (`RenderContextQueueItem::invoke`, `Object$monitorEnterWait$0::run`).
+
+## 2026-10-29 — Ronda 40 (recursos de arranque / initFonts)
+- Error: derivé la lista del pack de fuentes con `re.findall(r'fnt\s*=\s*(\S+)')` sobre `media/fonts/EN/fonts.txt`.
+  El archivo termina las entradas con coma (`fnt = zomboidCode.fnt,`), así que los nombres capturados llevaban `,`
+  y ninguna ruta resolvía: `startup.txt` quedó en 2 archivos y el `FileNotFoundException` persistió.
+  Mejor enfoque: capturar `[^,\s]+` y **verificar el conteo de archivos y bytes** después de escribir la lista,
+  no asumir que el regex produjo rutas válidas.
+- Error: escribí la selección con `Path('build/real-browser/startup.txt')` habiendo hecho `cd` al PZ_HOME de la
+  copia pinneada; la ruta relativa apuntó fuera del repo y el `write_text` falló (y hubiera corromper otra ruta
+  si existiera). Mejor enfoque: toda escritura de artefactos con `ROOT = Path(cwd del repo)` absoluto.
+- Error de atribución: tras montar `media/fonts/EN/1x/` + aliases, el `FileNotFoundException` seguía con el mismo
+  stack (`FileInputStream::<init> ← AngelCodeFont::<init>_0 ← TextManager::Init`) y lo leí como "los aliases no
+  funcionaban". La causa real eran otras rutas: `getFontFilePath` **devuelve sin verificar** la última cadena
+  `media/<file>`, y `TextManager.Init` también pide `media/fonts/zomboidNormal<N>.fnt` (N=11..25) que no estaban
+  en el pack. Mejor enfoque: instrumentar el VFS (proxy de `files.has`/journal con `op`+`path`+`value`) y leer las
+  cadenas `makeConcatWithConstants` reales de la constante del bytecode, en lugar de Deducir por el stack.
+- Hecho útil (reutilizar): `TextManager.getFontFilePath(lang,sizeDir,fileName)` usa las plantillas del constant
+  pool `media/fonts/{1}/{1}/{1}`, `media/fonts/{1}/{1}`, `media/fonts/EN/{1}/{1}`, `media/fonts/EN/{1}`,
+  `media/fonts/{1}`, `media/{1}`; sólo las primeras prueban contra el file map, la última se devuelve ciega.
+  Por eso el pack debe montar el nombre exacto también en `media/` (alias) y no basta `media/fonts/EN/1x/`.
+- Enseñanza sobre "nunca simular éxito": `mainfont_0.png`, `mainfont2_0.png` y
+  `zomboidDialogue.bmfc_0.png` **no existen en la copia pinneada** (verificado con `find`). `AngelCodeFont` sólo
+  loguea `failed to load page 0 texture` y continúa; no hay que inventar esos PNG ni considerarlos bug del port.

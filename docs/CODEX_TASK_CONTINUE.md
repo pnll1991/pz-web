@@ -47,3 +47,8 @@ Cada ronda se corta sola a las 4 horas exactas y, hasta ahora, ninguna llegó a 
 - El fix de ThreadGroup de la ronda 34 NO alcanza: con el juego, Thread::<clinit> -> <init> -> ThreadGroup::registerDefault sigue siendo async (excepciones -> fillInStackTrace -> ... -> KahluaTableImpl::toString -> UIManager$Sync::endFrame -> Thread.sleep). Leé la sección "Ronda 35…" de `docs/notes-from-code.md`.
 - Aplicá ese fix tal cual: en JdkCompatibility.threads() dejá de inyectar registerDefault(this); inyectá el campo $pzCreator en Thread (solo asignación al final del constructor) y resolvé el grupo tarde con los accesores nativos que muestran las notas. Sin stubs.
 - Después hacé UN solo build --with-game (nunca dos en paralelo). Esperado: gate con fiberops False y `python3 tools/code-agent/probe8.py port/target/web/game/boot.wasm 'java.lang.Thread::<clinit>'` imprimiendo `no seed`. Anotá el resultado en STATUS.md.
+
+## OBLIGATORIO: tercer diagnóstico de Code (ronda 40, wait/initFonts)
+- Leé la sección "Ronda 40: monitor no se suelta en wait()" de `docs/notes-from-code.md`.
+- El wait/notify ya funciona con releaseForWait (round40c: 4 waits, 4 listeners, 4 re-adquisiciones). No lo rehagas.
+- Bloqueo nuevo: excepción no capturada en el MainThread dentro de GameWindow.initFonts. Primero capturá clase, mensaje y stack del Throwable en uncaughtExceptionMainThread/logException y mandalos a BrowserMonitor, SIN usar StringBuilder dentro de Fiber. Con eso identificá y arreglá la causa real (sin stubs).

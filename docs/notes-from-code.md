@@ -235,3 +235,60 @@ e.var(1, thread).setField("$pzCreator", e.constantNull(thread)); e.exit();
    - `python3 /tmp/code-agent/probe8.py port/target/web/game/boot.wasm 'java.lang.Thread::<clinit>'` debe imprimir `no seed`;
    - `probe5.py ... 'java.lang.Thread::<init>_1'` debe listar solo callees `fiber False`.
    - Opcional y definitivo: instrumentar en la copia de `prepare_teavm.py` el `AsyncMethodFinder.add()` para imprimir `stack` (ya construye un `CallStack` y nunca lo usa) cuando `methodRef` sea de `java.lang.Thread`.
+
+## Ronda 40: monitor no se suelta en wait()
+
+(Code, 2026-10-29 00:30 hora de Mendoza. Solo lectura sobre el repo; analizado `boot.wasm` de round40c (00:04) y `diag90c.log` (00:21).)
+
+### Causa raíz
+- En TeaVM 0.16 Wasm GC, `Object.wait` termina en `@Async native waitImpl(...)`; la implementación con
+  callback (`waitImpl_0`) corre *mientras la fibra del llamador se está suspendiendo*. Cualquier llamada
+  dentro de ese cuerpo a una función que sea corrutina (fiberops True) ve la fibra en estado "suspending"
+  y vuelve sin ejecutar nada.
+- El upstream liberaba con `monitorExit(this, monitor.count)`. `monitorExit_0` es corrutina sólo por su
+  camino de excepción (`new IllegalMonitorStateException()` → `Throwable::<init>` → … → `Thread.sleep`, la
+  misma cadena de la ronda 37). Resultado: listener registrado (fase 4), pero `count -= ...; owner = null`
+  nunca corre → dueño = thread 2 para siempre, `notifyAll` registrado `9:2`, listener nunca otorgado.
+- Los helpers `monitorOf/monitorIdOr0/monitorCountOr0` (fix del `unreachable`) NO rompen la liberación:
+  son lecturas planas, fiberops False en el wasm de round40c.
+
+### Fix (ya está en `scripts/prepare_teavm.py`, ronda 40, `wait_release_edits`)
+```diff
+-        monitorExit(this, monitor.count);
++        releaseForWait(monitor);
++    }
++
++    private static void releaseForWait(Monitor monitor) {
++        monitor.count = 0;
++        monitor.owner = null;
++        reportMonitor(5, ...);
++        if (monitor.enteringThreads != null && !monitor.enteringThreads.isEmpty()) {
++            EventQueue.offer(() -> waitForOtherThreads(monitor.object));
++            return;
++        }
++        monitor.object.isEmptyMonitor();
+     }
+```
+más el campo `TObject object` en `Monitor`, asignado en `createMonitor` (`o.monitor.object = o`).
+El chequeo de dueño no se pierde: `wait0` ya llama `holdsLock(this)` antes de `waitImpl`. El conteo se
+guarda en `NotifyListenerImpl.lockCount` y se restaura con `free.count += lockCount` (fase 14) o vía
+`monitorEnterWait` (fases 16→1/2). No hace falta otro cambio.
+
+### Evidencia (verificado en la build real, no sólo repro)
+- `wasmfn.py` sobre round40c: `waitImpl_0` fiberops **False**, ya no llama `monitorExit_0`, llama
+  `releaseForWait` (fiberops False; callees: isEmptyMonitor, reportMonitor, currentThread, EventQueue.offer,
+  todos False).
+- `diag90c.log`: `cnt` = `4:2` 4 (waits), `5:2` 108 (liberaciones del thread 2), `7:2` 4 (listener corre),
+  `16:2` 4 y `1:2` 4 (re-adquiere). Fibra 2 `7/4` suspends/resumes (antes `1/0`).
+  `RenderContextQueueItem#invoke` y `invokeOnRenderContext` returned 4. **El wait/notify funciona.**
+
+### Nuevo bloqueo (siguiente paso)
+- El MainThread avanza hasta `GameWindow#initFonts()` (entered, sin returned) y muere con una excepción no
+  capturada: `GameWindow#uncaughtExceptionMainThread` → `ExceptionLogger#logException` →
+  `onGameThreadExited`; `g.phase = main-returned`, `swap` 2, `menu:false`.
+- Verificar/diagnosticar: en el diag, capturar clase + mensaje + stack del Throwable que recibe
+  `uncaughtExceptionMainThread` (por ejemplo hook en `ExceptionLogger.logException` hacia
+  `BrowserMonitor`/consola, sin `StringBuilder` dentro de Fiber). Con ese dato se ataca `initFonts`.
+- Cómo verificar este fix en futuras builds: `python3 /tmp/code-agent/wasmfn.py port/target/web/game/boot.wasm
+  'java.lang.Object::waitImpl_0'` debe dar fiberops False y sin `monitorExit_0` en calls; en Chrome,
+  `cnt["7:2"] == cnt["4:2"]` y fibra 2 con resumes > 0.
