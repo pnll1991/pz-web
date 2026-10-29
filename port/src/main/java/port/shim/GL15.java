@@ -1,6 +1,8 @@
 package port.shim;
 
 import java.nio.ByteBuffer;
+import java.util.HashMap;
+import java.util.Map;
 import org.teavm.jso.JSBody;
 import org.teavm.jso.typedarrays.Int32Array;
 import org.teavm.jso.typedarrays.Uint8Array;
@@ -42,27 +44,71 @@ public final class GL15 {
         Int32Array values = bufferParameterNative(target, pname);
         for (int i = 0; i < values.getLength(); i++) NativeMemory.memPutInt(params + 4L * i, values.get(i));
     }
-    public static void nglBufferData(int target, long address, long size, int usage) {
-        // The desktop usage hint has no WebGL2 equivalent; WebGL2 owns the storage.
-        int bytes = checked(size);
-        bufferDataNative(target, bytes, address == 0L ? null : arena(address, bytes));
+    public static void nglBufferData(int target, long bytes, long address, int usage) {
+        // Parameter order comes from the real ABI, verified in the pinned jar: GL15C.glBufferData(int,long,int)
+        // calls nglBufferData(target, size, 0L, usage) and GL15C.glBufferData(int,ByteBuffer,int) calls
+        // nglBufferData(target, bb.remaining(), memAddress(bb), usage). So the descriptor (IJJI)V is
+        // (target, bytes, address, usage): the size arrives before the address. The desktop usage hint has
+        // no WebGL2 equivalent; WebGL2 owns the storage. A null address means "allocate only".
+        int n = checked(bytes);
+        bufferDataNative(target, n, address == 0L ? null : arena(address, n));
     }
-    public static void nglBufferSubData(int target, long offset, long address, long size) {
-        bufferSubNative(target, offset, arena(address, checked(size)));
+    public static void nglBufferSubData(int target, long offset, long bytes, long address) {
+        // GL15C.glBufferSubData(int,long,ByteBuffer) pushes (target, offset, bb.remaining(), memAddress(bb)),
+        // so for descriptor (IJJJ)V the size comes before the address.
+        bufferSubNative(target, offsetBytes(offset), arena(address, checked(bytes)));
     }
-    public static void nglGetBufferSubData(int target, long offset, long address, long size) {
-        int bytes = checked(size);
-        ByteBuffer view = NativeMemory.memByteBuffer(address, bytes);
-        getSubNative(target, offset, Uint8Array.fromJavaBuffer(view));
+    public static void nglGetBufferSubData(int target, long offset, long bytes, long address) {
+        // Same order as nglBufferSubData: GL15C.glGetBufferSubData(int,long,ByteBuffer) pushes
+        // (target, offset, bb.remaining(), memAddress(bb)).
+        int n = checked(bytes);
+        ByteBuffer view = NativeMemory.memByteBuffer(address, n);
+        getSubNative(target, offsetBytes(offset), Uint8Array.fromJavaBuffer(view));
+    }
+    /**
+     * WebGL2 takes a JS number for buffer offsets, and TeaVM hands a Java {@code long} to a JS body as a
+     * BigInt, which WebGL rejects with "Cannot convert a BigInt value to a number" (seen in the round-43
+     * run inside SpriteRenderer$RingBuffer.next -> GLVertexBufferObject.map). Offsets therefore cross the
+     * bridge as ints, which is also what a buffer range can be in this backend.
+     */
+    private static int offsetBytes(long offset) {
+        return checked(offset);
     }
     public static long nglMapBuffer(int target, int access) {
-        // WebGL2 has no client pointer for a buffer range: mapping cannot be honoured.
-        throw new UnsupportedOperationException(
-            "WebGL2 cannot map a buffer range: org.lwjgl.opengl.GL15C#nglMapBuffer(II)J");
+        // WebGL2 has no client pointer into buffer storage, so this backend hands out a real arena
+        // block that is filled from the bound buffer (getBufferSubData) and written back on unmap
+        // (bufferSubData). That is the same contract the desktop ABI offers: GL15C.glMapBuffer wraps
+        // the returned address with memByteBufferSafe(ptr, BUFFER_SIZE), and APIUtil.apiGetMappedBuffer
+        // reuses the cached ByteBuffer while memAddress() and the capacity still match, which is why
+        // the address stays identical for the whole mapping. The access hint is only recorded:
+        // WebGL2 storage is readable and writable either way, so a WRITE_ONLY map is not enforced.
+        // A second map while one is live flushes the previous block first, as desktop GL does when
+        // the client re-maps without unmapping: the old address must not be handed out twice.
+        if (mapped.containsKey(target)) unmap(target);
+        int size = bufferParameterNative(target, BUFFER_SIZE).get(0);
+        if (size <= 0) return 0L; // no storage on the bound buffer: nothing to map
+        long address = NativeMemory.nmemAllocChecked(size);
+        getSubNative(target, 0L, arena(address, size));
+        mapped.put(target, new Mapped(address, size, access));
+        return address;
     }
     public static boolean glUnmapBuffer(int target) {
-        throw new UnsupportedOperationException(
-            "WebGL2 has no mapped buffer range: org.lwjgl.opengl.GL15C#glUnmapBuffer(I)Z");
+        return unmap(target);
+    }
+
+    private record Mapped(long address, int size, int access) { }
+    private static final Map<Integer, Mapped> mapped = new HashMap<>();
+    private static final int BUFFER_SIZE = 0x8764;
+
+    private static boolean unmap(int target) {
+        Mapped entry = mapped.remove(target);
+        if (entry == null) throw new IllegalStateException(
+            "glUnmapBuffer without a live mapping: target 0x" + Integer.toHexString(target));
+        if (entry.address != 0L && entry.size > 0) {
+            bufferSubNative(target, 0L, arena(entry.address, entry.size));
+            NativeMemory.nmemFree(entry.address);
+        }
+        return true;
     }
 
     // --- Occlusion queries (same handle model as desktop GL: 0 means "none") ---------------

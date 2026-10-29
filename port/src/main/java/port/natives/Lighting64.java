@@ -70,13 +70,13 @@ public final class Lighting64 {
     public static boolean isConfigured() { return configured; }
     public static float cellSize() { return cellSize; }
 
-    @JSBody(params="library",script="var r=globalThis.pzRuntime;if(!r)return;var n=r.loadedLibraries||[];if(n.indexOf(library)<0)n.push(library);r.loadedLibraries=n;if(!r.natives)r.natives={};r.natives[library]=true;")
+    @JSBody(params="library",script="var r=globalThis.pzRuntime;if(!r)return;var n=r.loadedLibraries||[];if(n.indexOf(library)<0)n.push(library);r.loadedLibraries=n;if(!r.natives)r.natives={};var s=r.natives[library];if(!s||typeof s!=='object')r.natives[library]={stage:'registered',configureCalls:0,updateCalls:0};")
     private static native void registerLibrary(String library);
 
     /** Diagnostic state, so a test can prove the module answered instead of a stub. */
-    @JSBody(params="stage",script="var r=globalThis.pzRuntime;if(!r)return;if(!r.natives)r.natives={};var s=r.natives.Lighting64||{stage:'',configureCalls:0,updateCalls:0};s.stage=stage;s.configureCalls=s.configureCalls+(stage==='configured'?1:0);r.natives.Lighting64=s;")
+    @JSBody(params="stage",script="var r=globalThis.pzRuntime;if(!r)return;if(!r.natives)r.natives={};var s=r.natives.Lighting64;if(!s||typeof s!=='object'){s={stage:'',configureCalls:0,updateCalls:0};r.natives.Lighting64=s;}s.stage=stage;s.configureCalls=s.configureCalls+(stage==='configured'?1:0);r.natives.Lighting64=s;")
     private static native void publish(String stage);
 
-    @JSBody(script="var r=globalThis.pzRuntime;if(!r)return;if(!r.natives)r.natives={};var s=r.natives.Lighting64||{stage:'',configureCalls:0,updateCalls:0};s.updateCalls++;r.natives.Lighting64=s;")
+    @JSBody(script="var r=globalThis.pzRuntime;if(!r)return;if(!r.natives)r.natives={};var s=r.natives.Lighting64;if(!s||typeof s!=='object'){s={stage:'',configureCalls:0,updateCalls:0};r.natives.Lighting64=s;}s.updateCalls++;r.natives.Lighting64=s;")
     private static native void recordUpdateCall();
 }

@@ -483,3 +483,30 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   misma aridad que la native (`configure(F)V → (FLOAT, VOID)`, `DoLightingUpdateNew(JZ)V → (LONG,
   BOOLEAN, VOID)`) y verificarlo con el primer build; los forwards sin argumentos (Bullet) no revelan
   este detalle.
+
+## 2026-10-29 — Ronda 43 (módulos PopMan/Clipper/Pathfind + SQLite)
+- Error de edición: dentro de un `Map.of(...)` anidado cerré `Map.ofEntries(...)` sin el paréntesis final y el
+  build con juego falló **después de 6 minutos de TeaVM** por algo que `javac` detecta en 3 segundos.
+  Mejor enfoque: `mvn -q -f port/pom.xml compile` inmediatamente después de cada edición de un transformer,
+  antes de lanzar `scripts/build.sh --with-game`.
+- Error de diseño: escribí un `port/runtime/jdbc/SqliteDriver.java` propio que `implements java.sql.Driver`.
+  En el build JVM compiló mal y en Wasm no tiene sentido: `JdkCompatibility` sustituye el contrato
+  `java.sql.*` por `port.compat.java.sql.*`, así que un `Driver` propio no se registra donde mira el
+  `DriverManager` compat, que ya resuelve `jdbc:sqlite:` contra `BrowserConnection` (SQLite Wasm 3.54.1).
+  `org.sqlite.JDBC` es inalcanzable en game-main (sólo `PZSQLUtils` usa `DriverManager`).
+  Mejor enfoque: borrar el driver y reemplazar el cuerpo de `PZSQLUtils.init()` por un bootstrap propio que
+  valide `pzRuntime.sqlite.version` y falle honesto si falta — nunca simular un driver.
+- Error de edición: un `cat >>` para agregar un método al final de `NativeModuleCompatibility.java` dejó una
+  `}` extra (el archivo ya cerraba la clase). Mejor enfoque: para editar el interior de un archivo existente
+  usar una cirugía con ancla única (`python3` + `content.count(anchor) == 1`) y recompilar, no append al EOF.
+- Error de estado compartido en `NativeRegistry`: `register(library)` guardaba `r.natives[library] = true` y
+  `publish(library,stage,counter)` hacía `s.calls[counter]` sobre ese booleano. En JVM el código es inocuo, pero
+  en WasmGC el JS se ejecuta de verdad y `Clipper.init → n_init → Clipper2.init → publish` abortó el MainThread
+  con `TypeError: Cannot read properties of undefined (reading 'init')` (visto sólo en el DebugLog del juego, que
+  lo reenvuelve en `RuntimeException`). Mejor enfoque: que el registro cree siempre `{stage:'registered',calls:{}}`
+  y que todo publish verifique `typeof s === 'object'`; un diagnóstico JS no puede asumir la forma que escribió
+  otra JSBody.
+- Técnica que funcionó: el DebugLog del juego tiene la cadena de `Throwable$FakeClass.fakeMethod(<offset>)`;
+  `python3 scripts/wasm_stack.py port/target/web/game/boot.wasm <offsets>` traduce los offsets a nombres reales
+  de función (`zombie.vehicles.Clipper::n_init ← port.natives.Clipper2::init`). Con eso el bloqueo se resuelve en
+  un comando, sin speculation.

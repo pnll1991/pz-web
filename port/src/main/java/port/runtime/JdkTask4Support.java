@@ -20,8 +20,22 @@ public final class JdkTask4Support {
     public static InputStream getSystemResourceAsStream(String name){return BrowserResources.stream(name);}
     public static InputStream getResourceAsStream(Class<?> cls,String name){URL url=getResource(cls,name);try{return url==null?null:url.openStream();}catch(IOException e){return null;}}
     public static String getSpecificationVersion(Package pkg){return null; /* No package manifests are attached to AOT Class metadata. JDK permits null. */}
-    public static Type getGenericSuperclass(Class<?> cls){throw new UnsupportedOperationException("Class.getGenericSuperclass: generic signature metadata was not retained by this AOT build: "+cls.getName());}
-    public static Type[] getGenericExceptionTypes(Method method){throw new UnsupportedOperationException("Method.getGenericExceptionTypes: generic exception metadata is unavailable: "+method.getName());}
+    public static Type getGenericSuperclass(Class<?> cls){
+        // TeaVM 0.16.0 retains no generic superclass signature: teavm-classlib 0.16.0 implements
+        // getGenericType/getGenericReturnType/getGenericParameterTypes only (verified by scanning every
+        // .class in teavm-classlib-0.16.0.jar: no "genericSuperclass" string anywhere), so the declared
+        // type arguments of the superclass simply are not in the AOT metadata. The JDK returns the raw
+        // Class itself whenever the superclass is not generic, which is the case for every class the
+        // boot exposes to Kahlua (LuaJavaClassExposer.exposeLikeJavaByClass walks getInterfaces() and
+        // getGenericSuperclass() purely to recurse), so the raw superclass is the faithful answer here
+        // and null for java.lang.Object, interfaces and primitives, as the JDK also returns.
+        return cls.getSuperclass();
+    }
+    public static Type[] getGenericExceptionTypes(Method method){
+        // Checked exception types never carry type arguments, so the JDK's getGenericExceptionTypes()
+        // returns the same classes as getExceptionTypes(); TeaVM only retains the latter.
+        return method.getExceptionTypes();
+    }
     public static boolean canAccess(Field field,Object target){if(Modifier.isStatic(field.getModifiers())?target!=null:target==null||!field.getDeclaringClass().isInstance(target))throw new IllegalArgumentException();return field.isAccessible()||Modifier.isPublic(field.getModifiers())&&Modifier.isPublic(field.getDeclaringClass().getModifiers());}
     public static boolean trySetAccessible(Field field){field.setAccessible(true);return field.isAccessible();}
     public static java.nio.file.FileSystem newFileSystem(java.nio.file.Path path)throws IOException{throw new java.nio.file.ProviderNotFoundException("No browser filesystem provider for "+path);}

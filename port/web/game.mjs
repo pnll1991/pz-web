@@ -51,6 +51,17 @@ try {
   canvas.hidden = false;
   const vfs = await new VirtualFileSystem().open();
   await preloadPacks(vfs);
+  // Round 43: KahluaUtil.setupLibraryText opens new FileInputStream(new File("stdlib.lua")
+  // .getAbsoluteFile()), which resolves to the VFS root "/stdlib.lua". Those bytes are the pinned
+  // classpath resource the dev server already serves from PZ_HOME (sha256 583c2949...31eb for
+  // stdlib.lua, 3772 B for stdlib.lbc); nothing is copied into the repo. store() marks anything
+  // outside /Zomboid read-only, so the game can only read them. stdlib.lbc is the bytecode the
+  // same class loads through setupLibrary/loadByteCodeFromFile, mounted for the same reason.
+  for (const name of ['stdlib.lua', 'stdlib.lbc']) {
+    const response = await fetch(`/classpath/resource/0/${name}`);
+    if (!response.ok) throw new Error(`Classpath resource ${name} is unavailable: HTTP ${response.status}`);
+    vfs.store(`/${name}`, new Uint8Array(await response.arrayBuffer()));
+  }
   globalThis.pzRuntime = { vfs, normalizePath, gl:new GLBridge(canvas), input:new CanvasInput(canvas) };
   pzRuntime.window = new BrowserWindow(canvas,pzRuntime.gl,pzRuntime.input);
   await pzRuntime.window.prepare();

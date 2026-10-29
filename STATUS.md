@@ -245,6 +245,34 @@ Captura de esta ronda: `test-results/round40-final.png` (1280×720) — 876.098 
   que sí lo captura y lo reenvuelve en `RuntimeException`). `swapCount` sigue en 2 y `glTop: []` en esta sonda:
   ningún frame del menú todavía.
 
+## Ronda 43 (05:26 inicio) — avances incrementales
+
+- 05:26 Inicio. Bloqueo heredado de la ronda 42: `ZombiePopulationManager.init → loadLibrary("PZPopMan64")`
+  mata el MainThread; después están `PZSQLUtils.init` (Class.forName org.sqlite.JDBC → `System.exit(1)`),
+  `Clipper.init` (`PZClipper64` + `n_init()V`), `PathfindNative.init` (`PZPathFind64`), `WorldMapJNI.init` (sin natives).
+- Verificado con `javap` sobre la copia fijada: `GameWindow.init()` llama en orden
+  `initGlobalShader → invokeOnRenderContext → initFonts → checkRequiredLibraries → SteamUtils/ServerBrowser/SteamFriends/SteamWorkshop
+  → resetModFolders → RakNetPeerInterface.init → LightingJNI.init → ZombiePopulationManager.init → PZSQLUtils.init
+  → Clipper.init → PathfindNative.init → WorldMapJNI.init`. Las natives de población sólo se llaman con un
+  `IsoWorld` (IngameState/IsoWorld/IsoChunk/...), no en el boot.
+- Cambios (compilan): **nuevos** `port/natives/NativeRegistry.java`, `port/natives/PopMan64.java`,
+  `port/natives/Clipper2.java`, `port/natives/PathFind64.java`, `port/compiler/NativeModuleCompatibility.java`,
+  `port/runtime/jdbc/SqliteBootstrap.java`, `port/compiler/SqliteCompatibility.java`;
+  `port/GameBoot.java` instala los 3 módulos nuevos; `port/compiler/BuildCompiler.java` registra los 2 transformers nuevos.
+- `mvn -f port/pom.xml compile` **BUILD SUCCESS** (dos errores intermedios anotados en AGENT_LEARNINGS: paréntesis
+  que faltaba en `Map.ofEntries` y un tipo duplicado al intentar un `Driver` propio).
+- Build `build-round43-game2.log` **SUCCESS** (06:13): `wasm_bytes` 143.111.836, gate `fiberops: False`,
+  `probe8 'java.lang.Thread::<clinit>'` ⇒ `no seed`.
+- Chrome (`diag119/120/121`, dev 8092): **desaparecieron los dos bloqueos de la ronda 42**. `loadedLibraries`
+  ahora es `["PZBullet64","PZBullet","Lighting64","PZPopMan64","PZClipper64","PZPathFind64"]`, `missingLibraries`
+  sólo `["RakNet64"]`, y `pzRuntime.sqlitedb = {version:"3.54.1", initCalls:1}` ⇒ `PZSQLUtils.init` ya no hace
+  `System.exit(1)`.
+- Bloqueo nuevo encontrado con el stack resuelto (`scripts/wasm_stack.py`): `zombie.GameWindow::init →
+  zombie.vehicles.Clipper::n_init → port.natives.Clipper2::init` lanzaba
+  `TypeError: Cannot read properties of undefined (reading 'init')`. Causa: `NativeRegistry.register` guardaba
+  `r.natives[library] = true` (booleano) y `publish` hacía `s.calls[counter]` sobre ese booleano. Arreglado
+  (registro y publish ahora garantizan un objeto `{stage,calls}`; mismo arreglo en `Lighting64`).
+
 ## Cierre de la Ronda 42 (05:25)
 
 - **Estado**: el menú principal real de PZ **no se ve** en Chrome. `MENU_REACHED` no existe y no se creó.
@@ -297,3 +325,28 @@ Captura de esta ronda: `test-results/round40-final.png` (1280×720) — 876.098 
 - **Avisar al dueño** (no tocamos `.git`): el commit `4865c76` de la ronda 41 incluyó por error el directorio
   `-jnounc=0`, creado por un typo de extracción de jzlib (tercero Apache-2.0, no código del juego). Conviene
   eliminarlo del árbol y del índice en la próxima revisión del vigilante.
+- 06:50 (ronda 43) Dos fixes nuevos, `mvn -q -f port/pom.xml compile` OK:
+  1. `port/web/game.mjs` monta `/stdlib.lua` y `/stdlib.lbc` en la VFS antes de arrancar wasm, fetch
+     del recurso del classpath que el dev server ya sirve desde `PZ_HOME` (`/classpath/resource/0/...`,
+     sha256 `583c2949…31eb` para stdlib.lua). Causa del `FileNotFoundException` de
+     `KahluaUtil.setupLibraryText` (`new File("stdlib.lua").getAbsoluteFile()` ⇒ raíz VFS). Nada se copia al repo.
+  2. `port/shim/GL15.java`: `nglMapBuffer`/`glUnmapBuffer` implementados de verdad — mapa = bloque real
+     del arena rellenado con `getBufferSubData` y devuelto con `bufferSubData` en el unmap; la dirección
+     se conserva mientras está mapeado (LWJGL `apiGetMappedBuffer` compara `memAddress`+capacity), y el
+     tamaño sale de `BUFFER_SIZE` (0x8764). Antes lanzaba `UnsupportedOperationException` y mató el
+     RenderThread en `RingBuffer.next → GLVertexBufferObject.map`.
+- 07:35 (ronda 43) Corregido el orden de parámetros de las natives de buffers, verificado contra el bytecode
+  pinneado (`GL15C.glBufferData(int,long,int)` ⇒ `nglBufferData(target, size, 0L, usage)`;
+  `glBufferData(int,ByteBuffer,int)` ⇒ `(target, bb.remaining(), memAddress(bb), usage)`; igual
+  `glBufferSubData`/`glGetBufferSubData` ⇒ `(target, offset, remaining, address)`). Antes el shim leía
+  `bytes=0` y el `address` como tamaño ⇒ `gl.bufferData(target, Uint8Array(0))` ⇒ `BUFFER_SIZE 0` ⇒
+  `nglMapBuffer` devolvía 0 ⇒ `OpenGLException: Failed to map a buffer 65536 bytes long` en
+  `SpriteRenderer$RingBuffer.next → GLVertexBufferObject.map()`. Descriptores `(IJJI)V`/`(IJJJ)V` intactos,
+  así que `gl-overrides.tsv` no cambia. `mvn -q -f port/pom.xml compile` OK.
+- 07:40 (ronda 43) `JdkTask4Support.getGenericSuperclass` deja de lanzar `UnsupportedOperationException`:
+  devuelve `cls.getSuperclass()` (TeaVM 0.16.0 no conserva la firma genérica del superclase — verificado:
+  ningún `.class` de `teavm-classlib-0.16.0.jar` contiene "genericSuperclass"; sólo hay `getGenericType`,
+  `getGenericReturnType`, `getGenericParameterTypes`). `exposeLikeJavaByClass` de Kahlua usa ese Type sólo
+  para recursar, así que el raw superclass es la respuesta fiel (null para Object/interfaces/primitivos).
+  `getGenericExceptionTypes` ahora devuelve `method.getExceptionTypes()` (las excepciones checked no llevan
+  argumentos genéricos). Con esto el MainThread no muere en `exposeAll` al exponer `java.io.BufferedReader`.

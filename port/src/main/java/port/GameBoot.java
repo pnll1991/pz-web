@@ -11,6 +11,11 @@ public final class GameBoot {
         // Lighting64 is a native library the browser cannot load; our own module answers the
         // entry points the boot reaches before a world exists (see port/natives/Lighting64.java).
         port.natives.Lighting64.install();
+        // Same pattern for the libraries GameWindow.init() loads right after LightingJNI:
+        // PZPopMan64, PZClipper64 and PZPathFind64 (see port/natives/*.java).
+        port.natives.PopMan64.install();
+        port.natives.Clipper2.install();
+        port.natives.PathFind64.install();
         state("starting", "", "");
         try {
             launch(args);

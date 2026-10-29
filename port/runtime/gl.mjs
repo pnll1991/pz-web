@@ -291,7 +291,15 @@ export class GLBridge {
     if (target !== gl.ARRAY_BUFFER && target !== gl.ELEMENT_ARRAY_BUFFER)
       throw new Error(`Unsupported WebGL2 buffer target: 0x${target.toString(16)}`);
     // The desktop usage hint is dropped: WebGL2 has no storage hints.
-    this.call('bufferData', target, data === null ? size : data, gl.DYNAMIC_DRAW);
+    const value = data === null ? size : data;
+    this.call('bufferData', target, value, gl.DYNAMIC_DRAW);
+    // Round 43 diagnostic ring: what the storage allocation really received and what WebGL2 kept.
+    const ring = this.bufferDataLog || (this.bufferDataLog = []);
+    ring.push({ target, size, dataType: data === null ? 'null' : (data?.constructor?.name ?? typeof data),
+      dataLength: data?.length ?? null, valueKind: typeof value, valueLen: value?.length ?? value,
+      err: gl.getError(), stored: Number(gl.getBufferParameter(target, gl.BUFFER_SIZE)),
+      bound: target === gl.ARRAY_BUFFER ? this.boundArrays : this.boundElements });
+    if (ring.length > 24) ring.splice(0, ring.length - 24);
   }
   bufferSubData(target, offset, data) {
     const gl = this.context;
@@ -309,7 +317,14 @@ export class GLBridge {
     const gl = this.context;
     if (target !== gl.ARRAY_BUFFER && target !== gl.ELEMENT_ARRAY_BUFFER)
       throw new Error(`Unsupported WebGL2 buffer target: 0x${target.toString(16)}`);
-    if (pname === 0x8764) return [Number(gl.getBufferParameter(target, gl.BUFFER_SIZE))]; // BUFFER_SIZE
+    if (pname === 0x8764) { // BUFFER_SIZE
+      const size = Number(gl.getBufferParameter(target, gl.BUFFER_SIZE));
+      // Round 43 diagnostic: ring of the sizes the mapped-buffer path really saw (no rebuild needed).
+      const ring = this.bufferParamLog || (this.bufferParamLog = []);
+      ring.push({ target, pname, size, bound: target === gl.ARRAY_BUFFER ? this.boundArrays : this.boundElements });
+      if (ring.length > 24) ring.splice(0, ring.length - 24);
+      return [size];
+    }
     if (pname === 0x8765) return [0]; // BUFFER_USAGE: WebGL2 exposes no usage query
     throw new Error(`Unsupported WebGL2 buffer parameter: 0x${pname.toString(16)}`);
   }
