@@ -292,3 +292,75 @@ guarda en `NotifyListenerImpl.lockCount` y se restaura con `free.count += lockCo
 - Cómo verificar este fix en futuras builds: `python3 /tmp/code-agent/wasmfn.py port/target/web/game/boot.wasm
   'java.lang.Object::waitImpl_0'` debe dar fiberops False y sin `monitorExit_0` en calls; en Chrome,
   `cnt["7:2"] == cnt["4:2"]` y fibra 2 con resumes > 0.
+
+## Ronda 47: AttackState
+
+(Code, 2026-10-29 ~11:30 hora de Mendoza. Solo lectura; evidencia: `diag135.log`, `local-run-45/46/47.log`, bytecode del jar con `javap`.)
+
+### Causa raíz
+- Trap: `RuntimeError: dereferencing a null pointer` en `Class::isAssignableFrom` ← `State$Param::<init>` ←
+  `ofSupplier` ← `of` ← `ofBool` ← `AttackState::<clinit>` (disparado por `LuaJavaClassExposer.exposeStatics` → `Field.get`).
+- `State$Param.<init>` (bytecode 18-42) averigua la clase llamadora así:
+  `StackWalker.getInstance(RETAIN_CLASS_REFERENCE).walk(s -> s.map(getDeclaringClass).filter(not(Param.class::equals)).findFirst().orElse(null))`
+  y después hace `State.class.isAssignableFrom(caller)`.
+- Nuestro compat `port/compat/java/lang/StackWalker.walk` itera `Thread.currentThread().getStackTrace()`.
+  En TeaVM 0.16 `TThread.getStackTrace()` es literalmente `return new StackTraceElement[0]` (verificado con
+  javap sobre `teavm-classlib-0.16.0.jar`). Stream vacío ⇒ `orElse(null)` ⇒ `isAssignableFrom(null)`.
+  En la JVM sería NPE; en Wasm GC TeaVM no inserta null-check ⇒ trap no capturable que mata el MainThread.
+- `port/runtime/wasmsymbols.mjs` (ronda 46) no lo arregla: nadie lo importa todavía y, aunque se conecte,
+  sólo puede simbolizar `Throwable` (stack de V8), no `Thread.getStackTrace()`; además depender del stack
+  en runtime es frágil (inlining, nombres `of_0`, frames de lambdas).
+
+### Fix exacto (determinista, sin stack en runtime, sin fingir)
+En la JVM el resultado del walk es SIEMPRE la clase que llama a una fábrica `State$Param.of*` (todas las
+fábricas viven en `Param`, que el filtro descarta). Eso se conoce en compilación. Transformer TeaVM nuevo:
+
+1. `port/runtime/StateParamCaller.java`:
+```java
+package port.runtime;
+public final class StateParamCaller {
+    private static Class<?>[] stack = new Class<?>[16]; private static int depth;
+    public static void enter(Class<?> c){ if(depth==stack.length) stack=java.util.Arrays.copyOf(stack,depth*2); stack[depth++]=c; }
+    public static void exit(){ stack[--depth]=null; }
+    /** Mismo contrato que el walk original: la clase que llamó a la fábrica. */
+    public static Object callerClass(){
+        if(depth==0) throw new IllegalStateException("State$Param: fábrica llamada sin call-site instrumentado");
+        return stack[depth-1];
+    }
+}
+```
+2. `port/compiler/StateParamCallerCompatibility.java` (ClassHolderTransformer, registrarlo junto a
+   `CurrencyCompatibility`):
+   - En toda clase `C != zombie.ai.State$Param`: por cada `InvokeInstruction` estática a
+     `zombie.ai.State$Param` cuyo nombre empiece con `of` (of, ofBool, ofSupplier, …): insertar ANTES
+     `ClassConstantInstruction(C) -> v; invoke static StateParamCaller.enter(Class)V(v)` y DESPUÉS
+     `invoke static StateParamCaller.exit()V`.
+   - En `zombie.ai.State$Param.<init>(String,Class,Supplier)`: reemplazar la `InvokeInstruction` virtual a
+     `java.lang.StackWalker.walk(Function)Object` por `invoke static StateParamCaller.callerClass()Object`
+     con el MISMO receiver; el `getInstance` y el lambda quedan muertos (los quita el optimizador).
+   - Fallar el build (RuntimeException) si en `Param.<init>` no hay exactamente 1 `walk`, o si hay 0 call
+     sites (cambio de versión del juego ⇒ no reescribir a ciegas).
+   Alcance medido: 50 clases, todas en `zombie.ai.states.*` (ClimbOverFenceState 16 sitios … AttackState 1),
+   casi todas en `<clinit>`/campos estáticos. Sin `try/finally`: si la fábrica lanza, el `<clinit>` falla
+   igual (en la JVM también) y la pila queda inconsistente sólo en un estado ya fatal.
+
+Alternativa mínima si se quiere algo en 5 min: en el compat `StackWalker.walk`, si `getStackTrace()` viene
+vacío, lanzar `UnsupportedOperationException("TeaVM: Thread.getStackTrace vacío")` en vez de entregar un
+stream vacío. No arregla el arranque, pero convierte el trap en una excepción con nombre (no es fix).
+
+### Cómo verificar
+- Build única (cuando no haya otra corriendo): `wasmfn.py boot.wasm 'zombie.ai.State$Param::<init>'` no debe
+  llamar a `java.lang.StackWalker::walk` y sí a `port.runtime.StateParamCaller::callerClass`.
+- Chrome: desaparece el trap de `isAssignableFrom`; `exposeStatics` pasa por los 50 `*State`.
+  Chequeo de semántica: `State.PARAMS_BY_STATE` debe tener la clave `AttackState` con `skip_test_defence`.
+
+### Otros bloqueos a la vista (camino al menú)
+- `Thread.getStackTrace()` vacío también afecta `zombie.debug.StackTraceContainer.getStackTrace()/(int,Predicate)`
+  (usado por `DebugLogStream.generateCallerPrefix`, `printStackTrace`, `LuaManager$GlobalObject.getISUIStackTrace`,
+  `WorldGenUtils.methodsCall`). `DebugLogStream` usa `PZArrayUtil.getOrDefault` ⇒ imprime "(UnknownStack)", no
+  crashea; `WorldGenUtils.methodsCall` indexa directo ⇒ posible AIOOBE (sólo worldgen, no bloquea menú).
+- Único consumidor de StackWalker/getCallerClass en `zombie/` y `se/krka`: `State$Param`. log4j `StackLocator`
+  y lwjgl `StackWalkUtil` (META-INF/versions) no están en el camino del menú.
+- Patrón general: cualquier NPE de Java en Wasm GC es un trap no capturable; código del juego que hace
+  `try{…}catch(NullPointerException)` va a morir igual. Si aparecen más traps "dereferencing a null pointer",
+  mirar primero si el null viene de un stub de classlib que devuelve vacío/null.

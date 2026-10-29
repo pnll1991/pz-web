@@ -1,11 +1,40 @@
 # Estado del port personal
 
-Actualizado: **2026-10-29 05:25 (-03), Ronda 42** (inicio 01:40:52 según `supervisor.log`, corte duro 05:40).
+Actualizado: **2026-10-29 11:15 (-03), Ronda 47** (inicio 10:37:13 según `supervisor.log`, corte duro 14:37).
 Repositorio `/home/agente47/Projects/pz-web`. Esta ronda **no hizo commits y no tocó `.git`**.
-Artefacto actual: build `build-round42g-game.log` (SUCCESS, gate PASS, `probe8 'java.lang.Thread::<clinit>'` ⇒ `no seed`),
-`port/target/web/game/boot.wasm` de 143.142.946 B del 2026-10-29 05:15. Dev server **8092** (no reiniciado) sirviendo `port/target/`.
-**Leer la sección "Cierre de la Ronda 42" más abajo: ahí está el bloqueo actual (`PZPopMan64`) y los siguientes pasos.**
-El detalle histórico de las rondas 40/41 queda debajo, conservado como referencia.
+Artefacto vigente al empezar la ronda: build `build-round44c-game.log` (SUCCESS, gate PASS,
+`probe8 'java.lang.Thread::<clinit>'` ⇒ `no seed`), `port/target/web/game/boot.wasm` de 143.117.203 B
+del 2026-10-29 09:44. Dev server **8092** (no reiniciado) sirviendo `port/target/`.
+**Leer la sección "Ronda 47" más abajo: ahí están el bloqueo actual y los siguientes pasos.**
+Las rondas 43/44/45/46 están commiteadas (`a5d55a2`, `c54290f`, `b76fb7c`); las secciones de las
+rondas 40/41/42 que siguen abajo son **histórico**.
+
+## Ronda 47 (2026-10-29, inicio 10:37) — avances incrementales
+
+Estado de partida medido en `diag135.log` (ronda 45, build round44c): `phase:"starting"`, `swap:2`,
+canvas 95 % negro, DOS traps `RuntimeError: dereferencing a null pointer`:
+1. `java.lang.Class::isAssignableFrom` ← `zombie.ai.State$Param::<init>` ← `ofSupplier/of_0/ofBool` ←
+   `zombie.ai.states.AttackState::<clinit>` ← `Class::initialize` ← `reflect.Field::get` ←
+   `LuaJavaClassExposer::exposeStatics/exposeLikeJava` (mata el MainThread).
+   Causa raíz verificada con `javap` sobre la copia fijada: `State$Param.<init>` hace
+   `StackWalker.getInstance(RETAIN_CLASS_REFERENCE).walk(s -> s.map(StackFrame::getDeclaringClass)
+   .filter(not(this.getClass())).findFirst().orElse(null))` y luego `State.class.isAssignableFrom(<ese Class>)`.
+   Nuestro `port.compat.java.lang.StackWalker` itera `Thread.currentThread().getStackTrace()`, y
+   `TThread.getStackTrace()` de TeaVM 0.16.0 **devuelve un array vacío** (source jar, TThread.java:276),
+   así que el walk da `null` y `isAssignableFrom(null)` hace `obj.classInfo` sobre null ⇒ trap. Con frames
+   reales, `AttackState.<clinit>` (el `this.getClass()` es `Param`, no `State`) recorre la cadena hasta la
+   subclase de `State` que llama a `ofBool(...)`, exactamente como en JVM.
+2. `zombie.core.SpriteRenderer$RingBuffer$StateRun::render` ← `RingBuffer::render` ← `buildStateDrawBuffer`
+   ← `postRender` ← `RenderThread::lockStepRenderStep` (loop de render; aún sin analizar).
+Además 3 errores **no fatales** del juego: "AngelCodeFont failed to load page 0 texture
+/media/mainfont_0.png, /media/mainfont2_0.png, /media/fonts/zomboidDialogue.bmfc_0.png". Verificado en la
+copia 42.21: esos PNG **no existen en disco** (`media/font/mainfont.fnt.b` apunta a `mainfont_0.png`,
+`mainfont2.fnt.b` a `mainfont2_0.png`, `zomboidDialogue.fnt` a `zomboidDialogue.bmfc_0.png` y el disco tiene
+`zomboidDialogue_0.png`; `media/font/mainfont.fnt` es un placeholder que apunta a `test_0.tga`).
+Es falta de assets de la copia fijada, no un bug del port; el juego lo catchea y sigue.
+
+Cambios de esta ronda (en orden, cada uno verificado):
+
 
 ## Resumen del estado real hoy (actualizado en la ronda 42)
 

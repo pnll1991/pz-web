@@ -52,3 +52,8 @@ Cada ronda se corta sola a las 4 horas exactas y, hasta ahora, ninguna llegó a 
 - Leé la sección "Ronda 40: monitor no se suelta en wait()" de `docs/notes-from-code.md`.
 - El wait/notify ya funciona con releaseForWait (round40c: 4 waits, 4 listeners, 4 re-adquisiciones). No lo rehagas.
 - Bloqueo nuevo: excepción no capturada en el MainThread dentro de GameWindow.initFonts. Primero capturá clase, mensaje y stack del Throwable en uncaughtExceptionMainThread/logException y mandalos a BrowserMonitor, SIN usar StringBuilder dentro de Fiber. Con eso identificá y arreglá la causa real (sin stubs).
+
+## OBLIGATORIO: cuarto diagnóstico de Code (AttackState, ronda 47)
+- Leé la sección "Ronda 47: AttackState" de `docs/notes-from-code.md` y aplicá ese fix tal cual: transformer StateParamCaller que fija la clase llamadora al compilar (50 clases de zombie.ai.states; el build falla si el bytecode no tiene la forma esperada). Causa: en TeaVM Thread.getStackTrace() es vacío ⇒ StackWalker da null ⇒ isAssignableFrom(null) trap.
+- Verificalo como dice la nota, con UN solo build --with-game, y anotá el resultado en STATUS.md. Sin stubs.
+- Regla: ante cualquier 'dereferencing a null pointer' en Wasm GC, revisá primero si el null viene de algo de la classlib que devuelve vacío.
