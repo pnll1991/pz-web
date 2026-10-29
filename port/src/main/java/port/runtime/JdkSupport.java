@@ -145,6 +145,30 @@ public final class JdkSupport {
     private static native void recordMissingLibrary(String library);
     @org.teavm.jso.JSBody(params="status",script="var r=globalThis.pzRuntime;var w=r.window;if(!r.exits)r.exits=[];r.exits.push({status:status,at:Math.round(performance.now()),swapCount:w?w.swapCount:null,windowCreated:w?!!w.created:null,contextCurrent:w?!!w.contextCurrent:null});")
     private static native void recordExit(int status);
+    /**
+     * TeaVM's java.text.NumberFormat constructor resolved its currency eagerly through
+     * Currency.getInstance(Locale.getDefault()); that classlib call throws for a country-less locale
+     * because TeaVM's baked ISO-4217 table lacks the country its CLDR metadata resolves (real JDK 25
+     * measured with /tmp/CurrCheck.java: DecimalFormatSymbols.getInstance(Locale.ENGLISH).getCurrency()
+     * is XXX and no exception is raised). This bridge keeps the real currency when the browser's table
+     * has it and answers the JDK's currency-less XXX otherwise, recording each fallback so the
+     * deviation is visible in the Chrome diagnostics instead of silently swallowed.
+     */
+    public static java.util.Currency currencyForLocale(java.util.Locale locale) {
+        Objects.requireNonNull(locale);
+        try {
+            var currency = java.util.Currency.getInstance(locale);
+            if (currency != null) return currency;
+            recordCurrencyFallback(locale.toString(), "no country-to-currency entry");
+            return java.util.Currency.getInstance("XXX");
+        } catch (IllegalArgumentException missing) {
+            recordCurrencyFallback(locale.toString(), missing.getMessage());
+            return java.util.Currency.getInstance("XXX");
+        }
+    }
+    @org.teavm.jso.JSBody(params={"locale","reason"}, script="var r=globalThis.pzRuntime;if(!r.currencyFallbacks)r.currencyFallbacks=[];if(r.currencyFallbacks.indexOf(locale+' -> XXX ('+reason+')')<0)r.currencyFallbacks.push(locale+' -> XXX ('+reason+')');")
+    private static native void recordCurrencyFallback(String locale, String reason);
+
     public static void addShutdownHook(Runtime runtime, Thread thread) {
         Objects.requireNonNull(thread);
         throw new UnsupportedOperationException("Runtime.addShutdownHook: browser unload cannot guarantee Java execution; use explicit save/close");

@@ -161,7 +161,10 @@ public final class GL20 {
      */
     public static void nglVertexAttribPointer(int index, int size, int type, boolean normalized,
                                               int stride, long pointer) {
-        attribPointerNative(index, size, type, normalized, stride, pointer);
+        // The native's last argument is an offset into the bound ARRAY_BUFFER. TeaVM hands a Java long
+        // to a JSBody as a BigInt, which WebGL2 rejects with "Cannot convert a BigInt value to a
+        // number", so the offset crosses the bridge as an int and is checked rather than truncated.
+        attribPointerNative(index, size, type, normalized, stride, checked(pointer));
     }
     public static void glEnableVertexAttribArray(int index) { enableAttribNative(index); }
     public static void glDisableVertexAttribArray(int index) { disableAttribNative(index); }
@@ -300,7 +303,7 @@ public final class GL20 {
     @JSBody(params={"program","name"}, script="return globalThis.pzRuntime.gl.attribLocation(program,name);")
     private static native int attribLocationNative(int program, String name);
     @JSBody(params={"index","size","type","normalized","stride","offset"}, script="globalThis.pzRuntime.gl.vertexAttribPointer(index,size,type,normalized?1:0,stride,offset);")
-    private static native void attribPointerNative(int index, int size, int type, boolean normalized, int stride, long offset);
+    private static native void attribPointerNative(int index, int size, int type, boolean normalized, int stride, int offset);
     @JSBody(params="index", script="globalThis.pzRuntime.gl.enableAttrib(index);")
     private static native void enableAttribNative(int index);
     @JSBody(params="index", script="globalThis.pzRuntime.gl.disableAttrib(index);")

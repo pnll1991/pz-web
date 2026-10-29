@@ -35,6 +35,26 @@ public final class GL11 {
     public static void glPixelStorei(int pname, int param) { call2("pixelStorei", pname, param); }
     public static void glScissor(int x, int y, int width, int height) { call4("scissor", x, y, width, height); }
     public static void glClearDepthf(float depth) { clearDepthf(depth); }
+    public static void glClearDepth(double depth) { clearDepthNative(depth); }
+    public static void glDepthRange(double near, double far) { depthRangeNative(near, far); }
+    public static void glColorMask(boolean red, boolean green, boolean blue, boolean alpha) {
+        colorMaskNative(red ? 1 : 0, green ? 1 : 0, blue ? 1 : 0, alpha ? 1 : 0);
+    }
+    public static void glStencilFunc(int func, int ref, int mask) { stencilFuncNative(func, ref, mask); }
+    public static void glStencilOp(int fail, int zfail, int zpass) { stencilOpNative(fail, zfail, zpass); }
+    // org.lwjgl.opengl.GL11's own native: the alpha-test state lives in port/runtime/gl.mjs and is
+    // reproduced inside the generated fragment shaders (see ALPHA_TEST_FUNCTION in port/runtime/glsl.mjs).
+    public static void glAlphaFunc(int func, float ref) { alphaTestNative(func, ref); }
+    // GL13C/GL14C natives the game reaches from RenderThread and the GLState wrapper classes.
+    public static void glActiveTexture(int texture) { activeTextureNative(texture); }
+    public static void glBlendEquation(int mode) { blendEquationNative(mode); }
+    // Desktop attribute stacks. WebGL2 has none, so port/runtime/gl.mjs keeps its own snapshots of
+    // the state this bridge owns and restores them; bits whose desktop state does not exist here
+    // are counted in attribState() instead of being dropped silently (docs/decisions.md).
+    public static void glPushAttrib(int mask) { pushAttribNative(mask); }
+    public static void glPopAttrib() { popAttribNative(); }
+    public static void glPushClientAttrib(int mask) { pushClientAttribNative(mask); }
+    public static void glPopClientAttrib() { popClientAttribNative(); }
 
     // --- Queries the game reads during Core.init (GL tokens answered by port/runtime/gl.mjs) ---
     public static String glGetString(int pname) { return stringNative(pname); }
@@ -93,6 +113,30 @@ public final class GL11 {
     private static native void lineWidth(float width);
     @JSBody(params="depth", script="globalThis.pzRuntime.gl.call('clearDepthf',depth);")
     private static native void clearDepthf(float depth);
+    @JSBody(params="depth", script="globalThis.pzRuntime.gl.clearDepth(depth);")
+    private static native void clearDepthNative(double depth);
+    @JSBody(params="mask", script="globalThis.pzRuntime.gl.pushAttrib(mask);")
+    private static native void pushAttribNative(int mask);
+    @JSBody(script="globalThis.pzRuntime.gl.popAttrib();")
+    private static native void popAttribNative();
+    @JSBody(params="mask", script="globalThis.pzRuntime.gl.pushClientAttrib(mask);")
+    private static native void pushClientAttribNative(int mask);
+    @JSBody(script="globalThis.pzRuntime.gl.popClientAttrib();")
+    private static native void popClientAttribNative();
+    @JSBody(params={"near","far"}, script="globalThis.pzRuntime.gl.depthRange(near,far);")
+    private static native void depthRangeNative(double near, double far);
+    @JSBody(params={"r","g","b","a"}, script="globalThis.pzRuntime.gl.colorMask(r,g,b,a);")
+    private static native void colorMaskNative(int r, int g, int b, int a);
+    @JSBody(params={"func","ref","mask"}, script="globalThis.pzRuntime.gl.stencilFunc(func,ref,mask);")
+    private static native void stencilFuncNative(int func, int ref, int mask);
+    @JSBody(params={"fail","zfail","zpass"}, script="globalThis.pzRuntime.gl.stencilOp(fail,zfail,zpass);")
+    private static native void stencilOpNative(int fail, int zfail, int zpass);
+    @JSBody(params={"func","ref"}, script="globalThis.pzRuntime.gl.alphaTest(func,ref);")
+    private static native void alphaTestNative(int func, float ref);
+    @JSBody(params="texture", script="globalThis.pzRuntime.gl.activeTexture(texture);")
+    private static native void activeTextureNative(int texture);
+    @JSBody(params="mode", script="globalThis.pzRuntime.gl.blendEquation(mode);")
+    private static native void blendEquationNative(int mode);
     @JSBody(params="pname", script="return globalThis.pzRuntime.gl.stringParameter(pname);")
     private static native String stringNative(int pname);
     @JSBody(params={"pname","index"}, script="return globalThis.pzRuntime.gl.stringParameterIndexed(pname,index);")

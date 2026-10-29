@@ -350,3 +350,60 @@ Captura de esta ronda: `test-results/round40-final.png` (1280×720) — 876.098 
   para recursar, así que el raw superclass es la respuesta fiel (null para Object/interfaces/primitivos).
   `getGenericExceptionTypes` ahora devuelve `method.getExceptionTypes()` (las excepciones checked no llevan
   argumentos genéricos). Con esto el MainThread no muere en `exposeAll` al exponer `java.io.BufferedReader`.
+
+## Ronda 44 (07:44 inicio) — avances incrementales
+
+- 07:44 Inicio. Heredado de la ronda 43 (`diag129.log`, build `build-round43-game5.log`): el MainThread muere en
+  `LuaJavaClassExposer.exposeLikeJava` con `UnsupportedOperationException: Class.isAnonymousClass: inner-class
+  metadata was not retained by this AOT build: java.io.BufferedReader`; el RenderThread lanza 2×
+  `Error: Failed to execute 'getBufferSubData' on 'WebGL2RenderingContext': Cannot convert a BigInt value to a number`
+  en `SpriteRenderer$RingBuffer.next → GLVertexBufferObject.map`. `swapCount` 2, canvas negro 95 %.
+- 07:50 Fuente verificada del primer bloqueo: `grep -rl isAnonymousClass` sobre el jar pinneado (extraído a
+  `/tmp/anonscan2`) da **un solo** consumidor: `se.krka.kahlua.integration.expose.LuaJavaClassExposer`
+  (`exposeLikeJava`, offset 48, usado sólo para saltear `exposeStatics` en clases anónimas).
+  Fix en `port/runtime/JdkTask4Support.isAnonymousClass`: nombre `"<enclosing>$<n>"` con segmento final
+  puramente numérico ⇒ true; clases miembro/locale conservan simple name ⇒ false. Ya no lanza.
+- 07:52 BigInt→number en WebGL2 (mismo patrón tres veces): `GL15.bufferSubNative`, `GL15.getSubNative` y
+  `GL20.attribPointerNative` pasan de parámetro `long` a `int` (`offsetBytes`/`checked` verifican el rango).
+  Los descriptores de las natives `(IJJJ)V`/`(IJJI)V` no cambian, así que `gl-overrides.tsv` sigue igual.
+- 07:53 `mvn -B -Dmaven.repo.local=$PZ_WEB_ROOT/.toolchain/m2 -f port/pom.xml compile` **OK** (nota: `mvn -f port/pom.xml
+  compile` sin `-Dmaven.repo.local` falla con `Could not create local repository at /home/agente47/.m2/repository`).
+- ~08:20 (ronda 44) Fix de `java.util.Currency` en Wasm: transformer nuevo `port/compiler/CurrencyCompatibility.java`
+  reescribe la única llamada `Currency.getInstance(Locale)` dentro de `java.text.NumberFormat::<init>()V`
+  (TeaVM la usa con su CLDR horneada: "en" resuelve Chipre y CYP no está en su `iso4217.bin` ⇒ throw en
+  `FluidContainer::<clinit>`). El destino es `port.runtime.JdkSupport.currencyForLocale(Locale)`, que reproduce
+  la respuesta real del JDK 25 medida en `/tmp/CurrCheck.java` (`DecimalFormatSymbols.getInstance(Locale.ENGLISH)`
+  ⇒ moneda `XXX`, sin excepción) y registra cada fallback en `pzRuntime.currencyFallbacks` en vez de ocultarlo.
+  `mvn -q -f port/pom.xml compile` OK.
+- ~08:40 (ronda 44) `glAlphaFunc(IF)V` puente completo: el shim `GL11.glAlphaFunc` → `gl.mjs alphaTest(func,ref)`
+  (func validado 512..519 según `javap -constants`, ref clamado [0,1]); `glEnable/glDisable(GL_ALPHA_TEST=0x0bc0)`
+  ahora **aplica** el estado además de registrarlo; `useProgram` sube `pzAlphaTestFunc`/`pzAlphaTestRef` al programa
+  actual cuando el fragmento recibió la inyección `pzAlphaTestDiscard()` de `glsl.mjs`. Los programas sin inyección
+  se cuentan en `capabilityState().alphaTest.gaps` (nunca se ignora en silencio). Campos renombrados
+  `alphaTestState`/`activeUnit` porque chocan con los métodos homónimos de la clase.
+- ~09:00 (ronda 44) Natives de estado ausentes mapeadas de verdad (no registradas): `GL11.glColorMask(ZZZZ)`,
+  `glStencilFunc(III)`, `glStencilOp(III)`, `glDepthRange(DD)`, `glClearDepth(D)`, `GL13C.glActiveTexture(I)`,
+  `GL14C.glBlendEquation(I)` (WebGL2: `colorMask/stencilFunc/stencilOp/depthRange/clearDepthf/blendEquation`,
+  tokens validados contra las constantes reales del navegador; un token desconocido lanza con su identidad).
+  `glActiveTexture` trae unidades de textura reales (`textureUnits[]` por unidad + límite
+  `MAX_COMBINED_TEXTURE_IMAGE_UNITS`), así `glBindTexture`/`glTexImage2D`/`glGetTexImage` actúan sobre la unidad activa.
+  Nuevo `port/shim/GL30.java` para 16 natives de `GL30C` (VAO `nglGenVertexArrays/nglDeleteVertexArrays/glIsVertexArray/glBindVertexArray`,
+  FBO `nglGenFramebuffers/nglDeleteFramebuffers/glIsFramebuffer/glBindFramebuffer/glCheckFramebufferStatus/glFramebufferTexture2D/glFramebufferRenderbuffer`,
+  RBO `nglGenRenderbuffers/nglDeleteRenderbuffers/glIsRenderbuffer/glBindRenderbuffer/glRenderbufferStorage`) sobre objetos WebGL2 reales.
+  `tools/glgen/generate.py`: +34 líneas de `gl-overrides.tsv` (177 mappings, antes 146). Las desktop-only
+  (`glBlitFramebuffer`, `glFramebufferTexture1D/3D`, `glRenderbufferStorageMultisample`, `*Parameteriv`) siguen sin mapear y lanzan.
+  Pruebas: `npm test` **30 pass / 0 fail** (nuevo `tests/node/gl-state.test.mjs` con 5 casos de estado/alpha test/FBO).
+- ~09:30 (ronda 44) `glPushAttrib/glPopAttrib/glPushClientAttrib/glPopClientAttrib` implementados de verdad.
+  WebGL2 no tiene pila de atributos, así que `port/runtime/gl.mjs` mantiene la suya: `call()` registra el
+  último valor de cada estado que este puente restaura (`recordAttrib`), `pushAttrib(mask)` snapshot de las
+  claves cubiertas por el mask y `popAttrib()` las reenvía al contexto. Bits cuyo estado desktop no existe
+  acá (`POINT/CURRENT/POLYGON_STIPPLE/LIGHTING/FOG/ACCUM_BUFFER/TRANSFORM/HINT/EVAL/LIST/TEXTURE`) se cuentan
+  en `attribGaps` y se exponen en `attribState()`, nunca se ignoran en silencio. `ENABLE` snapshot de
+  `capabilities/fixedFunctionCaps/alphaTestState` + scissor, `PIXEL_MODE` de `pixelStorei`, `TEXTURE` de las
+  unidades activas, `VIEWPORT/SCISSOR` de sus cajas. Pila llena (64) y `popAttrib` con pila vacía lanzan.
+  Máscaras verificadas en bytecode del jar: `GL_VIEWPORT_BIT` 2048 (9 sitios) y 24576 = ENABLE|COLOR_BUFFER
+  (1 sitio, `zombie.core.Core`); valores de bits con `javap -constants` (GL_TEXTURE_BIT 262144, GL_SCISSOR_BIT
+  524288, GL_ALL_ATTRIB_BITS 1048575 — la tabla anterior estaba corrida 1 bit, corregido).
+  `GL_ATTRIB_STACK_DEPTH/GL_CLIENT_ATTRIB_STACK_DEPTH/GL_MAX_(CLIENT_)ATTRIB_STACK_DEPTH` responden desde
+  esta pila. `port/shim/GL11.java` +4 wrappers/JSBodies, `tools/glgen/generate.py` +4 entradas
+  (`gl-overrides.tsv` 177→181 mappings). 5 tests nuevos en `tests/node/gl-state.test.mjs`: **npm test 35 pass / 0 fail**.

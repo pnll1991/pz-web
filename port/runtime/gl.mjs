@@ -8,7 +8,18 @@ import { translateShader } from './glsl.mjs';
 const PORT_PROVIDED = new Set([
   'glClearColor', 'glClear', 'glViewport', 'glGetError', 'glEnable', 'glDisable', 'glScissor',
   'glDepthMask', 'glDepthFunc', 'glCullFace', 'glFrontFace', 'glPixelStorei', 'glLineWidth',
-  'glBlendFunc', 'glBlendFuncSeparate', 'glClearDepthf', 'glStencilMask', 'glClearStencil',
+  'glBlendFunc', 'glBlendFuncSeparate', 'glBlendEquation', 'glClearDepthf', 'glClearDepth',
+  'glStencilMask', 'glClearStencil', 'glStencilFunc', 'glStencilOp', 'glColorMask',
+  'glDepthRange', 'glDepthFunc', 'glAlphaFunc', 'glActiveTexture',
+  // Desktop attribute stacks: WebGL2 has none, so this bridge keeps its own snapshots of the state
+  // it owns (attribState/clientAttribState report depth and any bit it cannot restore).
+  'glPushAttrib', 'glPopAttrib', 'glPushClientAttrib', 'glPopClientAttrib',
+  // GL30 framebuffer/renderbuffer natives the game reaches through zombie.core.textures and the
+  // VBO/Lighting paths: every one of these has a real WebGL2 implementation below.
+  'glGenFramebuffers', 'glDeleteFramebuffers', 'glIsFramebuffer', 'glBindFramebuffer', 'glIsVertexArray',
+  'glCheckFramebufferStatus', 'glFramebufferTexture2D', 'glFramebufferRenderbuffer',
+  'glGenRenderbuffers', 'glDeleteRenderbuffers', 'glIsRenderbuffer', 'glBindRenderbuffer',
+  'glRenderbufferStorage',
   'glGetString', 'glGetStringi', 'glGetInteger', 'glGetIntegerv', 'glGetFloat', 'glGetFloatv',
   'glGetBoolean', 'glGetBooleanv',
   // GL15 vertex buffer objects: WebGL2 owns the storage, port.shim.GL15 drives it through the
@@ -59,6 +70,12 @@ export class GLBridge {
     if (!context) throw new Error('WebGL 2 is required');
     this.context = context;
     this.calls = Object.create(null);
+    // Attribute stacks must exist before the first WebGL2 call: call() records state into them.
+    this.attribRecords = { pixelStorei: new Map() }; // last value of each restorable state entry
+    this.attribStack = [];       // snapshots pushed by glPushAttrib, newest last
+    this.clientAttribStack = []; // snapshots pushed by glPushClientAttrib, newest last
+    this.attribGaps = {};        // attribute-bit name -> pushes whose desktop state this backend lacks
+    this.attribLimit = 64;       // answered as GL_MAX_(CLIENT_)ATTRIB_STACK_DEPTH
     this.viewportBox = [0, 0, canvas.width, canvas.height];
     this.scissorBox = [0, 0, canvas.width, canvas.height];
     this.buffers = new Map(); // GL handle -> {buffer,size,target}
@@ -69,13 +86,25 @@ export class GLBridge {
     this.locations = new Map(); // location handle -> WebGLUniformLocation (0 means "no location")
     this.boundElements = null; // last ELEMENT_ARRAY_BUFFER handle (drawElements needs it)
     this.vertexArrays = new Map(); // GL handle -> WebGLVertexArrayObject (GL30 natives)
+    this.framebuffers = new Map(); // GL handle -> WebGLFramebuffer (GL30 framebuffer natives)
+    this.renderbuffers = new Map(); // GL handle -> WebGLRenderbuffer (GL30 renderbuffer natives)
     this.boundArrays = null; // last ARRAY_BUFFER handle bound by bindBuffer (needed by attrib pointers)
     this.textures = new Map(); // GL handle -> {texture,levels:Map,width,height,internalformat} (GL11)
-    this.boundTexture = 0; // last texture bound by this bridge (desktop glBindTexture state)
+    // Desktop texture units: glBindTexture binds into the *active* unit, and the level uploads
+    // (glTexImage2D/glTexSubImage2D/glGetTexImage) act on the texture bound to that unit.
+    this.textureUnits = [null]; // unit index -> bound texture handle (0/null = none)
+    this.activeUnit = 0;        // unit index set by glActiveTexture
     this.nextHandle = 1; // 0 is reserved for "none", as in desktop GL
     this.lost = false;
     this.capabilities = new Map(); // desktop capability token -> {enabled, webgl} actually applied
     this.fixedFunctionCaps = new Map(); // desktop-only token -> last requested state, recorded not applied
+    // Desktop glAlphaFunc state. WebGL2 has no alpha test, but the fragment shaders this backend
+    // generates carry an equivalent discard (see port/runtime/glsl.mjs), so the state is *applied*
+    // through the pzAlphaTestFunc/pzAlphaTestRef uniforms of every program that got the injection.
+    this.alphaTestState = { enabled: false, func: -1, ref: 0, gaps: 0, uniformGaps: 0 };
+    this.currentProgram = null; // program entry set by useProgram (needed to refresh uniforms)
+    // Desktop attribute stack (glPushAttrib/glPopAttrib). WebGL2 has none, so this backend keeps
+    // real snapshots of the state it actually owns and restores them (see pushAttrib/popAttrib).
     canvas.addEventListener('webglcontextlost', event => { event.preventDefault(); this.lost = true; });
     canvas.addEventListener('webglcontextrestored', () => {
       // Resource reconstruction is not implemented yet: do not continue with invalid handles.
@@ -89,7 +118,31 @@ export class GLBridge {
     if (name === 'scissor') this.scissorBox = args.slice(0, 4).map(Number);
     const method = this.context[name];
     if (typeof method !== 'function') throw new Error(`Unsupported WebGL function: ${name}`);
-    return method.apply(this.context, args);
+    const result = method.apply(this.context, args);
+    this.recordAttrib(name, args);
+    return result;
+  }
+  /**
+   * Remember the last value of every state entry this bridge can restore, so the desktop
+   * attribute stack below has real data to pop. Only calls that actually reached WebGL2 are
+   * recorded, which keeps the snapshot faithful to what the context really holds.
+   */
+  static ATTRIB_CALLS = new Map([
+    ['clearColor', 'clearColor'], ['clearStencil', 'clearStencil'], ['stencilMask', 'stencilMask'],
+    ['cullFace', 'cullFace'], ['frontFace', 'frontFace'], ['depthFunc', 'depthFunc'],
+    ['depthMask', 'depthMask'], ['lineWidth', 'lineWidth'], ['blendFunc', 'blendFunc'],
+    ['blendFuncSeparate', 'blendFuncSeparate'], ['blendEquation', 'blendEquation'],
+    ['viewport', 'viewport'], ['scissor', 'scissor'], ['colorMask', 'colorMask'],
+    ['stencilFunc', 'stencilFunc'], ['stencilOp', 'stencilOp'], ['depthRange', 'depthRange'],
+    ['clearDepthf', 'clearDepth'], ['clearDepth', 'clearDepth'],
+  ]);
+  recordAttrib(name, args) {
+    const key = GLBridge.ATTRIB_CALLS.get(name);
+    if (key === undefined) {
+      if (name === 'pixelStorei') this.attribRecords.pixelStorei.set(Number(args[0]), args.slice(0, 2).map(Number));
+      return;
+    }
+    this.attribRecords[key] = { fn: name, args: Array.from(args) };
   }
   clearColor(...args) { this.call('clearColor', ...args); }
   clear(...args) { this.call('clear', ...args); }
@@ -125,6 +178,13 @@ export class GLBridge {
     const constant = name === undefined ? undefined : gl[name];
     if (GLBridge.FIXED_FUNCTION_CAPS.has(cap)) {
       this.fixedFunctionCaps.set(cap, { enabled: !!on, name: GLBridge.FIXED_FUNCTION_CAPS.get(cap) });
+      // GL_ALPHA_TEST is the one recorded capability this backend can really reproduce: the generated
+      // fragment shaders carry the equivalent discard, so the enable bit is applied to the program
+      // that is current (if it received the injection).
+      if (cap === 0x0bc0) {
+        this.alphaTestState.enabled = !!on;
+        if (this.currentProgram !== null) this.applyAlphaTest(this.currentProgram);
+      }
       return;
     }
     if (constant === undefined)
@@ -134,13 +194,218 @@ export class GLBridge {
   }
   enable(cap) { this.capability(cap, true); }
   disable(cap) { this.capability(cap, false); }
+  /**
+   * Desktop glAlphaFunc(func, ref). Function values come from `javap -constants` on the pinned jar
+   * (GL_NEVER 512 .. GL_ALWAYS 519); an unknown function raises with its own identity instead of
+   * guessing a comparison. The reference is clamped to [0,1] exactly as desktop GL clamps it.
+   */
+  alphaTest(func, ref) {
+    const fn = Number(func);
+    if (!Number.isInteger(fn) || fn < 512 || fn > 519)
+      throw new Error(`glAlphaFunc: unsupported alpha-test function ${func} (GL_NEVER 512..GL_ALWAYS 519)`);
+    const value = Number(ref);
+    if (!Number.isFinite(value)) throw new Error(`glAlphaFunc: alpha reference must be finite, got ${ref}`);
+    this.alphaTestState.func = fn;
+    this.alphaTestState.ref = Math.min(1, Math.max(0, value));
+    if (this.currentProgram !== null) this.applyAlphaTest(this.currentProgram);
+  }
+  /** Desktop stencil/colour/depth state that WebGL2 owns directly. Tokens are validated against
+   * the real WebGL2 constants (values verified with `javap -constants` on the pinned jar and the
+   * numbers Chrome exposes); a token WebGL2 lacks raises with its identity.
+   */
+  webglToken(token, what) {
+    const name = this.webglConstantName(Number(token));
+    if (name === undefined || this.context[name] === undefined)
+      throw new Error(`WebGL2 has no constant for GL token 0x${(token >>> 0).toString(16)} in ${what}`);
+    return this.context[name];
+  }
+  colorMask(r, g, b, a) {
+    const bools = v => (v === 1 || v === true) ? 1 : 0;
+    this.call('colorMask', bools(r) !== 0, bools(g) !== 0, bools(b) !== 0, bools(a) !== 0);
+  }
+  stencilFunc(func, ref, mask) {
+    this.call('stencilFunc', this.webglToken(func, 'glStencilFunc'), Number(ref) | 0, Number(mask) >>> 0);
+  }
+  stencilOp(fail, zfail, zpass) {
+    this.call('stencilOp', this.webglToken(fail, 'glStencilOp fail'),
+      this.webglToken(zfail, 'glStencilOp zfail'), this.webglToken(zpass, 'glStencilOp zpass'));
+  }
+  depthRange(near, far) {
+    const n = Number(near), f = Number(far);
+    if (!Number.isFinite(n) || !Number.isFinite(f))
+      throw new Error(`glDepthRange needs finite values, got ${near} and ${far}`);
+    this.call('depthRange', Math.min(1, Math.max(0, n)), Math.min(1, Math.max(0, f)));
+  }
+  clearDepth(depth) {
+    const value = Number(depth);
+    if (!Number.isFinite(value)) throw new Error(`glClearDepth needs a finite value, got ${depth}`);
+    // WebGL2 renamed the setter to clearDepthf; the value is clamped to [0,1] as desktop GL does.
+    const name = typeof this.context.clearDepthf === 'function' ? 'clearDepthf' : 'clearDepth';
+    this.call(name, Math.min(1, Math.max(0, value)));
+  }
+  blendEquation(mode) {
+    this.call('blendEquation', this.webglToken(mode, 'glBlendEquation'));
+  }
+  /* --- Desktop attribute stack (glPushAttrib/glPopAttrib) --------------------------------
+   * WebGL2 has no attribute stack, so this backend keeps its own snapshots of the state it
+   * actually owns (see recordAttrib) and restores them. Bits whose desktop state this backend
+   * cannot hold are counted in attribGaps and reported by attribState(): they are never
+   * silently dropped (AGENTS.md: no simulated success). Bit values come from `javap -constants`
+   * over the pinned jar; the masks the game really pushes were read from bytecode
+   * (GL_VIEWPORT_BIT 2048 in 9 call sites, GL_ENABLE_BIT|GL_COLOR_BUFFER_BIT 24576 in 1).
+   */
+  // Values read with `javap -constants` from org.lwjgl.opengl.GL11 of the pinned jar.
+  static ATTRIB_BITS = new Map([
+    [1, 'CURRENT'], [2, 'POINT'], [4, 'LINE'], [8, 'POLYGON'], [16, 'POLYGON_STIPPLE'],
+    [32, 'PIXEL_MODE'], [64, 'LIGHTING'], [128, 'FOG'], [256, 'DEPTH_BUFFER'],
+    [512, 'ACCUM_BUFFER'], [1024, 'STENCIL_BUFFER'], [2048, 'VIEWPORT'], [4096, 'TRANSFORM'],
+    [8192, 'ENABLE'], [16384, 'COLOR_BUFFER'], [32768, 'HINT'], [65536, 'EVAL'],
+    [131072, 'LIST'], [262144, 'TEXTURE'], [524288, 'SCISSOR'],
+  ]);
+  // Which restorable entries each attribute bit covers on desktop GL.
+  static ATTRIB_STATE = new Map([
+    ['LINE', ['lineWidth']],
+    ['POINT', null], // desktop glPointSize / point smoothing have no WebGL2 state
+    ['POLYGON', ['cullFace', 'frontFace']],
+    ['DEPTH_BUFFER', ['depthFunc', 'depthMask', 'clearDepth', 'depthRange']],
+    ['STENCIL_BUFFER', ['stencilFunc', 'stencilOp', 'stencilMask', 'clearStencil']],
+    ['VIEWPORT', ['viewport', 'depthRange']],
+    ['COLOR_BUFFER', ['clearColor', 'colorMask', 'blendFunc', 'blendFuncSeparate', 'blendEquation']],
+    ['SCISSOR', ['scissor']],
+    // Bits whose state lives in this bridge rather than in a WebGL2 setter: the snapshot captures
+    // them through state.caps/state.texture/state.pixelStorei, so they carry an empty key list
+    // instead of being counted as gaps.
+    ['ENABLE', []], ['PIXEL_MODE', []],
+    // GL_TEXTURE_BIT covers the desktop texture environment (glTexEnvi, env colour/modes), which
+    // WebGL2 has no equivalent for, so it is a counted gap. The unit bindings are still snapshotted
+    // below because losing them across a push/pop would mis-bind textures.
+    ['TEXTURE', null],
+    // Bits whose desktop state WebGL2 does not expose at all: lighting, fog, accumulation, the
+    // matrix stack, hints, eval/list, current and polygon stipple. Pushing one is counted in
+    // attribGaps so the Chrome evidence shows what this backend cannot reproduce.
+    ['CURRENT', null], ['POLYGON_STIPPLE', null], ['LIGHTING', null], ['FOG', null],
+    ['ACCUM_BUFFER', null], ['TRANSFORM', null], ['HINT', null], ['EVAL', null], ['LIST', null],
+  ]);
+  /** Snapshot the state this bridge owns for the requested mask, then push it. */
+  pushAttrib(mask) {
+    const bits = Number(mask) >>> 0;
+    if (this.attribStack.length >= this.attribLimit)
+      throw new Error(`glPushAttrib: attribute stack is full at ${this.attribLimit} entries (GL_MAX_ATTRIB_STACK_DEPTH)`);
+    const names = [];
+    for (const [bit, name] of GLBridge.ATTRIB_BITS) if (bits & bit) names.push(name);
+    if (bits === 0xffffffff) names.push('ALL');
+    const state = {};
+    for (const name of names) {
+      const keys = GLBridge.ATTRIB_STATE.get(name);
+      if (keys === undefined) { this.attribGap(`GL_${name}_BIT`); continue; }
+      if (keys === null) { this.attribGap(`GL_${name}_BIT`); continue; }
+      for (const key of keys) {
+        const rec = this.attribRecords[key];
+        if (rec !== undefined) state[key] = { fn: rec.fn, args: rec.args.slice() };
+      }
+    }
+    // ENABLE and TEXTURE also cover state held in this bridge's own maps, not WebGL2 calls.
+    if (names.includes('ENABLE')) {
+      state.caps = { caps: new Map(this.capabilities), fixed: new Map(this.fixedFunctionCaps), alphaTest: { ...this.alphaTestState } };
+      state.scissor = this.scissorBox.slice(); // GL_ENABLE_BIT covers SCISSOR_TEST (WebGL2 has no ALU bits)
+    }
+    if (names.includes('TEXTURE') || names.includes('ALL')) state.texture = { activeUnit: this.activeUnit, units: this.textureUnits.slice() };
+    if (names.includes('PIXEL_MODE')) state.pixelStorei = new Map(this.attribRecords.pixelStorei);
+    if (names.includes('VIEWPORT')) state.viewport = this.viewportBox.slice();
+    if (names.includes('SCISSOR')) state.scissor = this.scissorBox.slice();
+    this.attribStack.push({ mask: bits, names, state });
+  }
+  /** Restore the topmost snapshot; an empty stack raises like a GL error rather than doing nothing. */
+  popAttrib() {
+    if (this.attribStack.length === 0)
+      throw new Error('glPopAttrib: the attribute stack is empty (this backend raises where desktop GL reports an error)');
+    const top = this.attribStack.pop();
+    const st = top.state;
+    for (const key of Object.keys(st)) {
+      const rec = st[key];
+      if (rec === undefined || rec.fn === undefined) continue;
+      this.call(rec.fn, ...rec.args);
+    }
+    if (st.caps) {
+      this.capabilities = new Map(st.caps.caps);
+      this.fixedFunctionCaps = new Map(st.caps.fixed);
+      this.alphaTestState = { ...st.caps.alphaTest };
+      for (const [token, entry] of this.capabilities) this.capability(token, entry.enabled);
+      if (this.currentProgram !== null) this.applyAlphaTest(this.currentProgram);
+    }
+    if (st.texture) { this.activeUnit = st.texture.activeUnit; this.textureUnits = st.texture.units.slice(); }
+    if (st.pixelStorei) { this.attribRecords.pixelStorei = new Map(st.pixelStorei); for (const [, v] of st.pixelStorei) this.call('pixelStorei', v[0], v[1]); }
+    if (st.viewport) this.call('viewport', ...st.viewport);
+    if (st.scissor) this.call('scissor', ...st.scissor);
+    return top.names;
+  }
+  /* --- Desktop client attribute stack (glPushClientAttrib/glPopClientAttrib) -------------
+   * GL_CLIENT_PIXEL_STORE_BIT covers glPixelStorei values this bridge recorded, and
+   * GL_CLIENT_VERTEX_ARRAY_BIT covers the enabled vertex attrib arrays this bridge tracks in
+   * `attribs`. Both are state this backend really owns, so the snapshot restores them for real.
+   */
+  pushClientAttrib(mask) {
+    const bits = Number(mask) >>> 0;
+    if (this.clientAttribStack.length >= this.attribLimit)
+      throw new Error(`glPushClientAttrib: client attribute stack is full at ${this.attribLimit} entries`);
+    const state = {};
+    if (bits & 1) state.pixelStorei = new Map(this.attribRecords.pixelStorei); // GL_CLIENT_PIXEL_STORE_BIT
+    if (bits & 2) state.attribs = new Map([...this.attribs].map(([k, v]) => [k, { ...v }])); // GL_CLIENT_VERTEX_ARRAY_BIT
+    if (bits === 0xffffffff) { state.pixelStorei = new Map(this.attribRecords.pixelStorei); state.attribs = new Map([...this.attribs].map(([k, v]) => [k, { ...v }])); }
+    this.clientAttribStack.push({ mask: bits, state });
+  }
+  popClientAttrib() {
+    if (this.clientAttribStack.length === 0)
+      throw new Error('glPopClientAttrib: the client attribute stack is empty (this backend raises where desktop GL reports an error)');
+    const top = this.clientAttribStack.pop();
+    if (top.state.pixelStorei) {
+      this.attribRecords.pixelStorei = new Map(top.state.pixelStorei);
+      for (const [, v] of top.state.pixelStorei) this.call('pixelStorei', v[0], v[1]);
+    }
+    if (top.state.attribs) {
+      const now = new Set([...this.attribs.keys()].filter((k) => this.attribs.get(k).enabled));
+      for (const index of now) if (!top.state.attribs.get(index)?.enabled) this.disableAttrib(index);
+      for (const [index, entry] of top.state.attribs) if (entry.enabled && !now.has(index)) this.enableAttrib(index);
+      this.attribs = new Map([...this.attribs].map(([k, v]) => [k, top.state.attribs.has(k) ? top.state.attribs.get(k) : v]));
+    }
+    return top.mask;
+  }
+  clientAttribState() { return { depth: this.clientAttribStack.length, limit: this.attribLimit }; }
+  /** Count a bit this backend cannot restore, keeping the name for the Chrome evidence. */
+  attribGap(name) { this.attribGaps[name] = (this.attribGaps[name] || 0) + 1; }
+  attribState() {
+    return { depth: this.attribStack.length, limit: this.attribLimit, gaps: { ...this.attribGaps },
+      top: this.attribStack.length ? this.attribStack[this.attribStack.length - 1].names : null };
+  }
+  /** Upload the recorded alpha test to the program that is current, when it carries the injection. */
+  applyAlphaTest(entry) {
+    if (!entry.alphaTest) {
+      // A program whose fragment shader never wrote gl_FragColor got no injection, so the desktop
+      // alpha test cannot be reproduced for it. Counted, never silently dropped.
+      if (this.alphaTestState.enabled) this.alphaTestState.gaps += 1;
+      return;
+    }
+    const func = this.call('getUniformLocation', entry.program, 'pzAlphaTestFunc');
+    const ref = this.call('getUniformLocation', entry.program, 'pzAlphaTestRef');
+    if (func === null || ref === null) {
+      // The shader compiler dropped the gating uniforms (it may constant-fold the discard). The
+      // alpha test then cannot be reproduced for this program: counted and logged, never hidden.
+      this.alphaTestState.uniformGaps += 1;
+      this.alphaTestState.uniformGapPrograms = (this.alphaTestState.uniformGapPrograms || []).slice(0, 3);
+      if (this.alphaTestState.uniformGapPrograms.length < 4)
+        this.alphaTestState.uniformGapPrograms.push({ func: func === null, ref: ref === null });
+      return;
+    }
+    this.call('uniform1i', func, this.alphaTestState.enabled ? this.alphaTestState.func : -1);
+    this.call('uniform1f', ref, this.alphaTestState.ref);
+  }
   /** State the Java/runtime report exposes: applied WebGL2 caps plus recorded desktop-only caps. */
   capabilityState() {
     const applied = {};
     for (const [token, entry] of this.capabilities) applied[token.toString(16)] = entry;
     const recorded = {};
     for (const [token, entry] of this.fixedFunctionCaps) recorded[token.toString(16)] = entry;
-    return { applied, fixedFunctionRecorded: recorded };
+    return { applied, fixedFunctionRecorded: recorded, alphaTest: { ...this.alphaTestState } };
   }
   /**
    * WebGL2 exposes no desktop OpenGL version. This backend presents the API version 3.3 with the
@@ -208,6 +473,10 @@ export class GLBridge {
     if (pname === 0x820b) return [3]; // GL_MAJOR_VERSION, from the declared apiVersion()
     if (pname === 0x820d) return [3]; // GL_MINOR_VERSION, from the declared apiVersion()
     if (pname === 0x821d) return [this.extensions().length]; // GL_NUM_EXTENSIONS
+    if (pname === 0x0bb0) return [this.attribStack.length]; // GL_ATTRIB_STACK_DEPTH: our own stack
+    if (pname === 0x0bb1) return [this.clientAttribStack.length]; // GL_CLIENT_ATTRIB_STACK_DEPTH
+    if (pname === 0x0d35) return [this.attribLimit]; // GL_MAX_ATTRIB_STACK_DEPTH
+    if (pname === 0x0d3b) return [this.attribLimit]; // GL_MAX_CLIENT_ATTRIB_STACK_DEPTH
     if (pname === 0x9126) return [0]; // GL_CONTEXT_PROFILE_MASK: WebGL2 has no profile bits
     const constant = GLBridge.INT_ANSWERS.get(pname);
     if (constant === undefined || gl[constant] === undefined)
@@ -394,9 +663,9 @@ export class GLBridge {
    */
   getTexImage(target, level, format, type, data) {
     const tname = this.textureTargetName(target);
-    const entry = this.textureEntry(this.boundTexture, 'glGetTexImage');
+    const entry = this.textureEntry(this.activeBoundTexture(), 'glGetTexImage');
     const size = entry.levels.get(level);
-    if (size === undefined) throw new Error(`Texture ${this.boundTexture} has no level ${level} for glGetTexImage`);
+    if (size === undefined) throw new Error(`Texture ${this.activeBoundTexture()} has no level ${level} for glGetTexImage`);
     if (data === undefined) throw new Error('glGetTexImage needs the arena buffer as a byte view');
     const needed = size.width * size.height * 4;
     if (data.length < needed)
@@ -412,9 +681,9 @@ export class GLBridge {
       this.call('bindFramebuffer', gl.FRAMEBUFFER, framebuffer);
       this.call('framebufferTexture2D', gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.context[tname], level);
       if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE)
-        throw new Error(`Texture ${this.boundTexture} level ${level} is not readable`);
+        throw new Error(`Texture ${this.activeBoundTexture()} level ${level} is not readable`);
       this.call('readPixels', 0, 0, size.width, size.height, gl.RGBA, gl.UNSIGNED_BYTE, data);
-      if (this.getError() !== gl.NO_ERROR) throw new Error(`glGetTexImage readback failed for texture ${this.boundTexture}`);
+      if (this.getError() !== gl.NO_ERROR) throw new Error(`glGetTexImage readback failed for texture ${this.activeBoundTexture()}`);
     } finally {
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, previousRead);
       gl.deleteFramebuffer(framebuffer);
@@ -422,9 +691,9 @@ export class GLBridge {
   }
   /** Byte count the caller must hand to getTexImage for this level (RGBA + UNSIGNED_BYTE only). */
   texLevelBytes(level) {
-    const entry = this.textureEntry(this.boundTexture, 'glGetTexImage');
+    const entry = this.textureEntry(this.activeBoundTexture(), 'glGetTexImage');
     const size = entry.levels.get(level);
-    if (size === undefined) throw new Error(`Texture ${this.boundTexture} has no level ${level} for glGetTexImage`);
+    if (size === undefined) throw new Error(`Texture ${this.activeBoundTexture()} has no level ${level} for glGetTexImage`);
     return size.width * size.height * 4;
   }
   deleteTextures(handles) {
@@ -434,10 +703,31 @@ export class GLBridge {
       this.textures.delete(handles[i]);
       if (this.lost) continue; // context gone: there is nothing left to release
       this.call('deleteTexture', entry.texture);
-      if (this.boundTexture === handles[i]) this.boundTexture = 0;
+      const bound = this.textureUnits.indexOf(handles[i]);
+      if (bound >= 0) this.textureUnits[bound] = null;
     }
   }
   isTexture(handle) { return this.textures.has(handle); }
+  /** Texture handle bound to the active unit (0 when nothing is bound, as on desktop). */
+  activeBoundTexture() { return this.textureUnits[this.activeUnit] ?? 0; }
+  /**
+   * Desktop glActiveTexture(GL_TEXTUREn). Only units WebGL2 actually exposes are accepted; the
+   * unit index is checked against the implementation's MAX_COMBINED_TEXTURE_IMAGE_UNITS so a game
+   * asking for a unit this context does not have raises instead of silently binding unit 0.
+   */
+  activeTexture(unit) {
+    const value = Number(unit);
+    if (!Number.isInteger(value) || value < 0x84c0)
+      throw new Error(`glActiveTexture: 0x${(unit >>> 0).toString(16)} is not a GL_TEXTUREn token (GL_TEXTURE0 is 0x84c0)`);
+    const index = value - 0x84c0;
+    if (this.context['TEXTURE' + index] === undefined)
+      throw new Error(`glActiveTexture: WebGL2 has no texture unit ${index} (GL_TEXTURE${index})`);
+    const max = Number(this.context.getParameter(this.context.MAX_COMBINED_TEXTURE_IMAGE_UNITS));
+    if (index >= max)
+      throw new Error(`glActiveTexture: unit ${index} exceeds MAX_COMBINED_TEXTURE_IMAGE_UNITS=${max}`);
+    this.activeUnit = index;
+    while (this.textureUnits.length <= index) this.textureUnits.push(null);
+  }
   /**
    * Desktop target -> WebGL2 target. WebGL2 has no 1D textures and no proxy targets, so those
    * raise with the token instead of silently binding a 2D texture (AGENTS.md: no simulated success).
@@ -464,10 +754,10 @@ export class GLBridge {
   }
   bindTexture(target, handle) {
     const name = this.textureTargetName(target);
-    if (handle === 0) { this.call('bindTexture', this.context[name], null); this.boundTexture = 0; return; }
+    if (handle === 0) { this.call('bindTexture', this.context[name], null); this.textureUnits[this.activeUnit] = null; return; }
     const entry = this.textureEntry(handle, 'glBindTexture');
     this.call('bindTexture', this.context[name], entry.texture);
-    this.boundTexture = handle;
+    this.textureUnits[this.activeUnit] = handle;
   }
   /**
    * Desktop token -> WebGL2 constant. Values verified twice: `javap -constants` over the pinned
@@ -591,26 +881,26 @@ export class GLBridge {
     const tname = this.textureTargetName(target);
     if (border !== 0) throw new Error(`WebGL2 texImage2D requires border 0, got ${border}`);
     if (level < 0) throw new Error(`Negative texture level: ${level}`);
-    const entry = this.textureEntry(this.boundTexture, 'glTexImage2D');
+    const entry = this.textureEntry(this.activeBoundTexture(), 'glTexImage2D');
     const glFormat = this.textureFormat(format, 'glTexImage2D');
     const glType = this.textureType(type, 'glTexImage2D');
     const sized = this.sizedInternalFormat(internalformat, type);
     this.call('texImage2D', this.context[tname], level, sized, width, height, 0, glFormat, glType, data ?? null);
     if (this.getError() !== this.context.NO_ERROR)
-      throw new Error(`glTexImage2D failed for texture ${this.boundTexture} level ${level} ${width}x${height}`);
+      throw new Error(`glTexImage2D failed for texture ${this.activeBoundTexture()} level ${level} ${width}x${height}`);
     entry.levels.set(level, { width, height, format, type });
     entry.internalformat = internalformat;
     entry.width = width; entry.height = height;
   }
   texSubImage2D(target, level, xoffset, yoffset, width, height, format, type, data) {
     const tname = this.textureTargetName(target);
-    const entry = this.textureEntry(this.boundTexture, 'glTexSubImage2D');
+    const entry = this.textureEntry(this.activeBoundTexture(), 'glTexSubImage2D');
     if (entry.levels.get(level) === undefined)
-      throw new Error(`Texture ${this.boundTexture} has no level ${level} to update with glTexSubImage2D`);
+      throw new Error(`Texture ${this.activeBoundTexture()} has no level ${level} to update with glTexSubImage2D`);
     this.call('texSubImage2D', this.context[tname], level, xoffset, yoffset, width, height,
       this.textureFormat(format, 'glTexSubImage2D'), this.textureType(type, 'glTexSubImage2D'), data);
     if (this.getError() !== this.context.NO_ERROR)
-      throw new Error(`glTexSubImage2D failed for texture ${this.boundTexture} level ${level}`);
+      throw new Error(`glTexSubImage2D failed for texture ${this.activeBoundTexture()} level ${level}`);
   }
 
   async loadTexture(url) {
@@ -771,6 +1061,7 @@ export class GLBridge {
     entry.source = translated.source;
     entry.replacements = translated.replacements;
     entry.uniformDefaults = translated.uniformDefaults;
+    entry.alphaTest = translated.alphaTestEmulated === true;
     entry.compiled = false;
     entry.log = '';
     this.call('shaderSource', entry.shader, entry.source);
@@ -784,7 +1075,8 @@ export class GLBridge {
   }
   createProgram() {
     const handle = this.nextHandle++;
-    this.programs.set(handle, { program: this.call('createProgram'), shaders: new Set(), log: '', linked: false });
+    this.programs.set(handle, { program: this.call('createProgram'), shaders: new Set(), log: '',
+      linked: false, alphaTest: false });
     return handle;
   }
   deleteProgram(handle) {
@@ -800,6 +1092,9 @@ export class GLBridge {
     const shader = this.shaderEntry(shaderHandle, 'attachShader');
     program.shaders.add(shaderHandle);
     program.linked = false;
+    // A fragment shader carrying the injected alpha-test discard makes the program able to honour
+    // the recorded glAlphaFunc state; see useProgram/applyAlphaTest.
+    if (shader.alphaTest === true) program.alphaTest = true;
     this.call('attachShader', program.program, shader.shader);
   }
   detachShader(programHandle, shaderHandle) {
@@ -815,8 +1110,13 @@ export class GLBridge {
     program.log = String(this.call('getProgramInfoLog', program.program) ?? '');
   }
   useProgram(handle) {
-    if (handle === 0) { this.call('useProgram', null); return; }
-    this.call('useProgram', this.programEntry(handle, 'useProgram').program);
+    if (handle === 0) { this.call('useProgram', null); this.currentProgram = null; return; }
+    const entry = this.programEntry(handle, 'useProgram');
+    this.call('useProgram', entry.program);
+    this.currentProgram = entry;
+    // Desktop GL keeps alpha-test state globally; WebGL2 can only reproduce it per program, so the
+    // recorded state is uploaded to whatever program just became current.
+    this.applyAlphaTest(entry);
   }
   validateProgram(handle) {
     const program = this.programEntry(handle, 'validateProgram');
@@ -981,11 +1281,113 @@ export class GLBridge {
       this.call('deleteVertexArray', vao);
     }
   }
+  isVertexArray(handle) { return this.vertexArrays.has(handle); }
   bindVertexArray(handle) {
     if (handle === 0) { this.call('bindVertexArray', null); return; }
     const vao = this.vertexArrays.get(handle);
     if (vao === undefined) throw new Error(`Unknown vertex array handle: ${handle}`);
     this.call('bindVertexArray', vao);
+  }
+  /* --- GL30 framebuffers and renderbuffers -------------------------------------------
+   * Desktop framebuffer/renderbuffer targets and attachment tokens are numerically identical to
+   * their WebGL2 constants (verified with `javap -constants` on the pinned jar and the constants
+   * Chrome exposes), so the token is only a lookup key. Anything WebGL2 lacks raises.
+   */
+  // 0x0d00 READ_FRAMEBUFFER? no: values from the pinned jar - FRAMEBUFFER 36160, READ 36008,
+  // DRAW 36009, RENDERBUFFER 36161; attachments COLOR_ATTACHMENT0 36064, DEPTH 36096,
+  // STENCIL 36128, DEPTH_STENCIL 33306.
+  static FB_TARGETS = new Map([[36160, 'FRAMEBUFFER'], [36008, 'READ_FRAMEBUFFER'], [36009, 'DRAW_FRAMEBUFFER']]);
+  static FB_ATTACHMENTS = new Map([[36064, 'COLOR_ATTACHMENT0'], [36096, 'DEPTH_ATTACHMENT'],
+    [36128, 'STENCIL_ATTACHMENT'], [33306, 'DEPTH_STENCIL_ATTACHMENT']]);
+  fbTarget(target, what) {
+    const name = GLBridge.FB_TARGETS.get(Number(target));
+    if (name === undefined || this.context[name] === undefined)
+      throw new Error(`WebGL2 has no framebuffer target for GL token 0x${(target >>> 0).toString(16)} (${what})`);
+    return this.context[name];
+  }
+  fbAttachment(attachment, what) {
+    const name = GLBridge.FB_ATTACHMENTS.get(Number(attachment));
+    if (name === undefined || this.context[name] === undefined)
+      throw new Error(`WebGL2 has no framebuffer attachment for GL token 0x${(attachment >>> 0).toString(16)} (${what})`);
+    return this.context[name];
+  }
+  genFramebuffers(count) {
+    const handles = new Int32Array(count);
+    for (let i = 0; i < count; i++) {
+      const handle = this.nextHandle++;
+      this.framebuffers.set(handle, this.call('createFramebuffer'));
+      handles[i] = handle;
+    }
+    return handles;
+  }
+  deleteFramebuffers(handles) {
+    for (let i = 0; i < handles.length; i++) {
+      const fbo = this.framebuffers.get(handles[i]);
+      if (fbo === undefined) continue;
+      this.framebuffers.delete(handles[i]);
+      this.call('deleteFramebuffer', fbo);
+    }
+  }
+  isFramebuffer(handle) { return this.framebuffers.has(handle); }
+  bindFramebuffer(target, handle) {
+    const glTarget = this.fbTarget(target, 'glBindFramebuffer');
+    if (handle === 0) { this.call('bindFramebuffer', glTarget, null); return; }
+    const fbo = this.framebuffers.get(handle);
+    if (fbo === undefined)
+      throw new Error(`Framebuffer ${handle} does not exist for glBindFramebuffer`);
+    this.call('bindFramebuffer', glTarget, fbo);
+  }
+  /** Desktop status tokens are identical to WebGL2's, so the WebGL2 answer is returned unchanged. */
+  checkFramebufferStatus(target) { return Number(this.call('checkFramebufferStatus', this.fbTarget(target, 'glCheckFramebufferStatus'))); }
+  framebufferTexture2D(target, attachment, textarget, texture, level) {
+    const entry = this.textureEntry(texture, 'glFramebufferTexture2D');
+    const tname = this.textureTargetName(textarget);
+    this.call('framebufferTexture2D', this.fbTarget(target, 'glFramebufferTexture2D'),
+      this.fbAttachment(attachment, 'glFramebufferTexture2D'), this.context[tname], Number(level));
+  }
+  framebufferRenderbuffer(target, attachment, renderbuffertarget, renderbuffer) {
+    if (Number(renderbuffertarget) !== 36161)
+      throw new Error(`glFramebufferRenderbuffer needs GL_RENDERBUFFER (36161), got 0x${(renderbuffertarget >>> 0).toString(16)}`);
+    const rb = this.renderbuffers.get(renderbuffer);
+    if (rb === undefined)
+      throw new Error(`Renderbuffer ${renderbuffer} does not exist for glFramebufferRenderbuffer`);
+    this.call('framebufferRenderbuffer', this.fbTarget(target, 'glFramebufferRenderbuffer'),
+      this.fbAttachment(attachment, 'glFramebufferRenderbuffer'), this.context.RENDERBUFFER, rb);
+  }
+  genRenderbuffers(count) {
+    const handles = new Int32Array(count);
+    for (let i = 0; i < count; i++) {
+      const handle = this.nextHandle++;
+      this.renderbuffers.set(handle, this.call('createRenderbuffer'));
+      handles[i] = handle;
+    }
+    return handles;
+  }
+  deleteRenderbuffers(handles) {
+    for (let i = 0; i < handles.length; i++) {
+      const rb = this.renderbuffers.get(handles[i]);
+      if (rb === undefined) continue;
+      this.renderbuffers.delete(handles[i]);
+      this.call('deleteRenderbuffer', rb);
+    }
+  }
+  isRenderbuffer(handle) { return this.renderbuffers.has(handle); }
+  bindRenderbuffer(target, handle) {
+    if (Number(target) !== 36161)
+      throw new Error(`glBindRenderbuffer needs GL_RENDERBUFFER (36161), got 0x${(target >>> 0).toString(16)}`);
+    if (handle === 0) { this.call('bindRenderbuffer', this.context.RENDERBUFFER, null); return; }
+    const rb = this.renderbuffers.get(handle);
+    if (rb === undefined) throw new Error(`Renderbuffer ${handle} does not exist for glBindRenderbuffer`);
+    this.call('bindRenderbuffer', this.context.RENDERBUFFER, rb);
+  }
+  /** The desktop internalformat tokens the game uses are WebGL2 storage constants; others raise. */
+  renderbufferStorage(target, internalformat, width, height) {
+    if (Number(target) !== 36161)
+      throw new Error(`glRenderbufferStorage needs GL_RENDERBUFFER (36161), got 0x${(target >>> 0).toString(16)}`);
+    const name = this.webglConstantName(internalformat);
+    if (name === undefined || this.context[name] === undefined)
+      throw new Error(`WebGL2 has no renderbuffer internalformat for GL token 0x${(internalformat >>> 0).toString(16)}`);
+    this.call('renderbufferStorage', this.context.RENDERBUFFER, this.context[name], Number(width), Number(height));
   }
   /* --- Draw calls (GL11 natives) ------------------------------------------------------ */
   drawElements(mode, count, type, indices) {

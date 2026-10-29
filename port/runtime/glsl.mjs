@@ -100,6 +100,32 @@ function promoteIntegers(ast) {
   });
 }
 
+/**
+ * WebGL2 has no glAlphaFunc, so the desktop alpha test is reproduced inside the shader path this
+ * backend generates: the injected call reads the fragment's own output colour and `discard`s exactly
+ * where desktop GL would reject the fragment (before blending). The comparison arrives as int/float
+ * uniforms that port/runtime/gl.mjs sets from the recorded glAlphaFunc state whenever a program with
+ * this injection becomes current; -1 means "GL_ALPHA_TEST disabled", which is the desktop default.
+ * All nodes come from parsing real GLSL, never from string surgery.
+ */
+const ALPHA_TEST_FUNCTION = `
+void pzAlphaTestDiscard() {
+    if (pzAlphaTestFunc >= 0) {
+        float pzAlphaValue = pzFragColor.a;
+        bool pzAlphaPass = false;
+        if (pzAlphaTestFunc == 512) pzAlphaPass = false;
+        else if (pzAlphaTestFunc == 513) pzAlphaPass = pzAlphaValue < pzAlphaTestRef;
+        else if (pzAlphaTestFunc == 514) pzAlphaPass = pzAlphaValue == pzAlphaTestRef;
+        else if (pzAlphaTestFunc == 515) pzAlphaPass = pzAlphaValue <= pzAlphaTestRef;
+        else if (pzAlphaTestFunc == 516) pzAlphaPass = pzAlphaValue > pzAlphaTestRef;
+        else if (pzAlphaTestFunc == 517) pzAlphaPass = pzAlphaValue != pzAlphaTestRef;
+        else if (pzAlphaTestFunc == 518) pzAlphaPass = pzAlphaValue >= pzAlphaTestRef;
+        else pzAlphaPass = true;
+        if (!pzAlphaPass) discard;
+    }
+}
+`;
+
 /** Parse, preprocess, transform AST nodes and generate GLSL ES. Never edit by regex. */
 export function translateShader(source, stage, { defines = {} } = {}) {
   if (!['vertex','fragment'].includes(stage)) throw new Error(`Unknown shader stage: ${stage}`);
@@ -110,6 +136,7 @@ export function translateShader(source, stage, { defines = {} } = {}) {
   const declarations = new Set();
   const replacements = new Set();
   const uniformDefaults = [];
+  let injectedAlphaTest = false;
   const direction = stage === 'vertex' ? 'out' : 'in';
   const builtins = new Map([
     ['gl_ModelViewProjectionMatrix',['pzModelViewProjectionMatrix','uniform mat4 pzModelViewProjectionMatrix;']],
@@ -177,10 +204,28 @@ export function translateShader(source, stage, { defines = {} } = {}) {
       node.identifier = replacement; declarations.add(declaration); replacements.add(name);
     } else if (name.startsWith('gl_') && !allowed.has(name)) throw new Error(`Unsupported GLSL builtin: ${name}`);
   });
-  const header = parse('#version 300 es\nprecision highp float;\nprecision highp int;\n' + [...declarations].join('\n') + '\n', {quiet:true,stage});
+  // Fragment stage: the generated pzFragColor is the fragment colour the alpha test must judge.
+  const usesFragColor = replacements.has('gl_FragColor');
+  let alphaTestHeader = '';
+  if (stage === 'fragment' && usesFragColor) {
+    const call = parse('#version 300 es\nvoid pzAlphaTestMain(){pzAlphaTestDiscard();}', {quiet:true, stage})
+        .program.find(node => node.type === 'function')?.body?.statements ?? [];
+    if (call.length !== 1) throw new Error('Alpha-test call statement failed to parse');
+    for (const node of ast.program) {
+        if (node.type !== 'function') continue;
+        if (node.prototype?.header?.name?.identifier !== 'main') continue;
+        if (!Array.isArray(node.body?.statements))
+            throw new Error('Fragment main() has no statement list to extend');
+        node.body.statements.push(structuredClone(call[0]));
+        injectedAlphaTest = true;
+    }
+    if (!injectedAlphaTest) throw new Error('Fragment shader has no main() to attach the alpha test to');
+    alphaTestHeader = 'uniform int pzAlphaTestFunc;\nuniform float pzAlphaTestRef;\n' + ALPHA_TEST_FUNCTION + '\n';
+  }
+  const header = parse('#version 300 es\nprecision highp float;\nprecision highp int;\n' + [...declarations].join('\n') + '\n' + alphaTestHeader, {quiet:true,stage});
   ast.program.unshift(...header.program);
   const output = generate(ast);
   // Parse the generated output as well; WebGL compile/link remains authoritative.
   parse(output, {quiet:true,stage});
-  return {source:output,replacements:[...replacements].sort(),declarations:[...declarations],uniformDefaults};
+  return {source:output,replacements:[...replacements].sort(),declarations:[...declarations],uniformDefaults,alphaTestEmulated:injectedAlphaTest};
 }

@@ -58,7 +58,24 @@ public final class JdkTask4Support {
     public static void log(java.util.logging.Logger logger,java.util.logging.LogRecord record){if(!isLoggable(logger,record.getLevel()))return;if(record.getLoggerName()==null)record.setLoggerName(logger.getName());for(var current=logger;current!=null;current=current.getParent()){for(var handler:getHandlers(current))handler.publish(record);if(!getUseParentHandlers(current))break;}}
     @org.teavm.jso.JSBody(params={"level","message"},script="(level>=1000?console.error:level>=900?console.warn:console.log)(message);")public static native void console(int level,String message);
     public static String getImplementationVersion(Package pkg){return null;}
-    public static boolean isAnonymousClass(Class<?> cls){throw new UnsupportedOperationException("Class.isAnonymousClass: inner-class metadata was not retained by this AOT build: "+cls.getName());}
+    public static boolean isAnonymousClass(Class<?> cls){
+        // TeaVM 0.16.0 retains no InnerClasses attribute (verified: teavm-classlib-0.16.0.jar has no
+        // org/teavm/java/java/lang/Class*.class entries at all, and Class.isAnonymousClass is absent),
+        // so the JDK's attribute lookup cannot be reproduced. javac names an anonymous class
+        // "<enclosing>$<n>", i.e. the segment after the last '$' is purely numeric and the simple name
+        // is empty, which is exactly the condition the JDK reports from that attribute. Local and
+        // member classes ("<enclosing>$<n><Name>") keep a simple name and stay false, as in the JDK.
+        // The only consumer found in the pinned jar is LuaJavaClassExposer.exposeLikeJava (bytecode
+        // offset 48), which uses it solely to skip exposeStatics for anonymous classes.
+        String name = cls.getName();
+        int dollar = name.lastIndexOf('$');
+        if (dollar < 0 || dollar == name.length() - 1) return false;
+        for (int i = dollar + 1; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (c < '0' || c > '9') return false;
+        }
+        return true;
+    }
     public static boolean setWritable(File file,boolean writable,boolean ownerOnly){return setWritableNative(file.getAbsolutePath(),writable);}
     @org.teavm.jso.JSBody(params={"path","writable"},script="return pzRuntime.vfs.setAttribute(pzRuntime.normalizePath(path),'readOnly',!writable);")private static native boolean setWritableNative(String path,boolean writable);
     public static java.nio.ByteBuffer slice(java.nio.ByteBuffer buffer,int index,int length){Objects.checkFromIndexSize(index,length,buffer.limit());return buffer.duplicate().position(index).limit(index+length).slice();}

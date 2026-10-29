@@ -17,12 +17,25 @@ from classfile import ClassReader
 SCALAR = 'port.shim.GL11'
 GL15 = 'port.shim.GL15'
 GL20 = 'port.shim.GL20'
+GL30 = 'port.shim.GL30'
 DIRECT_CLASSES = ('org.lwjgl.opengl.GL11', 'org.lwjgl.opengl.GL11C', 'org.lwjgl.opengl.GL30C',
-                  'org.lwjgl.opengl.GL15C', 'org.lwjgl.opengl.GL20C')
+                  'org.lwjgl.opengl.GL15C', 'org.lwjgl.opengl.GL20C', 'org.lwjgl.opengl.GL13C',
+                  'org.lwjgl.opengl.GL14C')
 SCALAR_DIRECT = {('glClearColor','(FFFF)V'), ('glClear','(I)V'), ('glViewport','(IIII)V'), ('glGetError','()I'),
     ('glEnable','(I)V'), ('glDisable','(I)V'), ('glBlendFunc','(II)V'), ('glClearStencil','(I)V'),
     ('glStencilMask','(I)V'), ('glCullFace','(I)V'), ('glFrontFace','(I)V'), ('glDepthFunc','(I)V'),
     ('glDepthMask','(Z)V'), ('glLineWidth','(F)V'), ('glPixelStorei','(II)V'), ('glScissor','(IIII)V'),
+    # RenderThread/GLState state setters the game reaches from zombie.core.Core and the
+    # GLStateRenderThread wrapper classes. port.shim.GL11 implements each over real WebGL2 calls;
+    # glAlphaFunc additionally drives the shader-side alpha-test discard (port/runtime/glsl.mjs).
+    ('glAlphaFunc','(IF)V'), ('glColorMask','(ZZZZ)V'), ('glStencilFunc','(III)V'),
+    ('glStencilOp','(III)V'), ('glDepthRange','(DD)V'), ('glClearDepth','(D)V'),
+    ('glBlendFuncSeparate','(IIII)V'), ('glActiveTexture','(I)V'), ('glBlendEquation','(I)V'),
+    # Desktop attribute stacks (zombie.core.Core, RenderList, RenderTarget, EquippedTextureCreator,
+    # DeadBodyAtlas, TextureCombiner). port.shim.GL11 drives port/runtime/gl.mjs, which keeps its
+    # own snapshots because WebGL2 has no attribute stack (docs/decisions.md).
+    ('glPushAttrib','(I)V'), ('glPopAttrib','()V'), ('glPushClientAttrib','(I)V'),
+    ('glPopClientAttrib','()V'),
     ('glGetString','(I)Ljava/lang/String;'), ('glGetStringi','(II)Ljava/lang/String;'),
     ('glGetInteger','(I)I'), ('glGetIntegerv','(I[I)V'), ('glGetIntegerv','(ILjava/nio/IntBuffer;)V'),
     ('glGetFloat','(I)F'), ('glGetFloatv','(I[F)V'), ('glGetFloatv','(ILjava/nio/FloatBuffer;)V'),
@@ -71,11 +84,28 @@ GL20_DIRECT = {('glCreateProgram','()I'), ('glDeleteProgram','(I)V'), ('glIsProg
     ('nglGetActiveAttrib','(IIIJJJJ)V')}
 
 
+# Only the natives on GL30C: vertex array objects, framebuffers and renderbuffers, all implemented
+# in port.shim.GL30 over WebGL2. Desktop-only ones (glBlitFramebuffer, glFramebufferTexture1D/3D,
+# glRenderbufferStorageMultisample, the *Parameteriv queries) stay unmapped and keep the fail-fast raise.
+GL30_DIRECT = {('nglGenVertexArrays','(IJ)V'), ('nglDeleteVertexArrays','(IJ)V'),
+    ('glIsVertexArray','(I)Z'), ('glBindVertexArray','(I)V'),
+    ('nglGenFramebuffers','(IJ)V'), ('nglDeleteFramebuffers','(IJ)V'), ('glIsFramebuffer','(I)Z'),
+    ('glBindFramebuffer','(II)V'), ('glCheckFramebufferStatus','(I)I'),
+    ('glFramebufferTexture2D','(IIIII)V'), ('glFramebufferRenderbuffer','(IIII)V'),
+    ('nglGenRenderbuffers','(IJ)V'), ('nglDeleteRenderbuffers','(IJ)V'),
+    ('glIsRenderbuffer','(I)Z'), ('glBindRenderbuffer','(II)V'), ('glRenderbufferStorage','(IIII)V')}
+
+
 def target_for(class_name, method_name, descriptor):
     if class_name == 'org.lwjgl.opengl.GL15C':
         return GL15 if (method_name, descriptor) in GL15_DIRECT else None
     if class_name == 'org.lwjgl.opengl.GL20C':
         return GL20 if (method_name, descriptor) in GL20_DIRECT else None
+    if class_name == 'org.lwjgl.opengl.GL30C':
+        # GL30C owns the VAO/framebuffer/renderbuffer natives, but it also re-exposes the GL11/GL20
+        # entrypoints the older mapping already covered (glGetStringi), so those keep their target.
+        if (method_name, descriptor) in GL30_DIRECT: return GL30
+        return SCALAR if (method_name, descriptor) in SCALAR_DIRECT else None
     return SCALAR if (method_name, descriptor) in SCALAR_DIRECT or (method_name, descriptor) in TEXTURE_DIRECT else None
 
 

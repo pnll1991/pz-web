@@ -133,7 +133,7 @@ test('deleting releases the WebGL2 object and forgets the handle', () => {
   gl.deleteTextures(handles);
   assert.equal(gl.isTexture(handles[0]), false);
   assert.equal(gl.isTexture(handles[1]), false);
-  assert.equal(gl.boundTexture, 0);
+  assert.equal(gl.activeBoundTexture(), 0);
   assert.equal(gl.context.calls.filter((c) => c[0] === 'deleteTexture').length, 2);
   assert.throws(() => gl.bindTexture(3553, handles[0]), /does not exist/);
 });

@@ -72,7 +72,7 @@ public final class GL15 {
      * bridge as ints, which is also what a buffer range can be in this backend.
      */
     private static int offsetBytes(long offset) {
-        return checked(offset);
+        return checked(offset); // throws instead of truncating a range that WebGL2 cannot express
     }
     public static long nglMapBuffer(int target, int access) {
         // WebGL2 has no client pointer into buffer storage, so this backend hands out a real arena
@@ -88,7 +88,7 @@ public final class GL15 {
         int size = bufferParameterNative(target, BUFFER_SIZE).get(0);
         if (size <= 0) return 0L; // no storage on the bound buffer: nothing to map
         long address = NativeMemory.nmemAllocChecked(size);
-        getSubNative(target, 0L, arena(address, size));
+        getSubNative(target, 0, arena(address, size));
         mapped.put(target, new Mapped(address, size, access));
         return address;
     }
@@ -105,7 +105,7 @@ public final class GL15 {
         if (entry == null) throw new IllegalStateException(
             "glUnmapBuffer without a live mapping: target 0x" + Integer.toHexString(target));
         if (entry.address != 0L && entry.size > 0) {
-            bufferSubNative(target, 0L, arena(entry.address, entry.size));
+            bufferSubNative(target, 0, arena(entry.address, entry.size));
             NativeMemory.nmemFree(entry.address);
         }
         return true;
@@ -150,9 +150,9 @@ public final class GL15 {
     @JSBody(params={"target","size","data"}, script="globalThis.pzRuntime.gl.bufferData(target,size,data);")
     private static native void bufferDataNative(int target, int size, Uint8Array data);
     @JSBody(params={"target","offset","data"}, script="globalThis.pzRuntime.gl.bufferSubData(target,offset,data);")
-    private static native void bufferSubNative(int target, long offset, Uint8Array data);
+    private static native void bufferSubNative(int target, int offset, Uint8Array data);
     @JSBody(params={"target","offset","data"}, script="globalThis.pzRuntime.gl.getBufferSubData(target,offset,data);")
-    private static native void getSubNative(int target, long offset, Uint8Array data);
+    private static native void getSubNative(int target, int offset, Uint8Array data);
     @JSBody(params={"target","pname"}, script="return new Int32Array(globalThis.pzRuntime.gl.bufferParameter(target,pname));")
     private static native Int32Array bufferParameterNative(int target, int pname);
     @JSBody(params="count", script="return globalThis.pzRuntime.gl.genQueries(count);")
