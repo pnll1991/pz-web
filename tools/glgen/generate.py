@@ -27,6 +27,13 @@ SCALAR_DIRECT = {('glClearColor','(FFFF)V'), ('glClear','(I)V'), ('glViewport','
     ('glGetInteger','(I)I'), ('glGetIntegerv','(I[I)V'), ('glGetIntegerv','(ILjava/nio/IntBuffer;)V'),
     ('glGetFloat','(I)F'), ('glGetFloatv','(I[F)V'), ('glGetFloatv','(ILjava/nio/FloatBuffer;)V'),
     ('glGetBoolean','(I)Z'), ('glGetBooleanv','(ILjava/nio/ByteBuffer;)V')}
+# GL11 texture lifecycle: the natives on GL11C that zombie.core.textures.TextureID calls. port.shim.GL11
+# implements each one over WebGL2 (port/runtime/gl.mjs), and the GL11/GL11C wrappers reach them
+# through these mappings. Desktop-only texture natives (compressed formats, glCopyTexImage,
+# glAreTexturesResident, tex-level parameters) stay unmapped and keep the fail-fast raise.
+TEXTURE_DIRECT = {('nglGenTextures','(IJ)V'), ('nglDeleteTextures','(IJ)V'), ('glIsTexture','(I)Z'),
+    ('glBindTexture','(II)V'), ('glTexParameteri','(III)V'), ('nglTexImage2D','(IIIIIIIIJ)V'),
+    ('nglTexSubImage2D','(IIIIIIIIJ)V'), ('nglGetTexImage','(IIIIJ)V')}
 # Only the natives on GL15C: the wrappers of GL15/GL15C stay untouched and reach them.
 GL15_DIRECT = {('nglGenBuffers','(IJ)V'), ('nglDeleteBuffers','(IJ)V'), ('glBindBuffer','(II)V'),
     ('glIsBuffer','(I)Z'), ('nglBufferData','(IJJI)V'), ('nglBufferSubData','(IJJJ)V'),
@@ -69,7 +76,7 @@ def target_for(class_name, method_name, descriptor):
         return GL15 if (method_name, descriptor) in GL15_DIRECT else None
     if class_name == 'org.lwjgl.opengl.GL20C':
         return GL20 if (method_name, descriptor) in GL20_DIRECT else None
-    return SCALAR if (method_name, descriptor) in SCALAR_DIRECT else None
+    return SCALAR if (method_name, descriptor) in SCALAR_DIRECT or (method_name, descriptor) in TEXTURE_DIRECT else None
 
 
 def generate(inventory, output):

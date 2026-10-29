@@ -8,6 +8,9 @@ public final class GameBoot {
         port.shim.BrowserFileSystem.install();
         // The game reads System.getProperty("user.language"); the browser supplies it here.
         port.shim.BrowserPlatform.installLocale();
+        // Lighting64 is a native library the browser cannot load; our own module answers the
+        // entry points the boot reaches before a world exists (see port/natives/Lighting64.java).
+        port.natives.Lighting64.install();
         state("starting", "", "");
         try {
             launch(args);

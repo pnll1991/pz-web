@@ -94,7 +94,17 @@ public final class BrowserWindow {
     public static void glfwShowWindow(long window) { showNative(checkedHandle(window)); }
     public static void glfwHideWindow(long window) { hideNative(checkedHandle(window)); }
     public static void glfwFocusWindow(long window) { focusNative(checkedHandle(window)); }
-    public static void glfwMakeContextCurrent(long window) { makeContextCurrentNative(checkedHandle(window)); }
+    /**
+     * glfwMakeContextCurrent. GLFW accepts NULL (window handle 0) and that *detaches* the
+     * current context; org.lwjglx.opengl.Display.releaseContext() calls exactly
+     * glfwMakeContextCurrent(0), and zombie.core.opengl.RenderThread.releaseContextReentrant()
+     * does it once per frame. Rejecting 0 here aborted the render loop, so the backend records
+     * the detach and glfwGetCurrentContext reports 0 until a window makes it current again.
+     */
+    public static void glfwMakeContextCurrent(long window) {
+        if (window == 0) { detachContextNative(); return; }
+        makeContextCurrentNative(checkedHandle(window));
+    }
     public static long glfwGetCurrentContext() { return currentContextNative(); }
     public static void glfwSwapBuffers(long window) { swapBuffersNative(checkedHandle(window)); }
     public static void glfwSwapInterval(int interval) { swapIntervalNative(interval); }
@@ -194,6 +204,7 @@ public final class BrowserWindow {
     @JSBody(params="window",script="globalThis.pzRuntime.window.hide(window);") private static native void hideNative(int window);
     @JSBody(params="window",script="globalThis.pzRuntime.window.focus(window);") private static native void focusNative(int window);
     @JSBody(params="window",script="globalThis.pzRuntime.window.makeContextCurrent(window);") private static native void makeContextCurrentNative(int window);
+    @JSBody(script="globalThis.pzRuntime.window.detachContext();") private static native void detachContextNative();
     @JSBody(script="return globalThis.pzRuntime.window.getCurrentContext();") private static native int currentContextNative();
     @JSBody(params="window",script="globalThis.pzRuntime.window.swapBuffers(window);") private static native void swapBuffersNative(int window);
     @JSBody(params="interval",script="globalThis.pzRuntime.window.swapInterval(interval);") private static native void swapIntervalNative(int interval);

@@ -1,14 +1,26 @@
 # Estado del port personal
 
-Actualizado: **2026-10-29 01:30 (-03), Ronda 40** (inicio 21:45:04 según `supervisor.log`, corte duro 01:45).
+Actualizado: **2026-10-29 05:25 (-03), Ronda 42** (inicio 01:40:52 según `supervisor.log`, corte duro 05:40).
 Repositorio `/home/agente47/Projects/pz-web`. Esta ronda **no hizo commits y no tocó `.git`**.
-Artefacto analizado: build `build-round40c-game.log` (SUCCESS, gate PASS, `probe8 'java.lang.Thread::<clinit>'` ⇒ `no seed`),
-`port/target/web/game/boot.wasm` de 143.128.474 B del 2026-10-29 00:04. Dev server **8092** (no reiniciado) sirviendo `port/target/`.
+Artefacto actual: build `build-round42g-game.log` (SUCCESS, gate PASS, `probe8 'java.lang.Thread::<clinit>'` ⇒ `no seed`),
+`port/target/web/game/boot.wasm` de 143.142.946 B del 2026-10-29 05:15. Dev server **8092** (no reiniciado) sirviendo `port/target/`.
+**Leer la sección "Cierre de la Ronda 42" más abajo: ahí está el bloqueo actual (`PZPopMan64`) y los siguientes pasos.**
+El detalle histórico de las rondas 40/41 queda debajo, conservado como referencia.
 
-## Resumen del estado real hoy
+## Resumen del estado real hoy (actualizado en la ronda 42)
 
-- **El boot llega al juego y el hilo principal sigue vivo.** Ya no hay `pageerror`, ni `RuntimeError: unreachable`,
-  ni excepción fatal: `phase:'starting'` (antes `main-returned`, hilo de juego muerto).
+- **El boot llega a `GameWindow.init()` y avanza más lejos que nunca**: `initFonts()` retorna, las texturas de las
+  fuentes se suben a WebGL2 (66 `createTexture/texImage2D`, 264 `texParameteri`, 0 raises) y `LightingJNI.init`
+  ya tiene su librería gracias a nuestro módulo `port/natives/Lighting64.java`: **desapareció el `System.exit(1)`**.
+- **Stop actual (ronda 42)**: `ZombiePopulationManager.init → System.loadLibrary("PZPopMan64")` lanza
+  `UnsatisfiedLinkError` (ese `init` no tiene try/catch) → `GameWindow.mainThreadInit` lo reenvuelve en
+  `RuntimeException` → `GameThread exited..` → el `RenderThread` termina el loop con `System.exit(0)`
+  (registrado `{status:0, swapCount:2, windowCreated:false, contextCurrent:false}`, `errs: []`).
+- Canvas: captura `test-results/round42-textures.png` (1280×720) sigue en **95.06 % negro** (`(0,0,0)` 876.098 px
+  de 921.600, 12 colores). Ningún frame del menú dibujado todavía: `swapCount = 2`.
+- Las secciones de las rondas 40/41 que siguen abajo son **histórico**: el `inflate error` de la ronda 40 ya está
+  arreglado y las 48 texturas que fallaban ahora suben bien.
+
 - Última etapa alcanzada (medida en Chrome con `port/target/diag102.mjs`, log `diag102.log`, 110 s de corrida):
   `GameWindow#<clinit>` → `InitDisplay` (640×480, ANGLE/SwiftShader, "OpenGL version: 3.3 (WebGL 2.0)") →
   `MainScreenState#loadIcons()` (entered/returned) → `LoggerManager#init` → `Bullet#init` → `DebugOptions#init` →
@@ -141,3 +153,147 @@ Captura de esta ronda: `test-results/round40-final.png` (1280×720) — 876.098 
 - Build obligatorio con `-Xss16m`: `source scripts/env.sh; export PZ_HOME=/home/agente47/pz-pinned/25485521/projectzomboid;
   export MAVEN_OPTS="-Xmx8g -Xss16m"; bash scripts/build.sh --with-game` — **un solo build en primer plano** (`nohup &` muere al
   cerrarse la sesión). No tocar Strata ni 8083. Servidor sólo `127.0.0.1`. Sin `rg` ni `wasm-objdump` (usar `grep`/Python).
+
+## Ronda 42 (cerrada 05:25) — inicio 2026-10-29 01:40:52, corte 05:40
+
+- 01:53 **causa raíz del `inflate error` verificada con repro JVM propio** (`/tmp/ztest`):
+  `PNGDecoder.readChunkUnzip` llama `inflate()` **antes** del primer `setInput()`.
+  El `TInflater` de TeaVM 0.16.0 mapea cualquier código fuera de `{Z_OK, Z_NEED_DICT, Z_STREAM_END}`
+  a `DataFormatException("Error occurred: " + errCode)`; jzlib 1.1.3 devuelve `Z_STREAM_ERROR (-2)`
+  porque `z.next_in` sigue `null`. El JDK en cambio devuelve `0` con `needsInput()==true` (medido:
+  JDK → `no-input inflate -> 0 needsInput=true`; classlib sin parchear → `TDataFormatException: Error occurred: -2`).
+- Fix: `scripts/prepare_teavm.py` → `patch_inflater()`, que genera
+  `port/target/generated-sources/teavm/org/teavm/classlib/java/util/zip/TInflater.java` (ruta ignorada).
+  En el brazo `default` devuelve `0` solo si `errCode` es `Z_STREAM_ERROR`/`Z_BUF_ERROR` **y**
+  `impl.next_in == null || impl.avail_in == 0`; el `Z_DATA_ERROR (-3)` real sigue lanzando.
+- Prueba JVM del parche sobre **109 PNG únicos reales** extraídos de `build/real-browser/packs`:
+  `OK=109 FAIL=0` (salida idéntica byte a byte al `java.util.zip.Inflater` del JDK),
+  `BAD-DATA throws DataFormatException ... Error occurred: -3`, y `reset()` reutiliza el inflater.
+- 02:00 build **`build-round42-game.log`**: `BUILD SUCCESS` (6:06 min, peak RSS 6.58 GiB),
+  `wasm_bytes:143128542`, gate PASS (`fiberops: False` en `Thread::currentThread/setCurrentThread`),
+  `probe8 'java.lang.Thread::<clinit>'` → **`no seed`**.
+- 02:03 Chrome (`diag104.mjs`, dev server 8092, 76 s): **desaparecen las 48 `inflate error`** y los
+  `AngelCodeFont failed to load page 0 texture` (`fontFails: 0`). DebugLog pasa de 206.898 B a 4.344 B
+  y el único error restante es `UnsupportedOperationException: Unsupported platform: UNSUPPORTED` (oshi, 1×, inofensivo).
+  `errs: []` (ningún `pageerror`). El fix del inflater está confirmado en Wasm, no solo en JVM.
+- 03:15 **causa raíz #2 verificada y corregida (texturas GL11)**. `TextureID.generateHwId` llama
+  `GL11.glGenTextures()I` → native `GL11C.nglGenTextures(IJ)V`, que `tools/glgen/generate.py` no mapeaba,
+  así que el fail-fast lanzaba `UnsupportedOperationException: Java_org_lwjgl_opengl_GL11C_nglGenTextures__IJ`
+  dentro de `RenderContextQueueItem.invoke()` (48 veces en el DebugLog, 3 fuentes sin página 0). Como
+  `generateHwId` abortaba antes de `ImageData.dispose()`, `DirectBufferAllocator` quedaba > 50 MB y
+  `TextureIDAssetManager.waitFileTask` dormía para siempre → `initFonts` no volvía → canvas negro 95 %.
+  Fix real (sin stubs): puente de texturas en `port/runtime/gl.mjs` (`genTextures/deleteTextures/isTexture/
+  bindTexture/texParameteri/texImage2D/texSubImage2D/getTexImage/texLevelBytes` + `PORT_PROVIDED`),
+  wrappers con descriptores exactos en `port/src/main/java/port/shim/GL11.java` (bytes por el arena
+  como GL15), y las 8 entradas `(name,descriptor)` en `TEXTURE_DIRECT` de `tools/glgen/generate.py`
+  (mapean GL11 **y** GL11C; 143 líneas en `gl-overrides.tsv`, antes 135).
+  Tokens verificados con `javap -constants` sobre el jar pinneado y con los constantes WebGL2 leídos en
+  Chrome (`port/target/glc.mjs`): filtro/wrap idénticos; `GL_RGBA+GL_UNSIGNED_BYTE→RGBA8`,
+  `GL_DEPTH_COMPONENT+GL_UNSIGNED_SHORT→DEPTH_COMPONENT16`; `GL_TEXTURE_1D/PROXY/LUMINANCE/ALPHA8`
+  lanzan con su identidad (WebGL2 no los tiene); `glGetTexImage` sólo RGBA/UNSIGNED_BYTE vía FBO+readPixels.
+- 03:24 build **`build-round42c-game.log`** (con el puente de texturas): `BUILD SUCCESS` (9:20 min, peak RSS 6.59 GiB,
+  94946 métodos), `wasm_bytes:143139239`, gate PASS (`fiberops: False`), `probe8 'java.lang.Thread::<clinit>'` → `no seed`.
+  `scripts/build.sh` copió `port/runtime/gl.mjs` (56.617 B) a `port/target/web/runtime/`; dev server **8092** responde 200
+  (no hace falta reiniciar). Nuevo diag combinado `port/target/diag113.mjs` (contadores GL + fontFails + DebugLog + captura).
+- 04:05 **nuevo bloqueo verificado con `diag113.log`**: el puente de texturas funciona (0 raises de GL,
+  `createTexture/texImage2D/texParameteri` 66/66/264 llamadas, `GameWindow#initFonts():returned`, 66 texturas subidas),
+  pero el DebugLog (13.990 B) muestra dos finales: (a) `MainThread` muere en `LightingJNI.init` porque
+  `System.loadLibrary("Lighting64")` lanza `UnsatisfiedLinkError`, el catch del juego hace `Thread.sleep(3000)` y
+  `System.exit(1)` → nuestro `JdkSupport.exit` lanza `UnsupportedOperationException` (honesto: una pestaña no es un proceso)
+  → `GameThread exited..`; (b) el `RenderThread` (que sí estaba en `MainScreenState#main`) aborta en
+  `RenderThread#releaseContextReentrant → Display.releaseContext → GLFW.glfwMakeContextCurrent(0)` con
+  `IllegalArgumentException: Invalid browser window handle: 0` (bytecode verificado: `Display.releaseContext` pasa `lconst_0`).
+- 04:06 Fix (b) real: `port/runtime/window.mjs` ahora modela el contexto actual de GLFW (`contextCurrent`,
+  `detachContext()`, `getCurrentContext()` devuelve 0 cuando está despegado) y `port/src/main/java/port/shim/BrowserWindow.java`
+  acepta handle 0 como detach en `glfwMakeContextCurrent`. `node --check` OK; `npm test` **25 pass / 0 fail**.
+- 04:14 build **`build-round42d-game.log`** (con el contexto actual de GLFW): `BUILD SUCCESS` (6:48 min),
+  `wasm_bytes:143139425`, gate PASS (`fiberops: False`), `probe8 'java.lang.Thread::<clinit>'` → `no seed`.
+- 04:22 Chrome (`diag113.mjs`, 150 s, dev server 8092): **desaparece `Invalid browser window handle: 0`**.
+  `RenderThread#releaseContextReentrant/acquireContextReentrant` ahora entran y vuelven (0 raises en el
+  wrapper GL, `glThrown: []`), `fontFails: 3` (las 3 páginas que no existen en la copia), DebugLog 13.741 B,
+  `errs: []`, `phase:'main-returned'`. Bloqueo restante: `MainThread` muere en `LightingJNI.init`
+  (`loadLibrary("Lighting64")` → `UnsatisfiedLinkError` → `Thread.sleep(3000)` → `System.exit(1)` → nuestro
+  `JdkSupport.exit` lanza honestamente) y aparece además un `System.exit(0)`; por eso `swapCount` sigue nulo
+  y la captura `test-results/round42-textures.png` sigue en 95 % negro.
+- 04:52 **decisión + fix del bloqueo `LightingJNI.init` (aún sin build)**: `LightingJNI.init()` (bytecode `/tmp/lighting.txt` 70-135) hace
+  `System.loadLibrary("Lighting64")`; el catch de `UnsatisfiedLinkError` loguea, `Thread.sleep(3000)` y `System.exit(1)`. Sin librería el
+  MainThread muere ahí y el `RenderThread` termina el loop con `System.exit(0)`, por eso `swapCount` seguía en 2 y la captura en 95 % negro.
+  Camino honesto elegido (no stub): módulo propio `port/src/main/java/port/natives/Lighting64.java` que **implementa de verdad** los entradas
+  que el boot toca antes de existir un mundo — `configure(F)V` (valida cell size > 0), `WaitingForMain()Z` (nuestro pass es síncrono ⇒ `false`),
+  `DoLightingUpdateNew(JZ)V` (no hay nada registrado ⇒ sin trabajo; si el juego abrió updates por chunk lanza con su identidad) y `destroy()V` —
+  y registra el nombre `Lighting64` en `pzRuntime.loadedLibraries`, que es lo que `JdkSupport.loadLibrary` exige. Las otras 46 natives de la clase
+  conservan el fail-fast con su nombre JNI (`FailFastNatives`), así una sesión in-world falla en vez de iluminar mal.
+  Nuevo transformer `port/compiler/LightingNativeCompatibility.java` (mismo patrón que `BulletNativeCompatibility`: reenvía sólo natives inventariadas
+  de `zombie.iso.LightingJNI`, 4 forwards) registrado en `BuildCompiler` y `port.GameBoot.main` llama `Lighting64.install()`.
+  `mvn -f port/pom.xml compile` OK (1 error intermedio: `org.teavm.model.MethodNode` no existe → `MethodHolder`, anotado en AGENT_LEARNINGS).
+- 05:09 build **`build-round42g-game.log`** lanzado con los 4 forwards corregidos. El intento anterior
+  `build-round42f-game.log` **falló** (`BUILD FAILURE`) por mi descriptor: `MethodDescriptor("configure",
+  ValueType.VOID)` significa `()V` (los primeros N-1 son parámetros), y TeaVM reportó
+  `ERROR: zombie.iso.LightingJNI.configure(F)V: Method port.natives.Lighting64.configure()V was not found`
+  y lo mismo para `DoLightingUpdateNew(JZ)V`. Corregido a `(FLOAT,VOID)` y `(LONG,BOOLEAN,VOID)`;
+  `mvn -f port/pom.xml compile` vuelve a pasar. Causa anotada en `AGENT_LEARNINGS.md`.
+- 05:15 build **`build-round42g-game.log`** (con el módulo Lighting64 + los 4 forwards): `BUILD SUCCESS` (6:04 min,
+  peak RSS 6.58 GiB, 94958 métodos), `wasm_bytes:143142946`, gate PASS (`fiberops: False`),
+  `probe8 'java.lang.Thread::<clinit>'` → `no seed`. `scripts/build.sh` dejó `Lighting64` compilado en el módulo
+  y copió `port/runtime/window.mjs` (25.039 B) a `port/target/web/runtime/`.
+- 05:20 Chrome (`port/target/diag115.mjs`, 110 s, dev server 8092, log `diag116.log`, `errs: []`):
+  **desaparece el `System.exit(1)` de LightingJNI** — `exits` tiene **un solo** elemento, `{status:0, swapCount:2,
+  windowCreated:false, contextCurrent:false}`; `loadedLibraries:["PZBullet64","PZBullet","Lighting64"]` y
+  `missingLibraries:["RakNet64","PZPopMan64"]`. O sea: el MainThread sobrevive a `LightingJNI.init` y ahora muere
+  en el paso siguiente, `ZombiePopulationManager.init → loadLibrary("PZPopMan64")` (bytecode `/tmp/zombie.popman…txt`:
+  ese `init` **no** tiene try/catch ni `exit`, así que lanza `UnsatisfiedLinkError` dentro de `GameWindow.init`,
+  que sí lo captura y lo reenvuelve en `RuntimeException`). `swapCount` sigue en 2 y `glTop: []` en esta sonda:
+  ningún frame del menú todavía.
+
+## Cierre de la Ronda 42 (05:25)
+
+- **Estado**: el menú principal real de PZ **no se ve** en Chrome. `MENU_REACHED` no existe y no se creó.
+- **Archivos cambiados en la ronda** (sin commit, `.git` intocado): `port/runtime/window.mjs` (contexto actual
+  GLFW: `contextCurrent`, `detachContext()`, `getCurrentContext()`), `port/shim/BrowserWindow.java`
+  (`glfwMakeContextCurrent(0)` = detach), `port/runtime/JdkSupport.java` (`recordMissingLibrary`/`recordExit`),
+  **nuevos** `port/natives/Lighting64.java` y `port/compiler/LightingNativeCompatibility.java`,
+  `port/GameBoot.java` (`Lighting64.install()`), `port/compiler/BuildCompiler.java` (registra el transformer),
+  `tests/browser/window.spec.mjs` (test de attach/detach), `port/target/diag113/114/115.mjs` (ignorados),
+  `AGENT_LEARNINGS.md` (4 errores nuevos), `STATUS.md`.
+- **Hasta dónde llega hoy el arranque**: `GameWindow.init()` avanza `initGlobalShader → invokeOnRenderContext →
+  initFonts (returned, 66 texturas subidas vía el puente GL11) → checkRequiredLibraries → SteamUtils/ServerBrowser/
+  SteamFriends/SteamWorkshop.init → resetModFolders → RakNetPeerInterface.init` (falla `RakNet64`, el juego lo
+  loguea y sigue) → **`LightingJNI.init` ahora tiene su librería** → `ZombiePopulationManager.init` lanza
+  `UnsatisfiedLinkError: System.loadLibrary: browser implementation is missing for PZPopMan64`, que
+  `GameWindow.mainThreadInit` reenvuelve en `RuntimeException` → `GameThread exited..` → el `RenderThread` cierra
+  el loop y hace `System.exit(0)` (registrado: `{status:0, swapCount:2}`).
+- **Bloqueo actual**: nativas de `ZombiePopulationManager` (`PZPopMan64`, 28 natives) sin implementación. Después
+  de ese punto `GameWindow.init` sigue con `PZSQLUtils.init` (que necesita `org.sqlite.JDBC` en el classpath y
+  también hace `System.exit(1)` si `Class.forName` falla), `Clipper.init` (`PZClipper64`, 13), `PathfindNative.init`
+  (`PZPathFind64`, 11) y `WorldMapJNI.init` (sin natives).
+- **Siguientes pasos, en orden**:
+  1. Módulo `port/natives/PopMan64.java` + transformer, mismo patrón que Lighting64: implementar las entradas que el
+     boot toca antes del mundo (el `init` del juego sólo hace `loadLibrary` y registra un `PredicatedFileWatcher`;
+     las natives de población se llaman con un `IsoWorld` existente ⇒ deben conservar el fail-fast con su nombre JNI).
+     Verificar con `javap` cuáles se llaman desde `GameWindow.init`/`mainThreadInit` y no inventar semántica.
+  2. `PZSQLUtils.init`: decide el camino honesto — el jar pinneado trae `org/sqlite/*.class` en
+     `projectzomboid.jar` pero TeaVM rechaza `org.sqlite.JDBC implements java.sql.Driver` (missing in classpath;
+     ver `port/target/reports/task4-baseline/missing-apis.md`). Nuestrapuente JDBC está en `port/runtime/jdbc`
+     (`BrowserConnection`/`Sqlite`) y sirve SQLite Wasm 3.54.1: hace falta un transformer que reenvíe
+     `PZSQLUtils.getConnection` a ese puente y un `Class.forName("org.sqlite.JDBC")` que resuelva, o registrar una
+     sustitución propia. **No** dejar que `System.exit(1)` vuelva a matar el MainThread.
+  3. Repetir con `Clipper` (`clipper2-java`, Boost según `docs/ROADMAP-source.txt`) y `PathfindNative`
+     (`PZPathFind64`) cuando el menú ya dependa de ellas.
+  4. Re-correr `diag113.mjs`/`diag115.mjs` y recién ahí una captura con histograma muy por debajo de 95 % negro;
+     sólo con menú visible + captura + prueba Playwright verde crear `MENU_REACHED`
+     (`tests/browser/game-main.spec.mjs` con `playwright.game.config.mjs`, `PZ_REAL_TEST_PORT=8093`).
+- 05:26 verificación fina (`port/target/diag117.mjs` → `diag117.log`, y `diag113.mjs` re-corrido → `diag118.log`,
+  150 s, `errs: []`): el DebugLog pasa de 13.741 B a **11.267 B** y el histograma de excepciones es ahora
+  `{oshi "Unsupported platform: UNSUPPORTED":1, "missing for RakNet64":1, "thrown by thread MainThread..":1,
+  "missing for PZPopMan64":1, "thrown by thread MainThread.":1, "System.exit(0): a browser tab is not an OS process":1}`
+  — **ningún `System.exit(1)`** y ninguna textura GL que lance (`glThrown: []`). El `RenderThread` trabajó más que
+  nunca: `glTotal 801` con `createBuffer 256`, `clearColor 3`, `clear 2`, `createProgram/useProgram/deleteProgram 2`,
+  `blendFunc 1` (shader global + borrado de pantalla), `SpriteRenderer#waitForReadyState` 1484 veces y
+  `RenderThread#acquireContextReentrant` 4. `pzRuntime.natives = {Lighting64:true}`. `swapCount` sigue en 2:
+  el loop muere antes del primer `glfwSwapBuffers` del menú por el `UnsatisfiedLinkError` de `PZPopMan64`.
+- **Pruebas de esta ronda**: build JVM `mvn package` 45 pass; `npm test` **25 pass / 0 fail**;
+  `npx playwright test --config playwright.config.mjs` **18 pass**; `python3 -m unittest discover -s tests/python` (con `scripts/env.sh`) **OK**; suite del juego `playwright.game.config.mjs` **no corrida**
+  (sigue asegurando `phase:'starting'`/`menuRendered:false`, no relajar).
+- **Avisar al dueño** (no tocamos `.git`): el commit `4865c76` de la ronda 41 incluyó por error el directorio
+  `-jnounc=0`, creado por un typo de extracción de jzlib (tercero Apache-2.0, no código del juego). Conviene
+  eliminarlo del árbol y del índice en la próxima revisión del vigilante.

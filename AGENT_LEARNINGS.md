@@ -430,3 +430,56 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Enseñanza sobre "nunca simular éxito": `mainfont_0.png`, `mainfont2_0.png` y
   `zomboidDialogue.bmfc_0.png` **no existen en la copia pinneada** (verificado con `find`). `AngelCodeFont` sólo
   loguea `failed to load page 0 texture` y continúa; no hay que inventar esos PNG ni considerarlos bug del port.
+
+## 2026-10-29 — Ronda 42 (texturas GL11 y contexto GLFW)
+- Error de build: los wrappers nuevos de `port/src/main/java/port/shim/GL11.java` usaban `ByteBuffer`
+  (para el arena de `glGetTexImage`/`glTexSubImage2D`) sin `import java.nio.ByteBuffer;`. El build con
+  juego falló tras 6 min de TeaVM por un error de compilación que se veía en 5 segundos de `javac`.
+  Mejor enfoque: al agregar un tipo al shim, escribir el import en el mismo parche y correr
+  `mvn -q -pl port compile` (o `javac` del archivo) antes del build completo.
+- Error de fuente: escribí tokens OpenGL de memoria (valores hex) y varios estaban mal. Verificar siempre
+  con `javap -constants -classpath $PZ_HOME/projectzomboid.jar org.lwjgl.opengl.GL11` (decimales) y cruzar
+  con los constantes WebGL2 del navegador; en WebGL2 los constantes están en el **prototipo**
+  (`Object.entries(gl)` devuelve 0 claves, el prototipo tiene 553), así que una tabla valor→nombre debe
+  recorrer la cadena de prototipos o `webglConstantName()` devuelve `undefined`.
+- Error de edición: un `apply_patch` en el medio de `port/runtime/gl.mjs` duplicó un método; hubo que
+  excindir el duplicado. Mejor enfoque: un parche por región coherente y después `node --check` +
+  `grep -c 'nombreDelMétodo('` para detectar duplicados.
+- Error de entorno de pruebas: para testear `GLBridge` en Node el canvas falso necesita
+  `getContext: () => fake` porque el constructor de `GLBridge` lo llama; asignar `instance.context`
+  después del constructor prueba otra cosa.
+- Error de inferencia sobre el bloqueo: el canvas negro 95 % no era "el renderer no corre". Los
+  contadores de `StartupProgress` mostraban `initFonts` sin `returned` y 48 raises de
+  `GL11C.nglGenTextures`; la cadena real era `generateHwId` → raise → nunca `ImageData.dispose()` →
+  `DirectBufferAllocator.getBytesAllocated() > 50 MB` → `waitFileTask` dormía para siempre.
+  Mejor enfoque: leer `X:entered` vs `X:returned` en los contadores y recién después abrir bytecode.
+- Error de diseño del shim GLFW: `checkedHandle` rechazaba handle `0`, pero
+  `org.lwjglx.opengl.Display.releaseContext()` llama `glfwMakeContextCurrent(0)` (bytecode: `lconst_0`)
+  y `RenderThread.releaseContextReentrant()` lo ejecuta cada frame. Rechazar 0 abortaba el render loop
+  con `IllegalArgumentException: Invalid browser window handle: 0`. GLFW define `NULL` como *detach*:
+  el backend ahora tiene `contextCurrent`/`detachContext()` y `getCurrentContext()` devuelve 0.
+  Mejor enfoque: antes de validar un handle, leer quién lo llama en el bytecode del juego/LWJGLx.
+- Observación útil: tras el puente de texturas, `glTop` muestra `createTexture/texImage2D/bindTexture` 66 y
+  `texParameteri` 264 con `glThrown: []`; la textura deja de ser el cuello. Los bloqueos siguientes son
+  `System.loadLibrary("Lighting64")` → `LightingJNI.init` → `Thread.sleep(3000)` → `System.exit(1)`
+  (bytecode verificado) y luego `RenderThread.renderLoop` → `System.exit(0)` cuando
+  `GameWindow.gameThreadExited` es verdad. Por eso `JdkSupport.exit/loadLibrary` ahora registran
+  `pzRuntime.exits` y `pzRuntime.missingLibraries` sin cambiar el fallo honesto.
+- Error de API del transformer: en el transformer nuevo usé `org.teavm.model.MethodNode` como tipo del
+  método iterado en `transformClass`. Ese tipo no existe en teavm-model 0.16.0 (`cannot find symbol`);
+  el que devuelve `cls.getMethods()` es `org.teavm.model.MethodHolder`. Mejor enfoque: copiar el patrón
+  de `BulletNativeCompatibility` (usa `var method` y `MethodDescriptor.get(method)`) y recién escribir
+  tipos explícitos cuando el compilador lo pida.
+- Patrón a evitar: tratar una librería nativa ausente como "se puede ignorar". `LightingJNI.init`
+  llama `System.exit(1)` cuando `loadLibrary` falla; nuestro `JdkSupport.exit` lanza (honesto) y eso
+  mata el MainThread → el RenderThread cierra el loop y hace `System.exit(0)`. Cualquier librería cuyo
+  `init` tiene `exit` en el catch (verificado con un regex sobre los dumps: LightingJNI y PZSQLUtils)
+  necesita un módulo real, aunque sea parcial, registrado en `pzRuntime.loadedLibraries`.
+- Error de transformer (ronda 42): declaré el método destino con `new MethodDescriptor("configure",
+  ValueType.VOID)` y TeaVM respondió `ERROR: zombie.iso.LightingJNI.configure(F)V: Method
+  port.natives.Lighting64.configure()V was not found`. `MethodDescriptor(name, ValueType...)` toma los
+  N-1 primeros como **parámetros** y el último como **retorno**, así que omitir los parámetros genera
+  un descriptor `()V`. Mejor enfoque: al reenviar una native, reconstruir el descriptor destino con la
+  misma aridad que la native (`configure(F)V → (FLOAT, VOID)`, `DoLightingUpdateNew(JZ)V → (LONG,
+  BOOLEAN, VOID)`) y verificarlo con el primer build; los forwards sin argumentos (Bullet) no revelan
+  este detalle.

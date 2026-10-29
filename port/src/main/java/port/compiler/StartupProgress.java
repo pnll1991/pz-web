@@ -72,6 +72,17 @@ public final class StartupProgress implements ClassHolderTransformer {
         "zombie.util.PZXmlUtil$MarshallerAllocator",
         "zombie.util.PZXmlUtil$MarshallerAllocator$1",
         "zombie.util.PZXmlUtil$UnmarshallerAllocator");
+    // Round 42: GameWindow#initFonts()V:entered has no return and the DebugLog is silent. With the
+    // inflate fix in place the font .fnt files parse and no texture fails, so the question is now
+    // whether the async font/image loads progress or the main fiber blocks waiting for them.
+    // These are the classes on that path only (no suspend/resume machinery, per the note above).
+    private static final Set<String> FONT_CLASSES = Set.of(
+        "zombie.ui.TextManager",
+        "zombie.core.fonts.AngelCodeFont",
+        "zombie.core.textures.ImageData",
+        "zombie.core.textures.PNGDecoder",
+        "zombie.asset.FileTask_LoadImageData",
+        "zombie.fileSystem.FileSystemImpl");
     // Round 31: the two fibers are parked and nothing advances, but the deduplicated label list
     // cannot say whether a boundary repeats. The render fiber's last boundary is
     // Thread#sleep(J)V:entered without a return, so the calls that could reach a sleep inside

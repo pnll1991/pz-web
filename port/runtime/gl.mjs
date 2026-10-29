@@ -45,6 +45,11 @@ const PORT_PROVIDED = new Set([
   'glVertexAttrib4Niv', 'glVertexAttrib4Nubv', 'glVertexAttrib4Nusv', 'glVertexAttrib4Nuiv',
   'glBindAttribLocation', 'glGetActiveAttrib', 'glGetVertexAttribiv', 'glGetVertexAttribfv',
   'glGetVertexAttribdv', 'glGetVertexAttribPointerv',
+  // GL11 texture lifecycle used by zombie.core.textures.TextureID (glGenTextures -> glBindTexture
+  // -> glTexParameteri -> glTexImage2D/glTexSubImage2D -> glDeleteTextures). port.shim.GL11 drives
+  // the bridge methods below, so every name here has a real implementation over WebGL2.
+  'glGenTextures', 'glDeleteTextures', 'glIsTexture', 'glBindTexture', 'glTexParameteri',
+  'glTexImage2D', 'glTexSubImage2D', 'glGetTexImage',
 ]);
 
 /** WebGL2 context and object handles; unsupported entrypoints must throw. */
@@ -65,6 +70,8 @@ export class GLBridge {
     this.boundElements = null; // last ELEMENT_ARRAY_BUFFER handle (drawElements needs it)
     this.vertexArrays = new Map(); // GL handle -> WebGLVertexArrayObject (GL30 natives)
     this.boundArrays = null; // last ARRAY_BUFFER handle bound by bindBuffer (needed by attrib pointers)
+    this.textures = new Map(); // GL handle -> {texture,levels:Map,width,height,internalformat} (GL11)
+    this.boundTexture = 0; // last texture bound by this bridge (desktop glBindTexture state)
     this.nextHandle = 1; // 0 is reserved for "none", as in desktop GL
     this.lost = false;
     this.capabilities = new Map(); // desktop capability token -> {enabled, webgl} actually applied
@@ -346,6 +353,249 @@ export class GLBridge {
   queryActive(target, pname) {
     if (pname !== 0x8865) throw new Error(`Unsupported WebGL2 active-query parameter: 0x${pname.toString(16)}`); // QUERY_ACTIVE
     return [this.call('getQueryParameter', target, this.context.QUERY_ACTIVE) ? 1 : 0];
+  }
+
+  /* --- Texture lifecycle for zombie.core.textures.TextureID (GL11 natives) ----------------
+   * Desktop handles are integers owned by this bridge: WebGL2 objects live in `textures` and a
+   * handle is handed out from `nextHandle` (0 stays "no texture", as on desktop). Level-0 uploads
+   * come from the native arena as a live Uint8Array view (port.shim.GL11), so no pixel data is
+   * invented: what the game wrote into its buffer is what WebGL2 receives.
+   */
+  genTextures(count) {
+    const handles = new Int32Array(count);
+    for (let i = 0; i < count; i++) {
+      const handle = this.nextHandle++;
+      this.textures.set(handle, { texture: this.call('createTexture'), levels: new Map(),
+        width: 0, height: 0, internalformat: 0 });
+      handles[i] = handle;
+    }
+    return handles;
+  }
+  /**
+   * glReadPixels cannot convert formats: this backend answers the readback the game performs in
+   * TextureID.getData (RGBA + UNSIGNED_BYTE into an arena buffer) through an FBO whose attachment
+   * is the requested level. Any other format/type combination raises instead of returning bytes
+   * whose layout was guessed.
+   */
+  getTexImage(target, level, format, type, data) {
+    const tname = this.textureTargetName(target);
+    const entry = this.textureEntry(this.boundTexture, 'glGetTexImage');
+    const size = entry.levels.get(level);
+    if (size === undefined) throw new Error(`Texture ${this.boundTexture} has no level ${level} for glGetTexImage`);
+    if (data === undefined) throw new Error('glGetTexImage needs the arena buffer as a byte view');
+    const needed = size.width * size.height * 4;
+    if (data.length < needed)
+      throw new Error(`glGetTexImage buffer is ${data.length} bytes, level ${level} needs ${needed}`);
+    const glFormat = this.textureFormat(format, 'glGetTexImage');
+    const glType = this.textureType(type, 'glGetTexImage');
+    if (glFormat !== this.context.RGBA || glType !== this.context.UNSIGNED_BYTE)
+      throw new Error(`WebGL2 cannot read a texture back as format 0x${format.toString(16)} type 0x${type.toString(16)}`);
+    const gl = this.context;
+    const previousRead = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);
+    const framebuffer = this.call('createFramebuffer');
+    try {
+      this.call('bindFramebuffer', gl.FRAMEBUFFER, framebuffer);
+      this.call('framebufferTexture2D', gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.context[tname], level);
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE)
+        throw new Error(`Texture ${this.boundTexture} level ${level} is not readable`);
+      this.call('readPixels', 0, 0, size.width, size.height, gl.RGBA, gl.UNSIGNED_BYTE, data);
+      if (this.getError() !== gl.NO_ERROR) throw new Error(`glGetTexImage readback failed for texture ${this.boundTexture}`);
+    } finally {
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, previousRead);
+      gl.deleteFramebuffer(framebuffer);
+    }
+  }
+  /** Byte count the caller must hand to getTexImage for this level (RGBA + UNSIGNED_BYTE only). */
+  texLevelBytes(level) {
+    const entry = this.textureEntry(this.boundTexture, 'glGetTexImage');
+    const size = entry.levels.get(level);
+    if (size === undefined) throw new Error(`Texture ${this.boundTexture} has no level ${level} for glGetTexImage`);
+    return size.width * size.height * 4;
+  }
+  deleteTextures(handles) {
+    for (let i = 0; i < handles.length; i++) {
+      const entry = this.textures.get(handles[i]);
+      if (entry === undefined) continue;
+      this.textures.delete(handles[i]);
+      if (this.lost) continue; // context gone: there is nothing left to release
+      this.call('deleteTexture', entry.texture);
+      if (this.boundTexture === handles[i]) this.boundTexture = 0;
+    }
+  }
+  isTexture(handle) { return this.textures.has(handle); }
+  /**
+   * Desktop target -> WebGL2 target. WebGL2 has no 1D textures and no proxy targets, so those
+   * raise with the token instead of silently binding a 2D texture (AGENTS.md: no simulated success).
+   */
+  // Desktop texture targets, values read with `javap -constants` from the pinned jar. Only the three
+  // targets WebGL2 owns are mapped: TEXTURE_1D (0x0de0), PROXY_TEXTURE_1D/2D (0x8063/0x8064) and
+  // TEXTURE_3D (0x806f) have no WebGL2 target, so textureTargetName raises with the token.
+  static TEXTURE_TARGETS = new Map([
+    [0x0de1, 'TEXTURE_2D'], [0x8513, 'TEXTURE_CUBE_MAP'], [0x8c1a, 'TEXTURE_2D_ARRAY'],
+  ]);
+  textureTargetName(target) {
+    const name = GLBridge.TEXTURE_TARGETS.get(target);
+    if (name === undefined)
+      throw new Error(`WebGL2 has no texture target for GL token 0x${target.toString(16)}`);
+    if (this.context[name] === undefined)
+      throw new Error(`WebGL2 does not expose texture target ${name} (GL token 0x${target.toString(16)})`);
+    return name;
+  }
+  textureEntry(handle, what) {
+    const entry = this.textures.get(handle);
+    if (entry === undefined)
+      throw new Error(`Texture ${handle} does not exist for ${what} (this backend raises where desktop GL would return an error)`);
+    return entry;
+  }
+  bindTexture(target, handle) {
+    const name = this.textureTargetName(target);
+    if (handle === 0) { this.call('bindTexture', this.context[name], null); this.boundTexture = 0; return; }
+    const entry = this.textureEntry(handle, 'glBindTexture');
+    this.call('bindTexture', this.context[name], entry.texture);
+    this.boundTexture = handle;
+  }
+  /**
+   * Desktop token -> WebGL2 constant. Values verified twice: `javap -constants` over the pinned
+   * jar and the real WebGL2 constants read from Chrome (see docs/decisions.md). A token or value
+   * WebGL2 cannot express raises with its identity rather than being mapped to a similar filter.
+   */
+  static TEX_PARAMS = new Map([
+    [0x2800, 'TEXTURE_MAG_FILTER'], [0x2801, 'TEXTURE_MIN_FILTER'], [0x2802, 'TEXTURE_WRAP_S'],
+    [0x2803, 'TEXTURE_WRAP_T'], [0x1004, 'TEXTURE_BORDER_COLOR'], [0x813a, 'TEXTURE_MIN_LOD'],
+    [0x813b, 'TEXTURE_MAX_LOD'], [0x813c, 'TEXTURE_BASE_LEVEL'], [0x813d, 'TEXTURE_MAX_LEVEL'],
+    [0x884d, 'TEXTURE_COMPARE_FUNC'], [0x884c, 'TEXTURE_COMPARE_MODE'],
+  ]);
+  texParameteri(target, pname, param) {
+    const tname = this.textureTargetName(target);
+    const pnameName = GLBridge.TEX_PARAMS.get(pname);
+    if (pnameName === undefined)
+      throw new Error(`WebGL2 has no texture parameter for GL token 0x${pname.toString(16)} (glTexParameteri)`);
+    const constant = this.context[pnameName];
+    if (constant === undefined)
+      throw new Error(`WebGL2 does not expose texture parameter ${pnameName} (0x${pname.toString(16)})`);
+    this.call('texParameteri', this.context[tname], constant, this.textureParamValue(pnameName, param));
+  }
+  /** Filter/wrap values the game passes are desktop tokens; the WebGL2 constant is the same number. */
+  textureParamValue(pnameName, value) {
+    if (pnameName === 'TEXTURE_BORDER_COLOR')
+      throw new Error(`WebGL2 has no texture border colour (GL token 0x${(0x1004).toString(16)})`);
+    if (!GLBridge.TEX_PARAM_TOKENS.has(pnameName)) return value; // LOD/base-level params take plain integers
+    const token = GLBridge.TEX_VALUES.get(value);
+    if (token === undefined)
+      throw new Error(`WebGL2 has no texture parameter value for GL token 0x${value.toString(16)} (${pnameName})`);
+    const constant = this.context[token];
+    if (constant === undefined)
+      throw new Error(`WebGL2 does not expose texture parameter value ${token} (0x${value.toString(16)})`);
+    return constant;
+  }
+  /* Desktop filter/wrap/comparison values in decimal, exactly as `javap -constants` reports them and
+   * as Chrome's WebGL2 constants read them: for every entry the numbers are identical, so the value
+   * is a lookup key onto the WebGL2 constant name (see textureParamValue). */
+  static TEX_VALUES = new Map([
+    [9728, 'NEAREST'], [9729, 'LINEAR'], [9984, 'NEAREST_MIPMAP_NEAREST'],
+    [9985, 'LINEAR_MIPMAP_NEAREST'], [9986, 'NEAREST_MIPMAP_LINEAR'], [9987, 'LINEAR_MIPMAP_LINEAR'],
+    [10497, 'REPEAT'], [33071, 'CLAMP_TO_EDGE'], [33648, 'MIRRORED_REPEAT'],
+    [0, 'NONE'], [34894, 'COMPARE_REF_TO_TEXTURE'],
+    [512, 'NEVER'], [513, 'LESS'], [514, 'EQUAL'], [515, 'LEQUAL'],
+    [516, 'GREATER'], [517, 'NOTEQUAL'], [518, 'GEQUAL'], [519, 'ALWAYS'],
+  ]);
+  /* Parameters whose value is a token. TEXTURE_MIN_LOD/MAX_LOD/BASE_LEVEL/MAX_LEVEL take plain
+   * integers, so they are not listed here and the value is passed through unchanged. */
+  static TEX_PARAM_TOKENS = new Set(['TEXTURE_MAG_FILTER', 'TEXTURE_MIN_FILTER', 'TEXTURE_WRAP_S',
+    'TEXTURE_WRAP_T', 'TEXTURE_COMPARE_MODE', 'TEXTURE_COMPARE_FUNC']);
+  /* --- Level uploads and readback ----------------------------------------------------------
+   * WebGL2 requires a *sized* internal format, while the desktop call passes the unsized
+   * GL_RGBA/GL_RGB/GL_DEPTH_COMPONENT plus a type. The pair below is what the desktop driver
+   * picks for that combination, so the mapping states the implied storage class rather than
+   * inventing one (docs/decisions.md). Any pair not listed raises with both tokens.
+   */
+  static SIZED_INTERNAL_FORMATS = new Map([
+    ['6408:5121', 'RGBA8'], ['6408:5123', 'RGBA16F'], ['6408:5126', 'RGBA32F'],
+    ['6407:5121', 'RGB8'], ['6407:5126', 'RGB32F'],
+    ['6403:5121', 'R8'], ['6403:5123', 'R16F'], ['6403:5126', 'R32F'],
+    ['33319:5121', 'RG8'], ['33319:5126', 'RG32F'],
+    ['6402:5123', 'DEPTH_COMPONENT16'], ['6402:5125', 'DEPTH_COMPONENT24'],
+    ['6402:5126', 'DEPTH_COMPONENT32F'],
+  ]);
+  // Formats/types WebGL2 accepts, keyed by the desktop token (numbers verified in Chrome).
+  static TEX_FORMATS = new Map([[6408, 'RGBA'], [6407, 'RGB'], [6403, 'RED'], [33319, 'RG'],
+    [6402, 'DEPTH_COMPONENT']]);
+  static TEX_TYPES = new Map([[5121, 'UNSIGNED_BYTE'], [5123, 'UNSIGNED_SHORT'], [5120, 'BYTE'],
+    [5122, 'SHORT'], [5124, 'INT'], [5125, 'UNSIGNED_INT'], [5126, 'FLOAT'], [5131, 'HALF_FLOAT']]);
+  /** Desktop (internalformat, type) -> WebGL2 sized internal format constant. */
+  sizedInternalFormat(internalformat, type) {
+    // An unsized desktop format (GL_RGBA, ...) needs the storage class the driver would pick; a
+    // token that is already a WebGL2 sized format is passed through unchanged.
+    const name = GLBridge.TEX_FORMATS.has(internalformat)
+      ? GLBridge.SIZED_INTERNAL_FORMATS.get(`${internalformat}:${type}`)
+      : this.webglConstantName(internalformat);
+    if (name === undefined || this.context[name] === undefined)
+      throw new Error(`WebGL2 has no sized internal format for internalformat 0x${internalformat.toString(16)} + type 0x${type.toString(16)}`);
+    return this.context[name];
+  }
+  /**
+   * A desktop token that is already a WebGL2 constant (sized internal formats pass through).
+   * WebGL2 exposes its constants on the prototype, so the value -> name table is built once over
+   * the own properties and the prototype chain of the context.
+   */
+  static CONSTANTS_BY_VALUE = null;
+  webglConstantName(token) {
+    if (GLBridge.CONSTANTS_BY_VALUE === null) {
+      const table = new Map();
+      let object = this.context;
+      while (object !== null && object !== Object.prototype) {
+        for (const name of Object.getOwnPropertyNames(object)) {
+          if (!/^[A-Z0-9_]+$/.test(name)) continue;
+          const value = object[name];
+          if (typeof value === 'number' && !table.has(value)) table.set(value, name);
+        }
+        object = Object.getPrototypeOf(object);
+      }
+      GLBridge.CONSTANTS_BY_VALUE = table;
+    }
+    return GLBridge.CONSTANTS_BY_VALUE.get(token);
+  }
+  textureFormat(token, what) {
+    const name = GLBridge.TEX_FORMATS.get(token);
+    if (name === undefined || this.context[name] === undefined)
+      throw new Error(`WebGL2 has no pixel format for GL token 0x${token.toString(16)} (${what})`);
+    return this.context[name];
+  }
+  textureType(token, what) {
+    const name = GLBridge.TEX_TYPES.get(token);
+    if (name === undefined || this.context[name] === undefined)
+      throw new Error(`WebGL2 has no pixel type for GL token 0x${token.toString(16)} (${what})`);
+    return this.context[name];
+  }
+  /**
+   * glTexImage2D over the bound texture. `data` is a live view of the native arena (or null, which
+   * allocates the level without initialising it, exactly as desktop GL does with a null pointer).
+   * The dimensions are recorded per level so glGetTexImage can read the level back.
+   */
+  texImage2D(target, level, internalformat, width, height, border, format, type, data) {
+    const tname = this.textureTargetName(target);
+    if (border !== 0) throw new Error(`WebGL2 texImage2D requires border 0, got ${border}`);
+    if (level < 0) throw new Error(`Negative texture level: ${level}`);
+    const entry = this.textureEntry(this.boundTexture, 'glTexImage2D');
+    const glFormat = this.textureFormat(format, 'glTexImage2D');
+    const glType = this.textureType(type, 'glTexImage2D');
+    const sized = this.sizedInternalFormat(internalformat, type);
+    this.call('texImage2D', this.context[tname], level, sized, width, height, 0, glFormat, glType, data ?? null);
+    if (this.getError() !== this.context.NO_ERROR)
+      throw new Error(`glTexImage2D failed for texture ${this.boundTexture} level ${level} ${width}x${height}`);
+    entry.levels.set(level, { width, height, format, type });
+    entry.internalformat = internalformat;
+    entry.width = width; entry.height = height;
+  }
+  texSubImage2D(target, level, xoffset, yoffset, width, height, format, type, data) {
+    const tname = this.textureTargetName(target);
+    const entry = this.textureEntry(this.boundTexture, 'glTexSubImage2D');
+    if (entry.levels.get(level) === undefined)
+      throw new Error(`Texture ${this.boundTexture} has no level ${level} to update with glTexSubImage2D`);
+    this.call('texSubImage2D', this.context[tname], level, xoffset, yoffset, width, height,
+      this.textureFormat(format, 'glTexSubImage2D'), this.textureType(type, 'glTexSubImage2D'), data);
+    if (this.getError() !== this.context.NO_ERROR)
+      throw new Error(`glTexSubImage2D failed for texture ${this.boundTexture} level ${level}`);
   }
 
   async loadTexture(url) {

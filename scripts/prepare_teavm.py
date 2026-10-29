@@ -581,6 +581,48 @@ def patch_monitor():
 
 def patch_console():
     """Preserve byte slices and nonterminal UTF-8 decoding across console flushes."""
+
+
+def patch_inflater():
+    """java.util.zip.Inflater.inflate must report "needs input", not a data error.
+
+    Measured on this machine (JDK 25 vs the pinned TeaVM classlib + jzlib 1.1.3):
+    PZ's zombie.core.textures.PNGDecoder.readChunkUnzip calls inflate() *before*
+    the first setInput(); jzlib's Inflate.inflate returns Z_STREAM_ERROR (-2)
+    because z.next_in is still null, and upstream TInflater maps every code
+    outside {Z_OK, Z_NEED_DICT, Z_STREAM_END} to
+    DataFormatException("Error occurred: -2"). The JDK contract instead returns 0
+    with needsInput() == true, which is what the decoder's refill loop expects.
+    Result on boot.wasm: 48x "inflate error" and every font page .png failed.
+    Genuine corrupt data still yields Z_DATA_ERROR (-3) and throws.
+    """
+    archive = ROOT / f".toolchain/downloads/teavm-classlib-{VERSION}-sources.jar"
+    digest = "da6f83c1436c87a9ad683b6143aaa9c172b08c3974c9a7d5741a479d0d60092e"
+    if hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
+        raise RuntimeError("TeaVM inflater source digest mismatch")
+    path = "org/teavm/classlib/java/util/zip/TInflater.java"
+    with zipfile.ZipFile(archive) as package:
+        source = package.read(path).decode("utf-8")
+    old = """            default:
+                throw new TDataFormatException("Error occurred: " + errCode);"""
+    new = """            default:
+                // jzlib reports Z_STREAM_ERROR/Z_BUF_ERROR when the stream has no
+                // unconsumed input (next_in == null before the first setInput, or
+                // avail_in == 0). java.util.zip.Inflater returns 0 and reports
+                // needsInput() there; PNGDecoder.readChunkUnzip feeds the next
+                // IDAT chunk on exactly that answer. Corrupt data is Z_DATA_ERROR.
+                if ((errCode == JZlib.Z_STREAM_ERROR || errCode == JZlib.Z_BUF_ERROR)
+                        && (impl.next_in == null || impl.avail_in == 0)) {
+                    return 0;
+                }
+                throw new TDataFormatException("Error occurred: " + errCode);"""
+    if source.count(old) != 1:
+        raise RuntimeError("Unexpected TeaVM inflater source shape")
+    source = source.replace(old, new)
+    destination = ROOT / "port/target/generated-sources/teavm" / path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("// Local change: JDK inflate semantics when no input is available.\n" + source)
+    print(f"TeaVM {VERSION}: inflate returns 0 (needsInput) instead of DataFormatException -2; source SHA-256 {digest}")
     archive = ROOT / f".toolchain/downloads/teavm-classlib-{VERSION}-sources.jar"
     digest = "da6f83c1436c87a9ad683b6143aaa9c172b08c3974c9a7d5741a479d0d60092e"
     if hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
@@ -1077,6 +1119,7 @@ def main():
     print(f"TeaVM {VERSION}: compact reflection caches (3); source SHA-256 {SHA256}")
     patch_monitor()
     patch_console()
+    patch_inflater()
     patch_fiber()
 
 

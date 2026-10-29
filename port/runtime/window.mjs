@@ -10,6 +10,10 @@ export class BrowserWindow {
     this.input = input;
     this.initialized = false;
     this.created = false; // set by createWindow; reset by destroyWindow
+    // Whether the page's single WebGL2 context is currently bound to a window. GLFW starts with
+    // no context current; Display.create makes handle 1 current, and Display.releaseContext
+    // (glfwMakeContextCurrent(0)) detaches it. The game queries this through glfwGetCurrentContext.
+    this.contextCurrent = false;
     this.visible = true;
     this.size = [0, 0]; // requested window size (CSS pixels)
     this.windowPos = [0, 0];
@@ -17,6 +21,8 @@ export class BrowserWindow {
     this.title = '';
     this.focused = true;
     this.swapCount = 0;
+    // Number of context_current/context_detached events recorded (bounded, like swap_buffers).
+    this.contextEvents = 0;
     // Real GLFW constants: the mode is the key, the value is the cursor/sticky setting.
     // GLFW_CURSOR=208897 (values NORMAL=212993/HIDDEN=212994/DISABLED=212995/CAPTURED=212996),
     // GLFW_STICKY_KEYS=208898, GLFW_STICKY_MOUSE_BUTTONS=208899, GLFW_RAW_MOUSE_MOTION=208901.
@@ -181,11 +187,23 @@ export class BrowserWindow {
     this.requireWindow(handle);
     if (!this.gl.context || this.gl.lost || this.gl.context.isContextLost())
       throw new Error('Browser WebGL2 context is lost; cannot make it current');
-    this.events.push({type:'context_current',backend:'browser'});
+    this.contextCurrent = true;
+    if (this.contextEvents < 3) { this.contextEvents++; this.events.push({type:'context_current',backend:'browser',handle}); }
     return 1;
   }
-  // The page has one WebGL2 context, which is current while its window is used.
-  getCurrentContext() { this.requireWindow(1); return this.gl.context ? 1 : 0; }
+  // glfwMakeContextCurrent(0): detach. The browser context is not a schedulable object, so the
+  // honest effect is that no window owns it until a makeContextCurrent(window) happens again.
+  detachContext() {
+    this.requireInit();
+    if (!this.gl.context || this.gl.lost || this.gl.context.isContextLost())
+      throw new Error('Browser WebGL2 context is lost; cannot detach it');
+    this.contextCurrent = false;
+    if (this.contextEvents < 3) { this.contextEvents++; this.events.push({type:'context_detached',backend:'browser'}); }
+    return 0;
+  }
+  // The page has one WebGL2 context; it is current only after makeContextCurrent and until
+  // glfwMakeContextCurrent(0) detaches it. 0 means 'no context', exactly as GLFW reports.
+  getCurrentContext() { this.requireWindow(1); return this.contextCurrent && this.gl.context ? 1 : 0; }
   swapBuffers(handle) {
     this.requireWindow(handle);
     // WebGL presents implicitly at the end of the task; nothing to flush or blit.

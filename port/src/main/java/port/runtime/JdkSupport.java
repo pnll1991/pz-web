@@ -125,11 +125,26 @@ public final class JdkSupport {
     public static void loadLibrary(String library) {
         Objects.requireNonNull(library);
         if (libraryRegistered(library)) return;
+        recordMissingLibrary(library);
         throw new UnsatisfiedLinkError("System.loadLibrary: browser implementation is missing for " + library);
     }
     @org.teavm.jso.JSBody(params="library",script="var names=globalThis.pzRuntime&&globalThis.pzRuntime.loadedLibraries;return !!names&&names.indexOf(library)>=0;")
     private static native boolean libraryRegistered(String library);
-    public static void exit(int status) { throw new UnsupportedOperationException("System.exit(" + status + "): a browser tab is not an OS process"); }
+    /**
+     * System.exit cannot be honoured in a tab, so it is recorded and then refused with its own
+     * identity. Recording matters: the game calls exit(1) from zombie.iso.LightingJNI.init when
+     * loadLibrary("Lighting64") fails, and exit(0) at the end of RenderThread.renderLoop once
+     * GameWindow.gameThreadExited is set. Without the record the browser only sees an opaque
+     * RuntimeException and the next round cannot tell which native is missing.
+     */
+    public static void exit(int status) {
+        recordExit(status);
+        throw new UnsupportedOperationException("System.exit(" + status + "): a browser tab is not an OS process");
+    }
+    @org.teavm.jso.JSBody(params="library",script="var r=globalThis.pzRuntime;if(!r.missingLibraries)r.missingLibraries=[];if(r.missingLibraries.indexOf(library)<0)r.missingLibraries.push(library);")
+    private static native void recordMissingLibrary(String library);
+    @org.teavm.jso.JSBody(params="status",script="var r=globalThis.pzRuntime;var w=r.window;if(!r.exits)r.exits=[];r.exits.push({status:status,at:Math.round(performance.now()),swapCount:w?w.swapCount:null,windowCreated:w?!!w.created:null,contextCurrent:w?!!w.contextCurrent:null});")
+    private static native void recordExit(int status);
     public static void addShutdownHook(Runtime runtime, Thread thread) {
         Objects.requireNonNull(thread);
         throw new UnsupportedOperationException("Runtime.addShutdownHook: browser unload cannot guarantee Java execution; use explicit save/close");

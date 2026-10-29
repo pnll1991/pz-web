@@ -72,3 +72,30 @@ test('window initialization rejects detached canvases and lost graphics contexts
   expect(errors).toHaveLength(2);
   for(const error of errors)expect(error).toContain('requires a live canvas');
 });
+
+test('GLFW context attach and detach are reported honestly to the game', async ({ page }) => {
+  await page.goto('/');await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  const result=await page.evaluate(async()=>{
+    const {BrowserWindow}=await import('/runtime/window.mjs');
+    const runtime=pzRuntime;
+    const bridge=new BrowserWindow(runtime.input.canvas,runtime.gl,runtime.input);
+    bridge.init();bridge.create(640,480,0,'prueba');
+    const before=bridge.getCurrentContext();
+    bridge.makeContextCurrent(1);
+    const current=bridge.getCurrentContext();
+    const detached=bridge.detachContext();
+    const after=bridge.getCurrentContext();
+    // Handle 0 is mapped to detachContext() by port.shim.BrowserWindow, so the JS backend must
+    // still refuse it as a window handle.
+    let invalid;
+    try { bridge.makeContextCurrent(0); } catch(error) { invalid=error.message; }
+    return {before,current,detached,after,invalid,
+      contextEvents:bridge.events.filter(e=>String(e.type).startsWith('context')).map(e=>e.type)};
+  });
+  expect(result.before).toBe(0);
+  expect(result.current).toBe(1);
+  expect(result.detached).toBe(0);
+  expect(result.after).toBe(0);
+  expect(result.invalid).toContain('Invalid browser window handle: 0');
+  expect(result.contextEvents).toEqual(['context_current','context_detached']);
+});
