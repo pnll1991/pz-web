@@ -781,3 +781,135 @@ y si `flushInvokeQueue()` ejecuta el item pendiente (lo que liberaría el `waitL
 8. 15:46 — `port/target/diag69.mjs` (mismo build, volcado de `pzGameProgress` + logs + trace): **0 pageerrors**, `pzGame {phase:'starting', menu:false, error:''}`, `pzFiberDiag:null`, 65 iteraciones de `Display#processMessages`, `pzGameCounts`: `RenderThread#flushInvokeQueue entered 65 / returned 64`, `RenderContextQueueItem#invoke entered 1 / returned 0`, `pzYield {pauses:1,resumes:1}`, `pzAsync {offers:2,fired:2,errors:0}`, `swap:2`, `gl:267`. El último frame del trace termina en `RenderThread#flushInvokeQueue -> RenderContextQueueItem#invoke()V:entered` (sin `returned`).
 9. 15:58 — Paso 1 del handoff (diagnóstico de park): `scripts/prepare_teavm.py::patch_fiber()` ahora registra cada park real de fibra en `globalThis.pzFiberSuspend` (`reportSuspend` en la rama de park de `Fiber.suspend`, después del `isResuming()` para no marcar como parkada la replay del resume; captura la traza de pila JS con `new Error().stack`) y `reportResume` en `Fiber.resume()` marca `parked=false` con `resumeFrom`. `pendingDepth()` cuenta la cola `lastPendingCall`. Sin APIs suspendibles ni `StringBuilder` (aprendizajes rondas 32/33). `python3 scripts/prepare_teavm.py` regenera `port/target/generated-sources/teavm/org/teavm/runtime/Fiber.java` OK (`ast.parse` previo pasa).
 10. 16:06-16:27 — Instrumentación del monitor de TeaVM para identificar el deadlock: nuevo `port/src/main/java/port/shim/BrowserMonitor.java` (`record(...)` wrapper + `@JSBody` que acumula `globalThis.pzMonitorLog`), y en `scripts/prepare_teavm.py::patch_monitor()` 9 puntos de registro (`monitorEnterWait` con callback, las 2 ramas de grant, la cola `enteringThreads`, `waitImpl`, `monitorExit` con release, `waitForOtherThreads`, el re-ingreso del listener tras `wait`, `notify0`, `notifyAll0`). El `@JSBody` vive en `port.shim` y no en `TObject`: la build falló primero con `java.lang.Object.reportMonitor(IIIIIII)V: Method is not annotated with org.teavm.interop.Import` (misma causa que el aprendizaje de la ronda 25 sobre clases renombradas `java.*`). Con el wrapper: `bash scripts/build.sh --with-game` **EXIT=0** (`build-round37c-game.log`, 6:37 min, `boot.wasm` 143.123.817 B, gate PASS con fiberops False). Nuevo `port/target/diag71.mjs` lee `pzMonitorLog` + `pzFiberSuspend` (trazas Java resumidas).
+
+## Ronda 38 — iniciada 17:54:23 (-03), límite de corte 21:54 (documentar desde 21:24)
+0. Contexto verificado al arrancar (18:27): `supervisor.log` → ronda 38 a las 17:54:23. Artefacto actual
+   `port/target/web/game/boot.wasm` 143.125.544 B (17:01) del build `build-round37f-game.log` con
+   `build-state.json success:true`, GATE PASS (`thread-fiber-gate.txt`: currentThread/setCurrentThread
+   `fiberops: False`) y `probe8.py ... 'java.lang.Thread::<clinit>'` ⇒ **`no seed`** (slots 23944, entries 52806).
+   No existe `build-round38*.log` todavía (todavía no hay build de esta ronda). RAM disponible real
+   `free -g`: **4 GiB** → `MAVEN_OPTS=-Xmx8g -Xss16m`, un solo build en primer plano, sin Chrome en paralelo.
+   Dev server `127.0.0.1:8092` sirviendo el artefacto actual. Punto de bloqueo heredado (ronda 37, diag69/diag71):
+   0 pageerrors, juego llega a `Display#processMessages` x65 / `swap:2` / `gl:267` pero `menu:false`; dos fibras
+   parkadas: game/main espera `RenderContextQueueItem::waitUntilFinished` (monitor `waitLock`) y la render fiber
+   está parkada en `Object::monitorEnter` de ese mismo `waitLock` dentro de `RenderContextQueueItem::invoke`.
+1. 18:30 — Re-medición del artefacto round37f con `port/target/diag71.mjs` (espera corta) antes de editar código.
+2. 18:55-19:15 — Re-medición del artefacto round37f con tres probes nuevos:
+   - `port/target/diag75.mjs` (espera 120 s) y `port/target/diag76.mjs` (5 sondas de 4 s cada 15 s):
+     **todos los `page.evaluate` dan timeout**, incluso el primero a los 15 s y una sonda mínima.
+     `diag75.log` además muestra un 404 de recurso y 0 pageerrors. Coincide con `diag72.log` (16:53)
+     y `diag72b.log` (17:04): desde el build round37d (16:42) la página no devuelve el loop de JS.
+   - Conclusión: la build round37f NO es medible (no se puede distinguir "aún no cargó" de "loop bloqueado"),
+     por eso la ronda 37 quedó sin evidencia de cierre. La única medición completa del artefacto
+     sigue siendo `diag71.log` (16:30) sobre la build round37c: 0 pageerrors, fibras 1 y 2 parkadas,
+     `flushInvokeQueue entered 65/returned 64`, `RenderContextQueueItem#invoke entered 1/returned 0`,
+     `menu:false`, `swap:2`. Sospecha de la regresión: el `@JSBody` de `port.shim.BrowserMonitor`
+     captura una traza JS (`new Error().stack` + `Error.stackTraceLimit`) en cada fase 4/5/8/9, o sea
+     en cada `Object#wait`, `monitorExit` y `notifyAll` del arranque (cientos de capturas dentro de
+     frames replayed de las corrutinas).
+3. 19:20 — Análisis estructural del park (sin más javap): con `waitLock` de `RenderContextQueueItem`,
+   el game fiber hace `wait` (listener en `notifyListeners` + `monitorExit` con `owner=null`), el render
+   fiber entra al `monitorenter` de `invoke()` y, si ve `owner != null`, se encola en
+   `enteringThreads` de TeaVM. `enteringThreads` **sólo** se drenó en `monitorExit` (cuando un dueño
+   libera) o en `waitForOtherThreads` ofrecido por ese release: si el entrante se encola cuando ya no
+   hay nadie que libere, nadie drena → las dos fibras quedan parkadas para siempre. Eso es exactamente
+   el estado medido en `diag71.log` (game parkado en `waitImpl`, render parkado en `monitorEnterWait`,
+   `invoke returned 0`). Fix de plataforma (no cambia reglas del juego): ofrecer un drenaje diferido
+   de `enteringThreads` también cuando alguien se encola, y que el grant garantice ownership.
+4. 19:25 — Editado `scripts/prepare_teavm.py::patch_monitor()` (verificado con `python3 -c "import ast;ast.parse(...)"`
+   y `python3 scripts/prepare_teavm.py` OK, que regenera `TObject.java`):
+   - Quitadas las fases 10/11/12 de `monitorEnter`/`monitorExit`/`createMonitor` (camino caliente de
+     todo el arranque) para recuperar la medibilidad de la página. Quedan las fases 1-9 + dos nuevas.
+   - Fix (a): `waitForOtherThreads` ya NO borra toda la cola `enteringThreads`; sólo la limpia si quedó
+     vacía, y ofrece un drenaje diferido si quedan más solicitantes (`reportMonitor(13)` registra el grant).
+   - Fix (b): en `monitorEnterWait`, al encolar un solicitante se ofrece `waitForOtherThreads(o)` diferido
+     (macrotask), para que un entrante encolado sin dueño próximo también sea otorgado.
+   - Fix (c): `NotifyListenerImpl.run()` readquire el monitor directamente cuando está libre
+     (`owner == null` → `owner=currentThread; count += lockCount; callback.complete`) con
+     `reportMonitor(14)`, en vez de encolarse como solicitante huérfano.
+   Build grande `build-round38-game.log` en curso (único, primer plano, `MAVEN_OPTS=-Xmx8g`, PZ_HOME exportado).
+5. 19:28 — Primer intento `build-round38-game.log` **falló** con `java.lang.StackOverflowError` en
+   `WasmBinaryRenderingVisitor.render` (TeaVM COMPILING) porque pasé `MAVEN_OPTS=-Xmx8g` **sin `-Xss16m`**:
+   `scripts/env.sh` sólo aplica su default `-Xmx20g -Xss16m` cuando MAVEN_OPTS viene vacío (línea 7).
+   Registrado en AGENT_LEARNINGS. Relanzado con `MAVEN_OPTS="-Xmx8g -Xss16m"`.
+6. 19:35 — `build-round38b-game.log` **BUILD SUCCESS / EXIT=0** (6:45 min): `boot.wasm` 143.127.094 B,
+   classes 10212, métodos 71978, pico RSS 6.55 GiB, `build-state.json success:true`.
+   **GATE PASS**: `thread-fiber-gate.txt` ⇒ currentThread `fiberops: False`, setCurrentThread `fiberops: False`.
+   `python3 tools/code-agent/probe8.py port/target/web/game/boot.wasm 'java.lang.Thread::<clinit>'` ⇒ **`no seed`**
+   (slots 23944, entries 52808). Con el fix del monitor aplicado (fases 10/11/12 fuera del camino caliente).
+7. 20:06 — `diag80.mjs` (anillo con frames) sobre la build round38b confirma la forma del park pero NO
+   permite concluir: el anillo de 160 estaba saturado de `phase 5` (`monitorExit` del camino caliente), así que
+   las fases 3/6/7/8/13/14 fueron desplazadas. Además `wasmGCIdentity()` satura (`obj` siempre `-1` o
+   `2147483647`), así que el id de objeto no identifica `waitLock`. Hecho útil medido: en el tail aparecen
+   eventos `ph=5/9` con `thread=0` y `owner=0` a t≈166542, justo cuando el render fiber está en
+   `RenderContextQueueItem#invoke` (entered 1 / returned 0): el monitor del `waitLock` es usado por el
+   thread 0 con `notifyAll` dentro de `SpriteRenderer#notifyRenderStateQueue`.
+8. 20:10-20:20 — Reescrito el JS de `port/shim/BrowserMonitor.java`: contadores acumulados por fase
+   (`globalThis.pzMonitorCounts`, clave `fase:hilo`), último evento por fase (`pzMonitorLast`) y anillo
+   `pzMonitorLog` que EXCLUYE la fase 5 (cap 60). Sin stubs: sólo observación. El capture de stack sigue
+   fuera del camino caliente (fase 5 retorna antes de capturar).
+9. 21:05-21:10 — (Segunda mitad) Parche verificado: anclas originales del classlib re-readas del jar y
+   `count(...)==1`. Agregadas **fases 15 y 16** a `patch_monitor()`: 15 en la rama contendida de
+   `monitorEnter(o,count)` (antes de llamar al `@Async` `monitorEnterWait`) y 16 en la primera línea del
+   body `monitorEnterWait(o,count,callback)`. Sólo ints (`threadIdOr0/ownerIdOr0/enteringSize/notifySize`),
+   sin captura de stack y sólo en el camino contendido: no reproducen la regresión de medibilidad de la
+   ronda 37d. `ast.parse` OK; `python3 scripts/prepare_teavm.py` regeneró `TObject.java` con ambas fases
+   (líneas 106 y 132). Build único en primer plano `build-round38d-game.log` (`MAVEN_OPTS="-Xmx8g -Xss16m"`).
+10. 21:17 — `build-round38d-game.log` **BUILD SUCCESS / EXIT=0** (~6,6 min): `boot.wasm` 143.128.525 B,
+    classes 10212, **métodos 71982** (+4 por las fases 15/16), pico RSS 6.54 GiB, `build-state.json success:true`.
+    **GATE PASS** (`thread-fiber-gate.txt`: currentThread y setCurrentThread `fiberops: False`) y
+    `probe8.py ... 'java.lang.Thread::<clinit>'` ⇒ **`no seed`** (slots 23944, entries 52808). Dev server
+    `127.0.0.1:8092` sigue arriba (no reiniciado).
+11. 21:18-21:23 — Medición sobre la build 38d: `diag84d.log`, `diag85d.log`, `diag86d.log`. **0 pageerrors**
+    y la página SÍ responde `page.evaluate` (los primeros ~45 s no, por eso 6 sondas iniciales dan timeout;
+    después todas responden). Avance real respecto de la ronda 37: `Display#processMessages` 65/65,
+    `flushInvokeQueue entered 65 / returned 64`, `RenderContextQueueItem#invoke entered 1 / returned 0`,
+    `swap` bloqueado en 2, `gl:267`, `phase:'starting'`, `menu:false`.
+    Contadores monitor de todo el run: `{5:0:4283198, 9:0:4227205, 5:2:28, 9:2:1, 4:2:1, 15:0:1, 16:0:1}`
+    y en el anillo, en t≈89457-89461 la secuencia exacta del bloqueo:
+    `9 (owner=2,thread=2)` → `4 waitImpl (owner=2,thread=2)` → `9 (owner=0,thread=0)` →
+    **`15 monitorEnter contendido (owner=2, thread=0)`** desde `RenderContextQueueItem::invoke` →
+    **`16 monitorEnterWait_0 (owner=2, thread=0)`** desde `Object$monitorEnterWait$0::run`.
+    `pzAsync` tuvo **2 offers / 2 fired** en todo el run (offer 1 = `Thread::start` de MainThread;
+    offer 2 = el yield de `BrowserYield::pause`). Fibras: id1 park (suspends 3, resumes 1, pendingDepth 1),
+    id2 park (suspends 1, resumes 0, pendingDepth 1).
+12. 21:23 — **Causa raíz confirmada (ya no es una hipótesis)**: el `@Async` `monitorEnterWait(o,count)`
+    suspende la fibra ANTES de correr su body, pero el body sí corre una vez (fase 16 = 1) y ahí ve
+    `owner != null` y se encola en `enteringThreads`… sin embargo los contadores muestran
+    `entering:0`/`notify:0` en fase 16 y **nunca** 3/6/13: el `EventQueue.offer(()->waitForOtherThreads(o))`
+    que la fix (b) agregó al encolar **no aparece en `pzAsync`** (sólo 2 offers), porque el `offer` de
+    TeaVM WasmGC pasa por el import `teavmAsync.offer` que sí medimos — por lo tanto ese offer nunca se
+    ejecutó: la fibra quedó suspendida dentro del propio `suspend()` de `Fiber` (pendingDepth 1) y el
+    resto del body jamás llegó a correr. Es decir: `monitorEnterWait_0` corre hasta `reportMonitor(16)`
+    y el park ocurre en la llamada siguiente, de modo que ni el `add()` al `enteringThreads` ni el
+    `EventQueue.offer` posteriores se ejecutan. Nadie puede grantearla: `monitorExit` (fase 5) y
+    `notifyAll` (fase 9) siguen corriendo por el thread 0 pero no encuentran solicitante encolado.
+    Nota de medición: el log del game fiber muestra el mismo `waitLock` con owner=2/thread=2 y luego
+    owner=0/thread=0, así que el thread 0 (el de la render fiber según TeaVM) es quien hace el
+    `monitorenter` contendido.
+13. 21:24-21:27 — **Cierre de la ronda** (límite 21:54, documentar desde 21:24): no se tocó `.git`, sin
+    commits. Pruebas de esta ronda con `source scripts/env.sh`: `npm test` **19/19 OK** y
+    `python3 -m unittest discover -s tests/python` **10 OK**. No existe `MENU_REACHED` (el menú no se
+    renderiza) y no se creó.
+14. Bloqueo actual y siguientes pasos concretos, en orden:
+    a) El `monitorenter` de `RenderContextQueueItem::invoke` se parka en `Fiber::suspend` y su body
+       `monitorEnterWait_0` sólo ejecuta la primera línea (fase 16); el encolado en `enteringThreads` y
+       el drenaje diferido nunca corren. Fix honesto a probar en la próxima ronda: mover el encolado +
+       el `EventQueue.offer(()->waitForOtherThreads(o))` al **`monitorEnter(o,count)`** contenedor (que
+       no es corrutina) antes de llamar al `@Async`, de forma que el solicitante exista en la cola antes
+       de suspender; y que `waitForOtherThreads` grantee sólo si `owner == null` (ya lo hace), para que
+       el grant sea real y no un resume falso. Duda anotada: si el grant llega mientras la fibra está en
+       STATE_SUSPENDING, `Fiber$AsyncCallbackImpl.complete` re-entra por `EventQueue`, así que el
+       `callback.complete` del runnable encolado debería reactivarla; verificarlo con las fases 3/6/13.
+    b) Rebuild único (`MAVEN_OPTS="-Xmx8g -Xss16m"`, `PZ_HOME` exportado, primer plano) y medir con
+       `port/target/diag85.mjs` (contadores + anillo con frames) y `diag84.mjs` (stacks de offers).
+       Esperado avance: fases 3/6/13 > 0, `RenderContextQueueItem#invoke returned >= 1`,
+       `flushInvokeQueue returned 65`, `swap > 2`, `MainScreenState#enter/render` con pulses, `menu:true`.
+    c) Si el menú se renderiza: actualizar `tests/browser/game-main.spec.mjs` (quitar los asserts
+       `frozen.after.progress === frozen.before.progress` e `swap` iguales, ~líneas 78-79; mantener
+       Bullet/GL/ventana/ícono/oshi y `expect(pageErrors).toEqual([])`), correr Playwright con
+       `PZ_REAL_TEST_PORT=8093`, captura en `test-results/`, y **sólo entonces** crear `MENU_REACHED`.
+    d) Detalle secundario observado en el log de consola (no bloqueante): el boot registra
+       `Unsupported platform: UNSUPPORTED` (`UnsupportedOperationException` con stack FakeClass) y luego
+       sigue; `GraphicsCard` ANGLE/SwiftShader, `OpenGL version: 3.3 (WebGL 2.0)`, resolución inicial
+       640x480 sobre canvas 1280x720. Queda para más adelante.

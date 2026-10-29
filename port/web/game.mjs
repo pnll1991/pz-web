@@ -73,7 +73,18 @@ try {
         offer(event, callback, time) {
           const delay = Math.max(0, time - Date.now());
           asyncObs.offers++;
-          asyncObs.last.push({ n: asyncObs.offers, delay, t: performance.now() });
+          // Round 38: which Java frame handed the event to the timer? Two fibers are parked and only
+          // an EventQueue event can wake one of them, so the caller identity decides who is at fault.
+          let frames = [];
+          try {
+            const limit = Error.stackTraceLimit;
+            Error.stackTraceLimit = 16;
+            frames = String((new Error()).stack || '').split('\n')
+              .map(function (s) { return s.trim(); })
+              .filter(function (s) { return s.indexOf('::') >= 0; }).slice(0, 8);
+            Error.stackTraceLimit = limit;
+          } catch (e) { frames = []; }
+          asyncObs.last.push({ n: asyncObs.offers, delay, t: performance.now(), f: frames });
           if (asyncObs.last.length > 40) asyncObs.last.splice(0, asyncObs.last.length - 40);
           return setTimeout(() => {
             asyncObs.fired++;

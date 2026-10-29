@@ -107,27 +107,15 @@ def patch_monitor():
         }
 
         Monitor monitor = o.monitor;"""),
-        ("""    static void monitorEnter(TObject o, int count) {
-        if (o.monitor == null) {""",
-         """    static void monitorEnter(TObject o, int count) {
-        reportMonitor(10, o.monitor == null ? 0 : o.monitor.id,
-                o.monitor == null || o.monitor.owner == null ? 0 : (int) o.monitor.owner.getId(),
-                (int) TThread.currentThread().getId(), o.monitor == null ? 0 : o.monitor.count, 0,
-                o.monitor == null || o.monitor.notifyListeners == null ? 0
-                        : o.monitor.notifyListeners.size());
-        if (o.monitor == null) {"""),
-        ("""    static void monitorExit(TObject o, int count) {
-        if (o.isEmptyMonitor() || o.monitor.owner != TThread.currentThread()) {""",
-         """    static void monitorExit(TObject o, int count) {
-        reportMonitor(11, o.monitor == null ? 0 : o.monitor.id,
-                o.monitor == null || o.monitor.owner == null ? 0 : (int) o.monitor.owner.getId(),
-                (int) TThread.currentThread().getId(), o.monitor == null ? 0 : o.monitor.count, 0,
-                o.monitor == null || o.monitor.notifyListeners == null ? 0
-                        : o.monitor.notifyListeners.size());
-        if (o.isEmptyMonitor() || o.monitor.owner != TThread.currentThread()) {"""),
-        ("""    private static void createMonitor(TObject o) {""",
-         """    private static void createMonitor(TObject o) {
-        reportMonitor(12, 0, 0, (int) TThread.currentThread().getId(), 0, 0, 0);"""),
+        # Round 38: the phase 10/11/12 reports that used to sit on monitorEnter/monitorExit/
+        # createMonitor are REMOVED. Those three are the hottest path of the whole program (every
+        # synchronized method of the boot calls them thousands of times per frame), and from the
+        # build that added them (round37d, 16:42) on, the page stopped answering JavaScript at all:
+        # diag72.log/diag72b.log (round37e/f) and this round's diag75.log/diag76.log time out on
+        # every page.evaluate, including a minimal probe 15 s after load. Round 37's last complete
+        # measurement (diag71.log, build round37c, phases 1-9 only) still returned everything, so
+        # the hot-path instrumentation is what destroyed measurability. The wait/notify/grant
+        # phases below stay: they are the ones that actually explain the parked fibers.
         ("""    final void waitImpl(long timeout, int nanos, AsyncCallback<Void> callback) {
         Monitor monitor = this.monitor;""",
          """    final void waitImpl(long timeout, int nanos, AsyncCallback<Void> callback) {
@@ -190,14 +178,128 @@ def patch_monitor():
                 (int) TThread.currentThread().getId(), monitor.count,
                 monitor.enteringThreads == null ? 0 : monitor.enteringThreads.size(),
                 monitor.notifyListeners == null ? 0 : monitor.notifyListeners.size());"""),
+        # Round 38 (second half): diag83/diag84 measured that phase 3 (the contended branch of the
+        # monitorEnterWait BODY) is NEVER counted, while the render fiber's stack says it is parked in
+        # Fiber::suspend <- Object::monitorEnterWait <- Object::monitorEnter <-
+        # RenderContextQueueItem::invoke. Either the @Async body runs only when the fiber is resumed
+        # (so the waiter never registers itself in enteringThreads and nobody can grant it), or the
+        # park happens somewhere else. Phase 15 is at the contended branch of monitorEnter (BEFORE
+        # calling the @Async wait) and phase 16 at the very first line of the wait body: they decide
+        # which of the two is true. Both sit on the contended path only, so unlike phases 10/11/12
+        # they are not on the hot path and do not destroy measurability.
+        ("""        if (o.monitor.owner != TThread.currentThread()) {
+            monitorEnterWait(o, count);
+        } else {
+            o.monitor.count += count;
+        }""",
+         """        if (o.monitor.owner != TThread.currentThread()) {
+            reportMonitor(15, o.monitor.id, ownerIdOr0(o.monitor), threadIdOr0(), o.monitor.count,
+                    enteringSize(o.monitor), notifySize(o.monitor));
+            monitorEnterWait(o, count);
+        } else {
+            o.monitor.count += count;
+        }"""),
+        ("""    static void monitorEnterWait(TObject o, int count, AsyncCallback<Void> callback) {
+        TThread thread = TThread.currentThread();""",
+         """    static void monitorEnterWait(TObject o, int count, AsyncCallback<Void> callback) {
+        reportMonitor(16, o.monitor == null ? 0 : o.monitor.id, ownerIdOr0(o.monitor), threadIdOr0(),
+                o.monitor == null ? 0 : o.monitor.count, enteringSize(o.monitor), notifySize(o.monitor));
+        TThread thread = TThread.currentThread();"""),
     ]
     for old, new in diag_edits:
         if source.count(old) != 1:
             raise RuntimeError("Unexpected TeaVM monitor shape: " + old[:60])
         source = source.replace(old, new)
+    # Round 38 fix (platform only, no game rules touched): two real bugs in TeaVM 0.16.0's monitor
+    # that strand both fibers of the RenderContextQueueItem handshake (diag71.log: game fiber parked
+    # in Object.wait on waitLock, render fiber parked in the same waitLock's monitorenter,
+    # RenderContextQueueItem#invoke entered 1 / returned 0, menu:false).
+    #  a) waitForOtherThreads grants the head of enteringThreads and then clears the WHOLE queue
+    #     (monitor.enteringThreads = null). With two waiters -- the render fiber in invoke()'s
+    #     monitorenter and the game fiber re-acquiring the lock after Object.wait -- the second one
+    #     is dropped, isEmptyMonitor() then deletes the monitor, and nobody ever grants it.
+    #  b) A waiter enqueued while nobody is about to release the monitor is never drained: the only
+    #     drain sources were monitorExit (needs an owner to release) and the release-triggered
+    #     waitForOtherThreads. Offering a deferred drain at enqueue time covers that, and it is not
+    #     a fake grant -- waitForOtherThreads still refuses to hand out a monitor someone owns.
+    #  c) NotifyListenerImpl.run re-entered the lock through monitorEnterWait even when the monitor
+    #     was already free, i.e. it became an enteringThreads waiter that no release would drain.
+    #     Grant it directly, exactly as monitorEnterWait's own free-monitor branch does.
+    fix_edits = [
+        ("""            PlatformRunnable r = enteringThreads.remove();
+            monitor.enteringThreads = null;
+            r.run();""",
+         """            PlatformRunnable r = enteringThreads.remove();
+            if (enteringThreads.isEmpty()) {
+                monitor.enteringThreads = null;
+            }
+            reportMonitor(13, monitor.id, 0, (int) TThread.currentThread().getId(), monitor.count,
+                    monitor.enteringThreads == null ? 0 : monitor.enteringThreads.size(),
+                    monitor.notifyListeners == null ? 0 : monitor.notifyListeners.size());
+            r.run();
+            if (monitor.enteringThreads != null && !monitor.enteringThreads.isEmpty()) {
+                EventQueue.offer(() -> waitForOtherThreads(o));
+            }"""),
+        ("""        monitor.enteringThreads.add(() -> {
+            TThread.setCurrentThread(thread);
+            o.monitor.owner = thread;
+            o.monitor.count += count;
+            callback.complete(null);
+        });""",
+         """        monitor.enteringThreads.add(() -> {
+            TThread.setCurrentThread(thread);
+            o.monitor.owner = thread;
+            o.monitor.count += count;
+            callback.complete(null);
+        });
+        if (PlatformDetector.isLowLevel() || PlatformDetector.isWebAssemblyGC()) {
+            EventQueue.offer(() -> waitForOtherThreads(o));
+        } else {
+            Platform.postpone(() -> waitForOtherThreads(o));
+        }"""),
+        ("""            reportMonitor(7, obj.monitor == null ? 0 : obj.monitor.id, 0,
+                    (int) currentThread.getId(), obj.monitor == null ? 0 : obj.monitor.count, 0, 0);
+            monitorEnterWait(obj, lockCount, callback);""",
+         """            reportMonitor(7, obj.monitor == null ? 0 : obj.monitor.id, 0,
+                    (int) currentThread.getId(), obj.monitor == null ? 0 : obj.monitor.count, 0, 0);
+            Monitor free = obj.monitor;
+            if (free != null && free.owner == null) {
+                free.owner = currentThread;
+                free.count += lockCount;
+                reportMonitor(14, free.id, 0, (int) currentThread.getId(), free.count,
+                        free.enteringThreads == null ? 0 : free.enteringThreads.size(), 0);
+                callback.complete(null);
+                return;
+            }
+            monitorEnterWait(obj, lockCount, callback);"""),
+    ]
+    for old, new in fix_edits:
+        if source.count(old) != 1:
+            raise RuntimeError("Unexpected TeaVM monitor shape (fix): " + old[:60])
+        source = source.replace(old, new)
     js_diag = """    private static void reportMonitor(int phase, int objId, int ownerId, int threadId,
             int count, int entering, int notify) {
         port.shim.BrowserMonitor.record(phase, objId, ownerId, threadId, count, entering, notify);
+    }
+
+    private static int threadIdOr0() {
+        TThread thread = TThread.currentThread();
+        return thread == null ? 0 : (int) thread.getId();
+    }
+
+    private static int ownerIdOr0(Monitor monitor) {
+        if (monitor == null || monitor.owner == null) {
+            return 0;
+        }
+        return (int) monitor.owner.getId();
+    }
+
+    private static int enteringSize(Monitor monitor) {
+        return monitor == null || monitor.enteringThreads == null ? 0 : monitor.enteringThreads.size();
+    }
+
+    private static int notifySize(Monitor monitor) {
+        return monitor == null || monitor.notifyListeners == null ? 0 : monitor.notifyListeners.size();
     }
 
 """

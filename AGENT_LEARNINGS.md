@@ -375,3 +375,35 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Mejor enfoque: cuando un archivo de generación queda sintácticamente roto, restaurar desde `git show HEAD:<path>` y volver a aplicar TODO el cambio en una sola pasada con anclas verificadas por `count(...)==1` antes de insertar; después `ast.parse` como puerta antes de correr el script.
 - Error: el primer diagnóstico dentro de `Fiber.popInt` construyó el mensaje con `StringBuilder`; `StringBuilder.append` es él mismo una corrutina en la classlib fijada, así que el diagnóstico recursó `popInt <- describe <- append` y saturó la pila de JS (`RangeError: Maximum call stack size exceeded`) en lugar de reportar los contadores.
 - Mejor enfoque: dentro de machinery de corrutinas (`popInt`/`push`/prologue) no usar APIs suspendibles: emitir números con `@JSBody` directo a `console.log` y lanzar un mensaje fijo.
+
+## 2026-10-28 — Ronda 38 (primera mitad)
+- Error repetido: `MAVEN_OPTS="-Xmx8g"` **sin `-Xss16m`** → `build-round38-game.log` terminó con
+  `java.lang.StackOverflowError` en `WasmBinaryRenderingVisitor.render` durante `compile-wasm-gc`,
+  después de ~6 min. `scripts/env.sh` sólo aplica su default `-Xmx20g -Xss16m` si `MAVEN_OPTS` viene vacío.
+  Evitar: reasignar `MAVEN_OPTS` con sólo `-Xmx` (borra el `-Xss` que el render del módulo necesita).
+  Mejor enfoque: `MAVEN_OPTS="-Xmx8g -Xss16m"` siempre (ya estaba documentado en Ronda 31; se volvió a
+  cometer porque el comando se escribió de memoria).
+- Error de observación: el anillo de 160 eventos de `port/shim/BrowserMonitor` se llenó de `phase 5`
+  (`monitorExit` es el camino más caliente del boot), así que las fases 3/6/7/8/13/14 fueron desplazadas
+  y conclusiones como "nunca se ofreció el drenaje diferido" eran infundadas: un anillo desplazado no
+  demuestra que un evento no ocurrió. Mejor enfoque: contadores acumulados por fase (`globalThis.pzMonitorCounts`)
+  + el último evento por fase (`pzMonitorLast`), y excluir del anillo las fases masivas (5).
+- Error de medición: `wasmGCIdentity()` satura (todos los monitors muestran `-1` o `2147483647`), así que
+  `obj` no sirve para identificar el objeto monitoriado. Mejor enfoque: discriminar por las frames de Java
+  del llamador (el stack corto ya capturado), no por el id del objeto.
+- Error de entorno: un `node port/target/diagNN.mjs > log &` dentro de `exec_command` **no sobrevive** al
+  cierre de la sesión (el log queda en 0 bytes y no hay proceso). Evitar: creer que el diag quedó corriendo.
+  Mejor enfoque: correr el diag en primer plano con `yield_time_ms` y luego `write_stdin` en la misma sesión.
+
+## 2026-10-28 — Ronda 38 (segunda mitad)
+- Error de inferencia: concluí que el solicitante contendido “se encola en `enteringThreads` y nadie lo
+  drena” leyendo sólo el código fuente de `TObject.monitorEnterWait(...)`. La medición (fases 15/16,
+  `diag85d.log`) mostró `15:0:1` y `16:0:1` con `entering:0`: el body `monitorEnterWait_0` corre **sólo
+  su primera línea** porque `Fiber.suspend()` parka la fibra antes de continuar; el `add()` a la cola y
+  el `EventQueue.offer` diferido de la fix (b) nunca se ejecutan (y `pzAsync` contó 2 offers en todo el
+  run, ningún drenaje). Evitar: razonar sobre el body de un `@Async` como si fuera código secuencial.
+  Mejor enfoque: instrumentar antes y después de cada posible punto de suspensión (dos fases contiguas)
+  y leer los contadores acumulados; si la fase posterior cuenta 0, la suspensión ocurrió en el medio.
+- Observación útil: el anillo `pzMonitorLog` + `pzMonitorCounts` por fase permitió ver la secuencia
+  `9 → 4(waitImpl) → 9(owner=0) → 15 → 16` sin saturar el anillo (fase 5 excluida), y los frames de
+  Java del discriminaron (`RenderContextQueueItem::invoke`, `Object$monitorEnterWait$0::run`).
