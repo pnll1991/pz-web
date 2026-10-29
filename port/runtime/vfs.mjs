@@ -141,15 +141,26 @@ export class VirtualFileSystem {
     if (!writable(path) || !this.exists(path)) return false;
     this.metadata.set(path, { ...this.metadata.get(path), directory:this.isDirectory(path), [key]:value }); return true;
   }
+  /** Honest observability for the reads the game cannot satisfy: java.io.FileNotFoundException in
+   * the game always comes from here, and DebugType.Shader is off in the pinned build, so without
+   * this record there is no way to know which path IndieFileLoader actually tried. Recording only;
+   * the ENOENT still propagates unchanged. */
+  noteMissing(path) {
+    const runtime = globalThis.pzRuntime ?? (globalThis.pzRuntime = {});
+    const list = runtime.missingPaths ?? (runtime.missingPaths = []);
+    const seen = runtime.missingPathCounts ?? (runtime.missingPathCounts = {});
+    seen[path] = (seen[path] ?? 0) + 1;
+    if (!list.includes(path) && list.length < 200) list.push(path);
+  }
   readFile(path) {
     path = normalizePath(path);
-    if (!this.files.has(path)) throw new Error(`ENOENT: ${path}`);
+    if (!this.files.has(path)) { this.noteMissing(path); throw new Error(`ENOENT: ${path}`); }
     return this.files.get(path).slice();
   }
   readInto(path, position, target) {
     path = normalizePath(path);
     const bytes = this.files.get(path);
-    if (!bytes) throw new Error(`ENOENT: ${path}`);
+    if (!bytes) { this.noteMissing(path); throw new Error(`ENOENT: ${path}`); }
     if (!Number.isSafeInteger(position) || position < 0) throw new Error('Invalid file offset');
     const count = Math.min(target.length, Math.max(0, bytes.length - position));
     target.set(bytes.subarray(position, position + count)); return count;

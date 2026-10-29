@@ -1,0 +1,185 @@
+package org.teavm.backend.c.runtime.fs;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import org.teavm.backend.c.runtime.Memory;
+import org.teavm.backend.c.runtime.StringList;
+import org.teavm.interop.Address;
+import org.teavm.runtime.fs.VirtualFile;
+import org.teavm.runtime.fs.VirtualFileAccessor;
+
+public class CVirtualFile implements VirtualFile {
+   CFileSystem fileSystem;
+   String path;
+
+   public CVirtualFile(CFileSystem fileSystem, String path) {
+      this.fileSystem = fileSystem;
+      this.path = path;
+   }
+
+   @Override
+   public String getName() {
+      char separatorChar = (char)(this.fileSystem.isWindows() ? 92 : 47);
+      return this.path.substring(this.path.lastIndexOf(separatorChar) + 1);
+   }
+
+   @Override
+   public boolean isDirectory() {
+      char[] chars = this.path.toCharArray();
+      return CFileSystem.isDir(chars, chars.length);
+   }
+
+   @Override
+   public boolean isFile() {
+      char[] chars = this.path.toCharArray();
+      return CFileSystem.isFile(chars, chars.length);
+   }
+
+   @Override
+   public boolean exists() {
+      char[] chars = this.path.toCharArray();
+      return CFileSystem.exists(chars, chars.length);
+   }
+
+   @Override
+   public String[] listFiles() {
+      char[] chars = this.path.toCharArray();
+      StringList list = CFileSystem.listFiles(chars, chars.length);
+      if (list == null) {
+         return null;
+      }
+
+      List<String> files = new ArrayList<>();
+
+      while (list != null) {
+         if (list.data != null) {
+            chars = new char[list.length];
+            Address data = list.data.toAddress();
+
+            for (int i = 0; i < chars.length; i++) {
+               chars[i] = data.add(i * 2).getChar();
+            }
+
+            Memory.free(data);
+            String name = new String(chars);
+            if (!name.equals(".") && !name.equals("..")) {
+               files.add(name);
+            }
+         }
+
+         StringList next = list.next;
+         Memory.free(list.toAddress());
+         list = next;
+      }
+
+      Collections.reverse(files);
+      return files.toArray(new String[0]);
+   }
+
+   @Override
+   public VirtualFileAccessor createAccessor(boolean readable, boolean writable, boolean append) {
+      char[] chars = this.path.toCharArray();
+      int mode = 0;
+      if (readable) {
+         mode |= 1;
+      }
+
+      if (writable) {
+         mode |= 2;
+      }
+
+      if (append) {
+         mode |= 4;
+      }
+
+      long file = CFileSystem.open(chars, chars.length, mode);
+      if (file == 0L) {
+         return null;
+      }
+
+      if (append) {
+         CFileSystem.seek(file, 2, 0);
+      }
+
+      return new CVirtualFileAccessor(file);
+   }
+
+   @Override
+   public boolean createFile(String fileName) throws IOException {
+      String newPath = this.constructPath(this.path, fileName);
+      char[] chars = newPath.toCharArray();
+      int result = CFileSystem.createFile(chars, chars.length);
+      switch (result) {
+         case 0:
+            return true;
+         case 1:
+            return false;
+         default:
+            throw new IOException("Could not create file " + fileName);
+      }
+   }
+
+   @Override
+   public boolean createDirectory(String fileName) {
+      String newPath = this.constructPath(this.path, fileName);
+      char[] chars = newPath.toCharArray();
+      return CFileSystem.createDirectory(chars, chars.length);
+   }
+
+   @Override
+   public boolean delete() {
+      char[] chars = this.path.toCharArray();
+      return CFileSystem.delete(chars, chars.length);
+   }
+
+   @Override
+   public boolean adopt(VirtualFile file, String fileName) {
+      char[] chars = ((CVirtualFile)file).path.toCharArray();
+      String newPath = this.constructPath(this.path, fileName);
+      char[] newPathChars = newPath.toCharArray();
+      return CFileSystem.rename(chars, chars.length, newPathChars, newPathChars.length);
+   }
+
+   @Override
+   public boolean canRead() {
+      char[] chars = this.path.toCharArray();
+      return CFileSystem.canRead(chars, chars.length);
+   }
+
+   @Override
+   public boolean canWrite() {
+      char[] chars = this.path.toCharArray();
+      return CFileSystem.canWrite(chars, chars.length);
+   }
+
+   @Override
+   public long lastModified() {
+      char[] chars = this.path.toCharArray();
+      return CFileSystem.lastModified(chars, chars.length);
+   }
+
+   @Override
+   public boolean setLastModified(long lastModified) {
+      char[] chars = this.path.toCharArray();
+      return CFileSystem.setLastModified(chars, chars.length, lastModified);
+   }
+
+   @Override
+   public boolean setReadOnly(boolean readOnly) {
+      char[] chars = this.path.toCharArray();
+      return CFileSystem.setReadonly(chars, chars.length, readOnly);
+   }
+
+   @Override
+   public int length() {
+      char[] chars = this.path.toCharArray();
+      return CFileSystem.length(chars, chars.length);
+   }
+
+   private String constructPath(String parent, String child) {
+      char separatorChar = (char)(this.fileSystem.isWindows() ? 92 : 47);
+      return !parent.isEmpty() && parent.charAt(parent.length() - 1) == separatorChar ? parent + child : parent + separatorChar + child;
+   }
+}

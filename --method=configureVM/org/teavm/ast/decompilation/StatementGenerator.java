@@ -1,0 +1,665 @@
+package org.teavm.ast.decompilation;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import org.teavm.ast.ArrayType;
+import org.teavm.ast.AssignmentStatement;
+import org.teavm.ast.BinaryOperation;
+import org.teavm.ast.BoundCheckExpr;
+import org.teavm.ast.BreakStatement;
+import org.teavm.ast.CastExpr;
+import org.teavm.ast.ContinueStatement;
+import org.teavm.ast.Expr;
+import org.teavm.ast.InitClassStatement;
+import org.teavm.ast.InvocationExpr;
+import org.teavm.ast.MonitorEnterStatement;
+import org.teavm.ast.MonitorExitStatement;
+import org.teavm.ast.OperationType;
+import org.teavm.ast.PrimitiveCastExpr;
+import org.teavm.ast.ReturnStatement;
+import org.teavm.ast.Statement;
+import org.teavm.ast.SwitchClause;
+import org.teavm.ast.SwitchStatement;
+import org.teavm.ast.ThrowStatement;
+import org.teavm.ast.UnaryOperation;
+import org.teavm.ast.UnwrapArrayExpr;
+import org.teavm.ast.WhileStatement;
+import org.teavm.common.GraphIndexer;
+import org.teavm.model.BasicBlock;
+import org.teavm.model.ClassHolderSource;
+import org.teavm.model.InvokeDynamicInstruction;
+import org.teavm.model.MethodReference;
+import org.teavm.model.Program;
+import org.teavm.model.TextLocation;
+import org.teavm.model.Variable;
+import org.teavm.model.instructions.ArrayElementType;
+import org.teavm.model.instructions.ArrayLengthInstruction;
+import org.teavm.model.instructions.AssignInstruction;
+import org.teavm.model.instructions.BinaryBranchingInstruction;
+import org.teavm.model.instructions.BinaryInstruction;
+import org.teavm.model.instructions.BoundCheckInstruction;
+import org.teavm.model.instructions.BranchingInstruction;
+import org.teavm.model.instructions.CastInstruction;
+import org.teavm.model.instructions.CastIntegerInstruction;
+import org.teavm.model.instructions.CastNumberInstruction;
+import org.teavm.model.instructions.ClassConstantInstruction;
+import org.teavm.model.instructions.CloneArrayInstruction;
+import org.teavm.model.instructions.ConstructArrayInstruction;
+import org.teavm.model.instructions.ConstructInstruction;
+import org.teavm.model.instructions.ConstructMultiArrayInstruction;
+import org.teavm.model.instructions.DoubleConstantInstruction;
+import org.teavm.model.instructions.EmptyInstruction;
+import org.teavm.model.instructions.ExitInstruction;
+import org.teavm.model.instructions.FloatConstantInstruction;
+import org.teavm.model.instructions.GetElementInstruction;
+import org.teavm.model.instructions.GetFieldInstruction;
+import org.teavm.model.instructions.InitClassInstruction;
+import org.teavm.model.instructions.InstructionVisitor;
+import org.teavm.model.instructions.IntegerConstantInstruction;
+import org.teavm.model.instructions.InvocationType;
+import org.teavm.model.instructions.InvokeInstruction;
+import org.teavm.model.instructions.IsInstanceInstruction;
+import org.teavm.model.instructions.JumpInstruction;
+import org.teavm.model.instructions.LongConstantInstruction;
+import org.teavm.model.instructions.MonitorEnterInstruction;
+import org.teavm.model.instructions.MonitorExitInstruction;
+import org.teavm.model.instructions.NegateInstruction;
+import org.teavm.model.instructions.NullCheckInstruction;
+import org.teavm.model.instructions.NullConstantInstruction;
+import org.teavm.model.instructions.NumericOperandType;
+import org.teavm.model.instructions.PutElementInstruction;
+import org.teavm.model.instructions.PutFieldInstruction;
+import org.teavm.model.instructions.RaiseInstruction;
+import org.teavm.model.instructions.StringConstantInstruction;
+import org.teavm.model.instructions.SwitchInstruction;
+import org.teavm.model.instructions.SwitchTableEntry;
+import org.teavm.model.instructions.UnwrapArrayInstruction;
+
+class StatementGenerator implements InstructionVisitor {
+   private static final MethodReference CLONE_METHOD = new MethodReference(Object.class, "clone", Object.class);
+   private int lastSwitchId;
+   final List<Statement> statements = new ArrayList<>();
+   GraphIndexer indexer;
+   Decompiler.Block currentBlock;
+   Program program;
+   ClassHolderSource classSource;
+   private TextLocation currentLocation;
+   boolean async;
+
+   void setCurrentLocation(TextLocation currentLocation) {
+      this.currentLocation = currentLocation;
+   }
+
+   @Override
+   public void visit(EmptyInstruction insn) {
+   }
+
+   @Override
+   public void visit(ClassConstantInstruction insn) {
+      this.assign(Expr.constant(insn.getConstant()), insn.getReceiver());
+   }
+
+   @Override
+   public void visit(NullConstantInstruction insn) {
+      this.assign(Expr.constant(null), insn.getReceiver());
+   }
+
+   @Override
+   public void visit(IntegerConstantInstruction insn) {
+      this.assign(Expr.constant(insn.getConstant()), insn.getReceiver());
+   }
+
+   @Override
+   public void visit(LongConstantInstruction insn) {
+      this.assign(Expr.constant(insn.getConstant()), insn.getReceiver());
+   }
+
+   @Override
+   public void visit(FloatConstantInstruction insn) {
+      this.assign(Expr.constant(insn.getConstant()), insn.getReceiver());
+   }
+
+   @Override
+   public void visit(DoubleConstantInstruction insn) {
+      this.assign(Expr.constant(insn.getConstant()), insn.getReceiver());
+   }
+
+   @Override
+   public void visit(StringConstantInstruction insn) {
+      this.assign(Expr.constant(insn.getConstant()), insn.getReceiver());
+   }
+
+   @Override
+   public void visit(BinaryInstruction insn) {
+      int first = insn.getFirstOperand().getIndex();
+      int second = insn.getSecondOperand().getIndex();
+      Variable result = insn.getReceiver();
+      switch (insn.getOperation()) {
+         case ADD:
+            this.binary(insn.getOperandType(), first, second, result, BinaryOperation.ADD);
+            break;
+         case SUBTRACT:
+            this.binary(insn.getOperandType(), first, second, result, BinaryOperation.SUBTRACT);
+            break;
+         case MULTIPLY:
+            this.binary(insn.getOperandType(), first, second, result, BinaryOperation.MULTIPLY);
+            break;
+         case DIVIDE:
+            this.binary(insn.getOperandType(), first, second, result, BinaryOperation.DIVIDE);
+            break;
+         case MODULO:
+            this.binary(insn.getOperandType(), first, second, result, BinaryOperation.MODULO);
+            break;
+         case COMPARE_GREATER:
+            this.binary(insn.getOperandType(), first, second, result, BinaryOperation.COMPARE_GREATER);
+            break;
+         case COMPARE_LESS:
+            this.binary(insn.getOperandType(), first, second, result, BinaryOperation.COMPARE_LESS);
+            break;
+         case AND:
+            this.binary(insn.getOperandType(), first, second, result, BinaryOperation.BITWISE_AND);
+            break;
+         case OR:
+            this.binary(insn.getOperandType(), first, second, result, BinaryOperation.BITWISE_OR);
+            break;
+         case XOR:
+            this.binary(insn.getOperandType(), first, second, result, BinaryOperation.BITWISE_XOR);
+            break;
+         case SHIFT_LEFT:
+            this.binary(insn.getOperandType(), first, second, result, BinaryOperation.LEFT_SHIFT);
+            break;
+         case SHIFT_RIGHT:
+            this.binary(insn.getOperandType(), first, second, result, BinaryOperation.RIGHT_SHIFT);
+            break;
+         case SHIFT_RIGHT_UNSIGNED:
+            this.binary(insn.getOperandType(), first, second, result, BinaryOperation.UNSIGNED_RIGHT_SHIFT);
+      }
+   }
+
+   @Override
+   public void visit(NegateInstruction insn) {
+      this.assign(Expr.unary(UnaryOperation.NEGATE, mapOperandType(insn.getOperandType()), Expr.var(insn.getOperand().getIndex())), insn.getReceiver());
+   }
+
+   @Override
+   public void visit(AssignInstruction insn) {
+      AssignmentStatement stmt = Statement.assign(Expr.var(insn.getReceiver().getIndex()), Expr.var(insn.getAssignee().getIndex()));
+      stmt.setLocation(this.currentLocation);
+      this.statements.add(stmt);
+   }
+
+   @Override
+   public void visit(CastInstruction insn) {
+      CastExpr expr = new CastExpr();
+      expr.setLocation(insn.getLocation());
+      expr.setVariableIndex(insn.getReceiver().getIndex());
+      expr.setValue(Expr.var(insn.getValue().getIndex()));
+      expr.setTarget(insn.getTargetType());
+      expr.setWeak(insn.isWeak());
+      this.assign(expr, insn.getReceiver());
+   }
+
+   @Override
+   public void visit(CastNumberInstruction insn) {
+      PrimitiveCastExpr expr = new PrimitiveCastExpr();
+      expr.setLocation(insn.getLocation());
+      expr.setVariableIndex(insn.getReceiver().getIndex());
+      expr.setSource(mapOperandType(insn.getSourceType()));
+      expr.setTarget(mapOperandType(insn.getTargetType()));
+      expr.setValue(Expr.var(insn.getValue().getIndex()));
+      this.assign(expr, insn.getReceiver());
+   }
+
+   @Override
+   public void visit(CastIntegerInstruction insn) {
+      Expr value = Expr.var(insn.getValue().getIndex());
+      switch (insn.getDirection()) {
+         case FROM_INTEGER:
+            switch (insn.getTargetType()) {
+               case BYTE:
+                  value = Expr.unary(UnaryOperation.INT_TO_BYTE, null, value);
+                  break;
+               case SHORT:
+                  value = Expr.unary(UnaryOperation.INT_TO_SHORT, null, value);
+                  break;
+               case CHAR:
+                  value = Expr.unary(UnaryOperation.INT_TO_CHAR, null, value);
+            }
+         case TO_INTEGER:
+         default:
+            this.assign(value, insn.getReceiver());
+      }
+   }
+
+   @Override
+   public void visit(BranchingInstruction insn) {
+      switch (insn.getCondition()) {
+         case EQUAL:
+            this.branch(this.compare(BinaryOperation.EQUALS, OperationType.INT, insn.getOperand()), insn.getConsequent(), insn.getAlternative());
+            break;
+         case NOT_EQUAL:
+            this.branch(this.compare(BinaryOperation.NOT_EQUALS, OperationType.INT, insn.getOperand()), insn.getConsequent(), insn.getAlternative());
+            break;
+         case GREATER:
+            this.branch(this.compare(BinaryOperation.GREATER, OperationType.INT, insn.getOperand()), insn.getConsequent(), insn.getAlternative());
+            break;
+         case GREATER_OR_EQUAL:
+            this.branch(this.compare(BinaryOperation.GREATER_OR_EQUALS, OperationType.INT, insn.getOperand()), insn.getConsequent(), insn.getAlternative());
+            break;
+         case LESS:
+            this.branch(this.compare(BinaryOperation.LESS, OperationType.INT, insn.getOperand()), insn.getConsequent(), insn.getAlternative());
+            break;
+         case LESS_OR_EQUAL:
+            this.branch(this.compare(BinaryOperation.LESS_OR_EQUALS, OperationType.INT, insn.getOperand()), insn.getConsequent(), insn.getAlternative());
+            break;
+         case NOT_NULL:
+            this.branch(
+               this.withLocation(
+                  Expr.binary(BinaryOperation.NOT_EQUALS, null, Expr.var(insn.getOperand().getIndex()), Expr.constant(null), this.currentLocation)
+               ),
+               insn.getConsequent(),
+               insn.getAlternative()
+            );
+            break;
+         case NULL:
+            this.branch(
+               this.withLocation(Expr.binary(BinaryOperation.EQUALS, null, Expr.var(insn.getOperand().getIndex()), Expr.constant(null))),
+               insn.getConsequent(),
+               insn.getAlternative()
+            );
+      }
+   }
+
+   @Override
+   public void visit(BinaryBranchingInstruction insn) {
+      int a = insn.getFirstOperand().getIndex();
+      int b = insn.getSecondOperand().getIndex();
+      BasicBlock consequent = insn.getConsequent();
+      BasicBlock alternative = insn.getAlternative();
+      switch (insn.getCondition()) {
+         case EQUAL:
+            this.branch(this.withLocation(Expr.binary(BinaryOperation.EQUALS, OperationType.INT, Expr.var(a), Expr.var(b))), consequent, alternative);
+            break;
+         case REFERENCE_EQUAL:
+            this.branch(this.withLocation(Expr.binary(BinaryOperation.EQUALS, null, Expr.var(a), Expr.var(b))), consequent, alternative);
+            break;
+         case NOT_EQUAL:
+            this.branch(this.withLocation(Expr.binary(BinaryOperation.NOT_EQUALS, OperationType.INT, Expr.var(a), Expr.var(b))), consequent, alternative);
+            break;
+         case REFERENCE_NOT_EQUAL:
+            this.branch(this.withLocation(Expr.binary(BinaryOperation.NOT_EQUALS, null, Expr.var(a), Expr.var(b))), consequent, alternative);
+      }
+   }
+
+   private Expr withLocation(Expr expr) {
+      expr.setLocation(this.currentLocation);
+      return expr;
+   }
+
+   @Override
+   public void visit(JumpInstruction insn) {
+      Statement stmt = this.generateJumpStatement(insn.getTarget());
+      if (stmt != null) {
+         this.statements.add(stmt);
+      }
+   }
+
+   @Override
+   public void visit(SwitchInstruction insn) {
+      SwitchStatement stmt = new SwitchStatement();
+      stmt.setId("sblock" + this.lastSwitchId++);
+      stmt.setValue(Expr.var(insn.getCondition().getIndex()));
+      Map<Integer, List<Integer>> switchMap = new LinkedHashMap<>();
+
+      for (int i = 0; i < insn.getEntries().size(); i++) {
+         SwitchTableEntry entry = insn.getEntries().get(i);
+         List<Integer> conditions = switchMap.computeIfAbsent(entry.getTarget().getIndex(), k -> new ArrayList<>());
+         conditions.add(entry.getCondition());
+      }
+
+      List<Integer> targets = new ArrayList<>(switchMap.keySet());
+      Collections.sort(targets);
+
+      for (int target : targets) {
+         SwitchClause clause = new SwitchClause();
+         List<Integer> conditionList = switchMap.get(target);
+         int[] conditions = new int[conditionList.size()];
+
+         for (int i = 0; i < conditionList.size(); i++) {
+            conditions[i] = conditionList.get(i);
+         }
+
+         clause.setConditions(conditions);
+         clause.getBody().add(this.generateJumpStatement(stmt, target));
+         stmt.getClauses().add(clause);
+      }
+
+      Statement breakStmt = this.generateJumpStatement(insn.getDefaultTarget());
+      if (breakStmt != null) {
+         stmt.getDefaultClause().add(breakStmt);
+      }
+
+      this.statements.add(stmt);
+   }
+
+   @Override
+   public void visit(ExitInstruction insn) {
+      ReturnStatement stmt = Statement.exitFunction(insn.getValueToReturn() != null ? Expr.var(insn.getValueToReturn().getIndex()) : null);
+      stmt.setLocation(this.currentLocation);
+      this.statements.add(stmt);
+   }
+
+   @Override
+   public void visit(RaiseInstruction insn) {
+      ThrowStatement stmt = new ThrowStatement();
+      stmt.setLocation(this.currentLocation);
+      stmt.setException(Expr.var(insn.getException().getIndex()));
+      this.statements.add(stmt);
+   }
+
+   @Override
+   public void visit(ConstructArrayInstruction insn) {
+      this.assign(Expr.createArray(insn.getItemType(), Expr.var(insn.getSize().getIndex())), insn.getReceiver());
+   }
+
+   @Override
+   public void visit(ConstructInstruction insn) {
+      this.assign(Expr.createObject(insn.getType()), insn.getReceiver());
+   }
+
+   @Override
+   public void visit(ConstructMultiArrayInstruction insn) {
+      Expr[] dimensionExprs = new Expr[insn.getDimensions().size()];
+
+      for (int i = 0; i < dimensionExprs.length; i++) {
+         dimensionExprs[i] = Expr.var(insn.getDimensions().get(i).getIndex());
+      }
+
+      this.assign(Expr.createArray(insn.getItemType(), dimensionExprs), insn.getReceiver());
+   }
+
+   @Override
+   public void visit(GetFieldInstruction insn) {
+      if (insn.getInstance() != null) {
+         AssignmentStatement stmt = Statement.assign(
+            Expr.var(insn.getReceiver().getIndex()), Expr.qualify(Expr.var(insn.getInstance().getIndex()), insn.getField())
+         );
+         stmt.getRightValue().setVariableIndex(insn.getReceiver().getIndex());
+         stmt.setLocation(this.currentLocation);
+         this.statements.add(stmt);
+      } else {
+         Expr fieldExpr = Expr.qualify(null, insn.getField());
+         AssignmentStatement stmt = Statement.assign(Expr.var(insn.getReceiver().getIndex()), fieldExpr);
+         stmt.setLocation(this.currentLocation);
+         this.statements.add(stmt);
+      }
+   }
+
+   @Override
+   public void visit(PutFieldInstruction insn) {
+      Expr right = Expr.var(insn.getValue().getIndex());
+      Expr left;
+      if (insn.getInstance() != null) {
+         left = Expr.qualify(Expr.var(insn.getInstance().getIndex()), insn.getField());
+      } else {
+         left = Expr.qualify(null, insn.getField());
+      }
+
+      AssignmentStatement stmt = Statement.assign(left, right);
+      stmt.setLocation(this.currentLocation);
+      this.statements.add(stmt);
+   }
+
+   @Override
+   public void visit(ArrayLengthInstruction insn) {
+      this.assign(Expr.unary(UnaryOperation.LENGTH, null, Expr.var(insn.getArray().getIndex())), insn.getReceiver());
+   }
+
+   @Override
+   public void visit(UnwrapArrayInstruction insn) {
+      UnwrapArrayExpr unwrapExpr = new UnwrapArrayExpr(map(insn.getElementType()));
+      unwrapExpr.setArray(Expr.var(insn.getArray().getIndex()));
+      this.assign(unwrapExpr, insn.getReceiver());
+   }
+
+   @Override
+   public void visit(CloneArrayInstruction insn) {
+      this.assign(Expr.invoke(CLONE_METHOD, Expr.var(insn.getArray().getIndex()), new Expr[0]), insn.getReceiver());
+   }
+
+   @Override
+   public void visit(GetElementInstruction insn) {
+      Expr subscript = Expr.subscript(Expr.var(insn.getArray().getIndex()), Expr.var(insn.getIndex().getIndex()), map(insn.getType()));
+      this.assign(subscript, insn.getReceiver());
+   }
+
+   @Override
+   public void visit(PutElementInstruction insn) {
+      Expr subscript = Expr.subscript(Expr.var(insn.getArray().getIndex()), Expr.var(insn.getIndex().getIndex()), map(insn.getType()));
+      AssignmentStatement stmt = Statement.assign(subscript, Expr.var(insn.getValue().getIndex()));
+      stmt.setLocation(this.currentLocation);
+      this.statements.add(stmt);
+   }
+
+   private static ArrayType map(ArrayElementType type) {
+      switch (type) {
+         case BYTE:
+            return ArrayType.BYTE;
+         case SHORT:
+            return ArrayType.SHORT;
+         case CHAR:
+            return ArrayType.CHAR;
+         case INT:
+            return ArrayType.INT;
+         case LONG:
+            return ArrayType.LONG;
+         case FLOAT:
+            return ArrayType.FLOAT;
+         case DOUBLE:
+            return ArrayType.DOUBLE;
+         case OBJECT:
+            return ArrayType.OBJECT;
+         default:
+            throw new AssertionError();
+      }
+   }
+
+   @Override
+   public void visit(InvokeInstruction insn) {
+      Expr[] exprArgs = new Expr[insn.getMethod().getParameterTypes().length];
+
+      for (int i = 0; i < insn.getArguments().size(); i++) {
+         exprArgs[i] = Expr.var(insn.getArguments().get(i).getIndex());
+      }
+
+      InvocationExpr invocationExpr;
+      if (insn.getInstance() != null) {
+         if (insn.getType() == InvocationType.VIRTUAL) {
+            invocationExpr = Expr.invoke(insn.getMethod(), Expr.var(insn.getInstance().getIndex()), exprArgs);
+         } else {
+            invocationExpr = Expr.invokeSpecial(insn.getMethod(), Expr.var(insn.getInstance().getIndex()), exprArgs);
+         }
+      } else {
+         invocationExpr = Expr.invokeStatic(insn.getMethod(), exprArgs);
+      }
+
+      AssignmentStatement stmt;
+      if (insn.getReceiver() != null) {
+         invocationExpr.setVariableIndex(insn.getReceiver().getIndex());
+         stmt = Statement.assign(Expr.var(insn.getReceiver().getIndex()), invocationExpr);
+      } else {
+         stmt = Statement.assign(null, invocationExpr);
+      }
+
+      invocationExpr.setLocation(this.currentLocation);
+      stmt.setLocation(this.currentLocation);
+      stmt.setAsync(this.async);
+      this.async = false;
+      this.statements.add(stmt);
+   }
+
+   @Override
+   public void visit(InvokeDynamicInstruction insn) {
+   }
+
+   @Override
+   public void visit(IsInstanceInstruction insn) {
+      this.assign(Expr.instanceOf(Expr.var(insn.getValue().getIndex()), insn.getType()), insn.getReceiver());
+   }
+
+   private void assign(Expr source, Variable target) {
+      AssignmentStatement stmt = Statement.assign(Expr.var(target.getIndex()), source);
+      source.setLocation(this.currentLocation);
+      source.setVariableIndex(target.getIndex());
+      stmt.setLocation(this.currentLocation);
+      this.statements.add(stmt);
+   }
+
+   private void binary(NumericOperandType type, int first, int second, Variable result, BinaryOperation op) {
+      this.assign(Expr.binary(op, mapOperandType(type), Expr.var(first), Expr.var(second)), result);
+   }
+
+   private static OperationType mapOperandType(NumericOperandType type) {
+      switch (type) {
+         case INT:
+            return OperationType.INT;
+         case LONG:
+            return OperationType.LONG;
+         case FLOAT:
+            return OperationType.FLOAT;
+         case DOUBLE:
+            return OperationType.DOUBLE;
+         default:
+            throw new IllegalArgumentException(type.toString());
+      }
+   }
+
+   Statement generateJumpStatement(Decompiler.Block sourceBlock, BasicBlock target) {
+      Decompiler.Block targetBlock = this.getTargetBlock(sourceBlock, target);
+      if (targetBlock == null) {
+         int targetIndex = this.indexer.indexOf(target.getIndex());
+         if (targetIndex >= sourceBlock.end) {
+            throw new IllegalStateException("Could not find block for basic block $" + target.getIndex());
+         } else {
+            return null;
+         }
+      } else if (target.getIndex() == this.indexer.nodeAt(targetBlock.end)) {
+         BreakStatement breakStmt = new BreakStatement();
+         breakStmt.setLocation(this.currentLocation);
+         breakStmt.setTarget(targetBlock.statement);
+         return breakStmt;
+      } else {
+         ContinueStatement contStmt = new ContinueStatement();
+         contStmt.setLocation(this.currentLocation);
+         contStmt.setTarget(targetBlock.statement);
+         return contStmt;
+      }
+   }
+
+   Statement generateJumpStatement(BasicBlock target) {
+      return this.generateJumpStatement(this.currentBlock, target);
+   }
+
+   private Statement generateJumpStatement(SwitchStatement stmt, int target) {
+      Statement body = this.generateJumpStatement(this.program.basicBlockAt(target));
+      if (body == null) {
+         BreakStatement breakStmt = new BreakStatement();
+         breakStmt.setTarget(stmt);
+         body = breakStmt;
+      }
+
+      return body;
+   }
+
+   private Decompiler.Block getTargetBlock(Decompiler.Block source, BasicBlock target) {
+      Decompiler.Block block = source;
+      int targetIndex = this.indexer.indexOf(target.getIndex());
+      Decompiler.Block candidate = null;
+
+      while (block != null && (block.start >= targetIndex || block.end <= targetIndex)) {
+         if (block.statement instanceof WhileStatement && block.start == targetIndex) {
+            return block;
+         }
+
+         if (block.end == targetIndex) {
+            candidate = block;
+         }
+
+         block = block.parent;
+      }
+
+      return candidate;
+   }
+
+   private void branch(Expr condition, BasicBlock consequentBlock, BasicBlock alternativeBlock) {
+      Statement consequent = this.generateJumpStatement(consequentBlock);
+      Statement alternative = this.generateJumpStatement(alternativeBlock);
+      this.statements
+         .add(
+            Statement.cond(
+               condition,
+               consequent != null ? Arrays.asList(consequent) : Collections.emptyList(),
+               alternative != null ? Arrays.asList(alternative) : Collections.emptyList()
+            )
+         );
+   }
+
+   private Expr compare(BinaryOperation op, OperationType type, Variable value) {
+      Expr left = Expr.var(value.getIndex());
+      left.setLocation(this.currentLocation);
+      Expr right = Expr.constant(0);
+      right.setLocation(this.currentLocation);
+      Expr expr = Expr.binary(op, type, left, right);
+      expr.setLocation(this.currentLocation);
+      return expr;
+   }
+
+   @Override
+   public void visit(InitClassInstruction insn) {
+      InitClassStatement stmt = Statement.initClass(insn.getClassName());
+      stmt.setLocation(this.currentLocation);
+      stmt.setAsync(this.async);
+      this.async = false;
+      this.statements.add(stmt);
+   }
+
+   @Override
+   public void visit(NullCheckInstruction insn) {
+      Expr expr = Expr.unary(UnaryOperation.NULL_CHECK, null, Expr.var(insn.getValue().getIndex()));
+      expr.setLocation(insn.getLocation());
+      this.assign(expr, insn.getReceiver());
+   }
+
+   @Override
+   public void visit(MonitorEnterInstruction insn) {
+      MonitorEnterStatement stmt = new MonitorEnterStatement();
+      stmt.setLocation(this.currentLocation);
+      stmt.setObjectRef(Expr.var(insn.getObjectRef().getIndex()));
+      this.async = false;
+      this.statements.add(stmt);
+   }
+
+   @Override
+   public void visit(MonitorExitInstruction insn) {
+      MonitorExitStatement stmt = new MonitorExitStatement();
+      stmt.setLocation(this.currentLocation);
+      stmt.setObjectRef(Expr.var(insn.getObjectRef().getIndex()));
+      this.statements.add(stmt);
+   }
+
+   @Override
+   public void visit(BoundCheckInstruction insn) {
+      BoundCheckExpr expr = new BoundCheckExpr();
+      expr.setLower(insn.isLower());
+      expr.setIndex(Expr.var(insn.getIndex().getIndex()));
+      if (insn.getArray() != null) {
+         expr.setArray(Expr.var(insn.getArray().getIndex()));
+      }
+
+      this.assign(expr, insn.getReceiver());
+   }
+}

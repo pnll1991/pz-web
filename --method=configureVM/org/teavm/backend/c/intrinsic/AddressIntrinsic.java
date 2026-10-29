@@ -1,0 +1,281 @@
+package org.teavm.backend.c.intrinsic;
+
+import org.teavm.ast.Expr;
+import org.teavm.ast.InvocationExpr;
+import org.teavm.ast.VariableExpr;
+import org.teavm.backend.c.generate.CodeGeneratorUtil;
+import org.teavm.backend.c.util.ConstantUtil;
+import org.teavm.interop.Address;
+import org.teavm.model.ClassReader;
+import org.teavm.model.MethodReference;
+import org.teavm.model.ValueType;
+
+public class AddressIntrinsic implements Intrinsic {
+   @Override
+   public boolean canHandle(MethodReference method) {
+      if (!method.getClassName().equals(Address.class.getName())) {
+         return false;
+      }
+
+      switch (method.getName()) {
+         case "fromInt":
+         case "fromLong":
+         case "toInt":
+         case "toLong":
+         case "toStructure":
+         case "ofObject":
+         case "getByte":
+         case "getShort":
+         case "getChar":
+         case "getInt":
+         case "getLong":
+         case "getFloat":
+         case "getDouble":
+         case "getAddress":
+         case "putByte":
+         case "putShort":
+         case "putChar":
+         case "putInt":
+         case "putLong":
+         case "putFloat":
+         case "putDouble":
+         case "putAddress":
+         case "add":
+         case "isLessThan":
+         case "align":
+         case "sizeOf":
+         case "ofData":
+         case "pin":
+         case "fillZero":
+         case "fill":
+         case "moveMemoryBlock":
+            return true;
+         default:
+            return false;
+      }
+   }
+
+   @Override
+   public void apply(IntrinsicContext context, InvocationExpr invocation) {
+      switch (invocation.getMethod().getName()) {
+         case "fromInt":
+         case "fromLong":
+            context.writer().print("((void*) (intptr_t) ");
+            context.emit(invocation.getArguments().get(0));
+            context.writer().print(")");
+            break;
+         case "toInt":
+            context.writer().print("((int32_t) (intptr_t) ");
+            context.emit(invocation.getArguments().get(0));
+            context.writer().print(")");
+            break;
+         case "toLong":
+            context.writer().print("((int64_t) (intptr_t) ");
+            context.emit(invocation.getArguments().get(0));
+            context.writer().print(")");
+            break;
+         case "toStructure":
+         case "ofObject":
+            context.emit(invocation.getArguments().get(0));
+            break;
+         case "getByte":
+            context.writer().print("((int32_t) *(int8_t*) ");
+            context.emit(invocation.getArguments().get(0));
+            context.writer().print(")");
+            break;
+         case "getShort":
+            context.writer().print("((int32_t) *(int16_t*) ");
+            context.emit(invocation.getArguments().get(0));
+            context.writer().print(")");
+            break;
+         case "getChar":
+            context.writer().print("((int32_t) *(char16_t*) ");
+            context.emit(invocation.getArguments().get(0));
+            context.writer().print(")");
+            break;
+         case "getInt":
+            this.getValue(context, invocation, "int32_t");
+            break;
+         case "getLong":
+            this.getValue(context, invocation, "int64_t");
+            break;
+         case "getFloat":
+            this.getValue(context, invocation, "float");
+            break;
+         case "getDouble":
+            this.getValue(context, invocation, "double");
+            break;
+         case "getAddress":
+            this.getValue(context, invocation, "void*");
+            break;
+         case "putByte":
+            context.writer().print("(*(int8_t*) ");
+            context.emit(invocation.getArguments().get(0));
+            context.writer().print(" = (int8_t) ");
+            context.emit(invocation.getArguments().get(1));
+            context.writer().print(")");
+            break;
+         case "putShort":
+            context.writer().print("(*(int16_t*) ");
+            context.emit(invocation.getArguments().get(0));
+            context.writer().print(" = (int16_t) ");
+            context.emit(invocation.getArguments().get(1));
+            context.writer().print(")");
+            break;
+         case "putChar":
+            context.writer().print("(*(char16_t*) ");
+            context.emit(invocation.getArguments().get(0));
+            context.writer().print(" = (char16_t) ");
+            context.emit(invocation.getArguments().get(1));
+            context.writer().print(")");
+            break;
+         case "putInt":
+            this.putValue(context, invocation, "int32_t");
+            break;
+         case "putLong":
+            this.putValue(context, invocation, "int64_t");
+            break;
+         case "putFloat":
+            this.putValue(context, invocation, "float");
+            break;
+         case "putDouble":
+            this.putValue(context, invocation, "double");
+            break;
+         case "putAddress":
+            this.putValue(context, invocation, "void*");
+            break;
+         case "add":
+            if (invocation.getArguments().size() == 2) {
+               context.writer().print("TEAVM_ADDRESS_ADD(");
+               context.emit(invocation.getArguments().get(0));
+               context.writer().print(", ");
+               context.emit(invocation.getArguments().get(1));
+               context.writer().print(")");
+            } else {
+               context.writer().print("TEAVM_ADDRESS_ADD(");
+               context.emit(invocation.getArguments().get(0));
+               context.writer().print(", ");
+               String className = ConstantUtil.getClassLiteral(context, invocation, invocation.getArguments().get(1));
+               context.emit(invocation.getArguments().get(2));
+               context.writer().print(" * sizeof(");
+               if (className != null) {
+                  ClassReader cls = context.classes().get(className);
+                  CodeGeneratorUtil.printClassReference(context.writer(), context.includes(), context.names(), cls, className);
+               } else {
+                  context.writer().print("**");
+               }
+
+               context.writer().print(")");
+               context.writer().print(")");
+            }
+            break;
+         case "isLessThan":
+            context.writer().print("((uintptr_t) ");
+            context.emit(invocation.getArguments().get(0));
+            context.writer().print(" < (uintptr_t) ");
+            context.emit(invocation.getArguments().get(1));
+            context.writer().print(")");
+            break;
+         case "align":
+            context.writer().print("TEAVM_ALIGN(");
+            context.emit(invocation.getArguments().get(0));
+            context.writer().print(", ");
+            context.emit(invocation.getArguments().get(1));
+            context.writer().print(")");
+            break;
+         case "sizeOf":
+            context.writer().print("sizeof(void*)");
+            break;
+         case "ofData":
+            if (invocation.getMethod().parameterType(0) instanceof ValueType.Object) {
+               context.emitCallSite();
+               context.writer()
+                  .print(
+                     context.names()
+                        .forMethod(
+                           new MethodReference(
+                              "java.nio.NativeBufferUtil", "getAddress", ValueType.object("java.nio.Buffer"), ValueType.object(Address.class.getName())
+                           )
+                        )
+                  );
+               context.writer().print("(");
+               context.emit(invocation.getArguments().get(0));
+               context.writer().print("))");
+            } else {
+               ValueType.Array type = (ValueType.Array)invocation.getMethod().parameterType(0);
+               context.writer().print("TEAVM_ARRAY_DATA(");
+               context.emit(invocation.getArguments().get(0));
+               context.writer().print(", ").printType(type.getItemType()).print(")");
+            }
+            break;
+         case "pin":
+            context.writer().print("/* PIN ");
+            Expr arg = invocation.getArguments().get(0);
+            if (arg instanceof VariableExpr) {
+               context.writer().print(((VariableExpr)arg).getIndex() + " ");
+            }
+
+            context.writer().print("*/");
+            break;
+         case "fillZero":
+            context.includes().addInclude("<string.h>");
+            context.writer().print("memset(");
+            context.emit(invocation.getArguments().get(0));
+            context.writer().print(", 0, ");
+            context.emit(invocation.getArguments().get(1));
+            context.writer().print(")");
+            break;
+         case "fill":
+            context.includes().addInclude("<string.h>");
+            context.writer().print("memset(");
+            context.emit(invocation.getArguments().get(0));
+            context.writer().print(", ");
+            context.emit(invocation.getArguments().get(1));
+            context.writer().print(", ");
+            context.emit(invocation.getArguments().get(2));
+            context.writer().print(")");
+            break;
+         case "moveMemoryBlock":
+            context.includes().addInclude("<string.h>");
+            context.writer().print("memmove(");
+            context.emit(invocation.getArguments().get(1));
+            context.writer().print(", ");
+            context.emit(invocation.getArguments().get(0));
+            context.writer().print(", ");
+            context.emit(invocation.getArguments().get(2));
+            context.writer().print(")");
+      }
+   }
+
+   private void getValue(IntrinsicContext context, InvocationExpr invocation, String type) {
+      context.writer().print("(*(" + type + "*) ");
+      context.emit(invocation.getArguments().get(0));
+      context.writer().print(")");
+   }
+
+   private void putValue(IntrinsicContext context, InvocationExpr invocation, String type) {
+      context.writer().print("(*(" + type + "*) ");
+      context.emit(invocation.getArguments().get(0));
+      context.writer().print(" = ");
+      context.emit(invocation.getArguments().get(1));
+      context.writer().print(")");
+   }
+
+   private int sizeOf(ValueType type) {
+      switch (((ValueType.Primitive)type).getKind()) {
+         case BYTE:
+            return 1;
+         case SHORT:
+         case CHARACTER:
+            return 2;
+         case INTEGER:
+         case FLOAT:
+            return 4;
+         case LONG:
+         case DOUBLE:
+            return 8;
+         default:
+            return 0;
+      }
+   }
+}

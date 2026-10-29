@@ -82,9 +82,17 @@ export class GLBridge {
     this.queries = new Map(); // GL handle -> {query,target}
     this.shaders = new Map(); // GL handle -> {shader,type,source,compiled,log}
     this.programs = new Map(); // GL handle -> {program,shaders:Set,log,linked,used}
+    // Observability only (never a fake success): every shader compile and program link is
+    // recorded here because destroy() removes the maps above. Entries keep the WebGL2 info log
+    // so a failing desktop program (e.g. media/shaders/default) can be diagnosed in the browser.
+    this.shaderTrail = []; // {kind:'compile'|'link', handle, ok, log, detail}
     this.attribs = new Map(); // attribute index -> {enabled,size,...} recorded by glVertexAttribPointer
     this.locations = new Map(); // location handle -> WebGLUniformLocation (0 means "no location")
     this.boundElements = null; // last ELEMENT_ARRAY_BUFFER handle (drawElements needs it)
+    // Desktop *_BINDING queries must report the GL handle the game passed to glBindBuffer, so the
+    // handle (not only the WebGL object) is recorded alongside it.
+    this.boundArrayHandle = 0;   // GL_ARRAY_BUFFER_BINDING (34964)
+    this.boundElementHandle = 0; // GL_ELEMENT_ARRAY_BUFFER_BINDING (34965)
     this.vertexArrays = new Map(); // GL handle -> WebGLVertexArrayObject (GL30 natives)
     this.framebuffers = new Map(); // GL handle -> WebGLFramebuffer (GL30 framebuffer natives)
     this.renderbuffers = new Map(); // GL handle -> WebGLRenderbuffer (GL30 renderbuffer natives)
@@ -460,6 +468,10 @@ export class GLBridge {
     [0x8b4d, 'MAX_COMBINED_TEXTURE_IMAGE_UNITS'], [0x8869, 'MAX_VERTEX_ATTRIBS'],
     [0x8dfb, 'MAX_VERTEX_UNIFORM_VECTORS'], [0x8dfc, 'MAX_VARYING_VECTORS'],
     [0x8dfd, 'MAX_FRAGMENT_UNIFORM_VECTORS'], [0x84d8, 'MAX_SAMPLES'],
+    [0x80e9, 'MAX_ELEMENTS_INDICES'], [0x8b4a, 'MAX_VERTEX_UNIFORM_COMPONENTS'],
+    [0x8587, 'MAX_VERTEX_OUTPUT_COMPONENTS'], [0x88a4, 'MAX_FRAGMENT_INPUT_COMPONENTS'],
+    [0x8a3b, 'MAX_VERTEX_UNIFORM_BLOCKS'], [0x8a3d, 'MAX_FRAGMENT_UNIFORM_BLOCKS'],
+    [0x8a3e, 'MAX_COMBINED_UNIFORM_BLOCKS'],
   ]);
   static BOOL_ANSWERS = new Map([
     [0x0c11, 'SCISSOR_TEST'], [0x0b44, 'CULL_FACE'], [0x0b71, 'DEPTH_TEST'], [0x0b90, 'STENCIL_TEST'],
@@ -478,6 +490,12 @@ export class GLBridge {
     if (pname === 0x0d35) return [this.attribLimit]; // GL_MAX_ATTRIB_STACK_DEPTH
     if (pname === 0x0d3b) return [this.attribLimit]; // GL_MAX_CLIENT_ATTRIB_STACK_DEPTH
     if (pname === 0x9126) return [0]; // GL_CONTEXT_PROFILE_MASK: WebGL2 has no profile bits
+    // Desktop binding queries report GL handles; WebGL2 would answer with a JS object, so these come
+    // from the bindings this bridge actually applied (bindBuffer/useProgram/bindTexture).
+    if (pname === 0x8894) return [this.boundArrayHandle];   // GL_ARRAY_BUFFER_BINDING (34964)
+    if (pname === 0x8895) return [this.boundElementHandle]; // GL_ELEMENT_ARRAY_BUFFER_BINDING (34965)
+    if (pname === 0x8069) return [this.textureUnits[this.activeUnit] ?? 0]; // GL_TEXTURE_BINDING_2D (32873)
+    if (pname === 0x8bad) return [this.currentProgram ? this.currentProgram.handle : 0]; // GL_CURRENT_PROGRAM (35725)
     const constant = GLBridge.INT_ANSWERS.get(pname);
     if (constant === undefined || gl[constant] === undefined)
       throw new Error(`Unsupported WebGL2 integer parameter: 0x${pname.toString(16)}`);
@@ -547,12 +565,14 @@ export class GLBridge {
       throw new Error(`Unsupported WebGL2 buffer target: 0x${target.toString(16)}`);
     if (handle === 0) {
       this.call('bindBuffer', target, null);
-      if (target === gl.ARRAY_BUFFER) this.boundArrays = null; else this.boundElements = null;
+      if (target === gl.ARRAY_BUFFER) { this.boundArrays = null; this.boundArrayHandle = 0; }
+      else { this.boundElements = null; this.boundElementHandle = 0; }
       return;
     }
     const buffer = this.bufferEntry(handle, 'bindBuffer').buffer;
     this.call('bindBuffer', target, buffer);
-    if (target === gl.ARRAY_BUFFER) this.boundArrays = buffer; else this.boundElements = buffer;
+    if (target === gl.ARRAY_BUFFER) { this.boundArrays = buffer; this.boundArrayHandle = handle; }
+    else { this.boundElements = buffer; this.boundElementHandle = handle; }
   }
   isBuffer(handle) { return this.buffers.has(handle); }
   bufferData(target, size, data) {
@@ -1072,6 +1092,9 @@ export class GLBridge {
     this.call('compileShader', entry.shader);
     entry.compiled = this.call('getShaderParameter', entry.shader, this.context.COMPILE_STATUS) ? true : false;
     entry.log = String(this.call('getShaderInfoLog', entry.shader) ?? '');
+    if (this.shaderTrail.length < 400)
+      this.shaderTrail.push({ kind: 'compile', handle, type: entry.type, ok: entry.compiled,
+        log: entry.log, source: entry.compiled ? '' : entry.source.slice(0, 1200) });
   }
   createProgram() {
     const handle = this.nextHandle++;
@@ -1108,12 +1131,20 @@ export class GLBridge {
     this.call('linkProgram', program.program);
     program.linked = this.call('getProgramParameter', program.program, this.context.LINK_STATUS) ? true : false;
     program.log = String(this.call('getProgramInfoLog', program.program) ?? '');
+    const sources = [];
+    for (const h of program.shaders) {
+      const s = this.shaders.get(h);
+      sources.push({ handle: h, type: s?.type ?? null, compiled: s?.compiled ?? null, log: s?.log ?? '' });
+    }
+    if (this.shaderTrail.length < 400)
+      this.shaderTrail.push({ kind: 'link', handle, ok: program.linked, log: program.log, shaders: sources });
   }
   useProgram(handle) {
     if (handle === 0) { this.call('useProgram', null); this.currentProgram = null; return; }
     const entry = this.programEntry(handle, 'useProgram');
     this.call('useProgram', entry.program);
     this.currentProgram = entry;
+    entry.handle = handle; // GL_CURRENT_PROGRAM reports the handle the game used
     // Desktop GL keeps alpha-test state globally; WebGL2 can only reproduce it per program, so the
     // recorded state is uploaded to whatever program just became current.
     this.applyAlphaTest(entry);
@@ -1122,37 +1153,61 @@ export class GLBridge {
     const program = this.programEntry(handle, 'validateProgram');
     this.call('validateProgram', program.program);
   }
-  /** Desktop shader/program parameter tokens answered from real WebGL2 parameters. */
+  /**
+   * Desktop shader/program parameter tokens. WebGL2 deliberately drops several GL enums
+   * (INFO_LOG_LENGTH, SHADER_SOURCE_LENGTH, ACTIVE_*_MAX_LENGTH, TRANSFORM_FEEDBACK_BUFFER_COUNT),
+   * so those are answered from state this bridge already owns or from WebGL2 introspection
+   * (getActiveUniform/getActiveAttrib) rather than from a missing constant. Any other token raises
+   * with its own name instead of guessing a value.
+   */
   shaderParameter(handle, pname) {
     const gl = this.context, entry = this.shaderEntry(handle, 'getShaderiv');
-    const answers = new Map([
-      [0x8b8d, gl.COMPILE_STATUS], [0x8b81, gl.SHADER_TYPE], [0x8b85, gl.DELETE_STATUS],
-      [0x8b86, gl.INFO_LOG_LENGTH], [0x8b87, gl.INFO_LOG_LENGTH], [0x8ae2, gl.SHADER_SOURCE_LENGTH],
-    ]);
-    const constant = answers.get(pname);
+    switch (pname) {
+      case 0x8b80: return [1]; // DELETE_STATUS: the handle is live while it is in this map
+      case 0x8b81: return [entry.compiled ? 1 : 0]; // this bridge records the compile result
+      case 0x8b4f: return [entry.type]; // SHADER_TYPE: recorded at glCreateShader
+      case 0x8b84: return [entry.log.length === 0 ? 0 : entry.log.length + 1]; // desktop log length includes NUL
+      case 0x8b88: return [entry.source.length === 0 ? 0 : entry.source.length + 1];
+      default: break;
+    }
+    // Tokens WebGL2 does expose go straight to the real WebGL2 parameter.
+    const constant = pname === 0x8b89 ? gl.REFERENCE_COUNT
+      : pname === 0x8b30 ? gl.SHADER_COMPILER_OPTIONS : undefined;
     if (constant === undefined) throw new Error(`Unsupported WebGL2 shader parameter: 0x${pname.toString(16)}`);
     const value = gl.getShaderParameter(entry.shader, constant);
-    if (pname === 0x8b8d) return [entry.compiled ? 1 : 0]; // this bridge records the compile result
-    if (pname === 0x8b81) return [entry.type];
-    if (pname === 0x8b86 || pname === 0x8b87) return [entry.log.length + 1]; // desktop log length includes NUL
-    if (pname === 0x8b85) return [1]; // the handle is live while it is in this map
-    if (pname === 0x8ae2) return [entry.source.length + 1];
     return [typeof value === 'boolean' ? (value ? 1 : 0) : Number(value)];
   }
   programParameter(handle, pname) {
     const gl = this.context, entry = this.programEntry(handle, 'getProgramiv');
-    const answers = new Map([
-      [0x8a86, gl.LINK_STATUS], [0x8b85, gl.DELETE_STATUS], [0x8b86, gl.INFO_LOG_LENGTH],
-      [0x8b87, gl.INFO_LOG_LENGTH], [0x8a87, gl.VALIDATE_STATUS], [0x8a8a, gl.ACTIVE_ATTRIBUTES],
-      [0x8a8b, gl.ACTIVE_UNIFORMS], [0x8b88, gl.ATTACHED_SHADERS], [0x8e20, gl.TRANSFORM_FEEDBACK_BUFFER_COUNT],
-    ]);
-    const constant = answers.get(pname);
+    switch (pname) {
+      case 0x8b80: return [1]; // DELETE_STATUS: live handle
+      case 0x8b82: return [entry.linked ? 1 : 0]; // this bridge records the link result
+      case 0x8b83: return [Number(gl.getProgramParameter(entry.program, gl.VALIDATE_STATUS)) ? 1 : 0];
+      case 0x8b84: return [entry.log.length === 0 ? 0 : entry.log.length + 1];
+      case 0x8b85: return [entry.shaders.size]; // ATTACHED_SHADERS from the attach/detach bookkeeping
+      case 0x8b86: return [Number(gl.getProgramParameter(entry.program, gl.ACTIVE_UNIFORMS))];
+      case 0x8b89: return [Number(gl.getProgramParameter(entry.program, gl.ACTIVE_ATTRIBUTES))];
+      case 0x8b87: return [this.maxNameLength(entry, 'uniform')];
+      case 0x8b8a: return [this.maxNameLength(entry, 'attribute')];
+      case 0x8b88: return [0]; // no program source on desktop either
+      default: break;
+    }
+    const constant = pname === 0x8e20 ? gl.MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS : undefined;
     if (constant === undefined) throw new Error(`Unsupported WebGL2 program parameter: 0x${pname.toString(16)}`);
-    if (pname === 0x8a86) return [entry.linked ? 1 : 0]; // this bridge records the link result
-    if (pname === 0x8b88) return [entry.shaders.size];
-    if (pname === 0x8b85) return [1];
-    if (pname === 0x8b86 || pname === 0x8b87) return [entry.log.length + 1];
     return [Number(gl.getProgramParameter(entry.program, constant))];
+  }
+  /** Desktop ACTIVE_{UNIFORM,ATTRIBUTE}_MAX_LENGTH: longest introspection name plus the NUL,
+   * measured from WebGL2's own getActiveUniform/getActiveAttrib (0 when nothing is active). */
+  maxNameLength(entry, kind) {
+    const gl = this.context;
+    const count = Number(gl.getProgramParameter(entry.program,
+      kind === 'uniform' ? gl.ACTIVE_UNIFORMS : gl.ACTIVE_ATTRIBUTES));
+    let longest = 0;
+    for (let i = 0; i < count; i++) {
+      const info = kind === 'uniform' ? gl.getActiveUniform(entry.program, i) : gl.getActiveAttrib(entry.program, i);
+      if (info && info.name.length > longest) longest = info.name.length;
+    }
+    return longest === 0 ? 0 : longest + 1;
   }
   shaderInfoLog(handle) {
     const entry = this.shaderEntry(handle, 'getShaderInfoLog');
@@ -1163,6 +1218,46 @@ export class GLBridge {
     const entry = this.programEntry(handle, 'getProgramInfoLog');
     if (entry.log === '') entry.log = String(this.call('getProgramInfoLog', entry.program) ?? '');
     return entry.log;
+  }
+  /** glBindAttribLocation: WebGL2 exposes it, so the requested name/index reaches the driver. */
+  bindAttribLocation(programHandle, index, name) {
+    const program = this.programEntry(programHandle, 'bindAttribLocation');
+    if (program.linked) program.linked = false; // desktop: binding after linking is ignored
+    this.call('bindAttribLocation', program.program, index, name);
+  }
+  /** glGetAttachedShaders: WebGL2's own list, translated to this bridge's handles. */
+  attachedShaders(programHandle, maxCount) {
+    const program = this.programEntry(programHandle, 'getAttachedShaders');
+    const webgl = this.call('getAttachedShaders', program.program) || [];
+    const byShader = new Map();
+    for (const [handle, entry] of this.shaders) byShader.set(entry.shader, handle);
+    const out = [];
+    for (const shader of webgl) {
+      if (out.length >= maxCount) break; // desktop: maxCount caps the writes, 0 writes nothing
+      const handle = byShader.get(shader);
+      if (handle !== undefined) out.push(handle);
+    }
+    return out;
+  }
+  /** Name of an active uniform (kind 1) or attribute (kind 0), straight from WebGL2. */
+  activeName(programHandle, index, kind) {
+    const program = this.programEntry(programHandle, kind ? 'getActiveUniform' : 'getActiveAttrib');
+    const info = kind ? this.call('getActiveUniform', program.program, index)
+      : this.call('getActiveAttrib', program.program, index);
+    if (info === null) throw new Error(`No active ${kind ? 'uniform' : 'attribute'} ${index} in program ${programHandle}`);
+    return String(info.name);
+  }
+  /** [size, GL type] of an active uniform/attribute; WebGL2's type tokens are the GL ones. */
+  activeSizeType(programHandle, index, kind) {
+    const program = this.programEntry(programHandle, kind ? 'getActiveUniform' : 'getActiveAttrib');
+    const info = kind ? this.call('getActiveUniform', program.program, index)
+      : this.call('getActiveAttrib', program.program, index);
+    if (info === null) throw new Error(`No active ${kind ? 'uniform' : 'attribute'} ${index} in program ${programHandle}`);
+    return [Number(info.size), Number(info.type)];
+  }
+  /** glGetShaderSource: the source actually handed to WebGL2 (translated GLSL). */
+  shaderSourceText(handle) {
+    return this.shaderEntry(handle, 'getShaderSource').source;
   }
   /**
    * Desktop uniform/attribute names and pointers become WebGL2 locations. A location handle

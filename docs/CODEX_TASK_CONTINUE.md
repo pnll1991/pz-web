@@ -57,3 +57,19 @@ Cada ronda se corta sola a las 4 horas exactas y, hasta ahora, ninguna llegó a 
 - Leé la sección "Ronda 47: AttackState" de `docs/notes-from-code.md` y aplicá ese fix tal cual: transformer StateParamCaller que fija la clase llamadora al compilar (50 clases de zombie.ai.states; el build falla si el bytecode no tiene la forma esperada). Causa: en TeaVM Thread.getStackTrace() es vacío ⇒ StackWalker da null ⇒ isAssignableFrom(null) trap.
 - Verificalo como dice la nota, con UN solo build --with-game, y anotá el resultado en STATUS.md. Sin stubs.
 - Regla: ante cualquier 'dereferencing a null pointer' en Wasm GC, revisá primero si el null viene de algo de la classlib que devuelve vacío.
+
+## OBLIGATORIO: quinto diagnóstico de Code (StateRun render, ronda 49)
+- Leé la sección "Ronda 49: StateRun render" de `docs/notes-from-code.md` y aplicala en este orden:
+  1. El null pointer es porque defaultShader es null: faltan media/shaders/default.vert y default.frag (con sus #include) en el pack de arranque (build/real-browser/startup.txt no tiene media/shaders). Agregalos y reempaquetá. NO pongas una guarda contra null.
+  2. En gl.mjs (~líneas 1126-1156): shaderParameter usa 0x8B81 como SHADER_TYPE, pero 0x8B81 es COMPILE_STATUS (SHADER_TYPE es 0x8B4F). A programParameter agregale 0x8B82 LINK_STATUS y 0x8B83 VALIDATE_STATUS.
+  3. Agregá al pack mainfont_0.png, mainfont2_0.png y zomboidDialogue.bmfc_0.png (AngelCodeFont no los encuentra).
+- Después, UN solo build --with-game, probá en Chrome y anotá en STATUS.md. Pendientes para después: los 8 FileNotFoundException, los UnsatisfiedLinkError de oshi/RakNet64 y un invokeOnRenderContext que nunca vuelve.
+
+## Sexto diagnóstico de Code (ronda 49b, camino al menú) — aplicar junto con el quinto
+Detalle en docs/notes-from-code.md, sección 'Ronda 49b: próximos frenos'.
+1. startup.txt: agregar TODO media/shaders/** (196 archivos con includes) y los texturepacks UI, UI2, IconsMoveables, RadioIcons, ApComUI, Mechanics, WeatherFx. UI2 pesa 54,6 MB: subir --max-bytes de pack.py (hoy 32 MB) o ponerla en un blob propio.
+2. gl.mjs: shaderParameter debe manejar 0x8B81, 0x8B84, 0x8B88, 0x8B4F, 0x8B80. programParameter: 0x8B80, 0x8B82–0x8B87, 0x8B89. INFO_LOG_LENGTH = largo del log + 1, o 0 si está vacío.
+3. oshi (printSpecs), RakNet64 (SteamUtils → netEnabled=false) y páginas de fuente: el juego los tolera, NO simular éxito ni tocarlos.
+4. invokeOnRenderContext que no vuelve es consecuencia del trap de StateRun; no es un bug aparte.
+5. Queda 1 FileNotFoundException sin identificar (probablemente LuaManager.init): hookear readFile para loguear la ruta.
+Hacer UN solo build después de 1+2 y probar en Chrome.

@@ -462,3 +462,111 @@ Captura de esta ronda: `test-results/round40-final.png` (1280×720) — 876.098 
   `GL_ATTRIB_STACK_DEPTH/GL_CLIENT_ATTRIB_STACK_DEPTH/GL_MAX_(CLIENT_)ATTRIB_STACK_DEPTH` responden desde
   esta pila. `port/shim/GL11.java` +4 wrappers/JSBodies, `tools/glgen/generate.py` +4 entradas
   (`gl-overrides.tsv` 177→181 mappings). 5 tests nuevos en `tests/node/gl-state.test.mjs`: **npm test 35 pass / 0 fail**.
+
+## Ronda 49 (inicio 12:15:15, corte duro 15:33) — avances incrementales
+- 12:16 Inicio. Heredado de la ronda 48 (`build-round48-game.log` SUCCESS/gate PASS, `boot.wasm` 143.118.755 B,
+  `diag136.log`): el trap de `Class::isAssignableFrom` por `State$Param` **desapareció**; queda **un solo**
+  `RuntimeError: dereferencing a null pointer` en el RenderThread:
+  `SpriteRenderer$RingBuffer$StateRun::render` (wasm-function[385500], offset `0x3b50ac8`) ← `RingBuffer::render`
+  ← `buildStateDrawBuffer` ← `postRender` ← `lockStepRenderStep`. `phase:"starting"`, `swap:2`, canvas negro.
+  DebugLog 28.567 B: 8× `FileNotFoundException`, 1× oshi `Unsupported platform: UNSUPPORTED`,
+  1× `UnsatisfiedLinkError ... missing for RakNet64`.
+
+### Ronda 49 — cambios 13:15→13:35 (quinto y sexto diagnóstico de Code)
+- `port/runtime/gl.mjs` (+ copia a `port/target/web/runtime/`): corregida la tabla de `pname` según el 5.º/6.º
+  diagnóstico. `shaderParameter` ahora usa el mapa real `{0x8B80 DELETE_STATUS, 0x8B81 COMPILE_STATUS,
+  0x8B84 INFO_LOG_LENGTH, 0x8B4F SHADER_TYPE, 0x8B88 SHADER_SOURCE_LENGTH}` (antes 0x8B81 figuraba como
+  SHADER_TYPE y había tokens inexistentes). `programParameter`: `{0x8B80, 0x8B82 LINK_STATUS,
+  0x8B83 VALIDATE_STATUS, 0x8B84 INFO_LOG_LENGTH, 0x8B85 ATTACHED_SHADERS, 0x8B86 ACTIVE_UNIFORMS,
+  0x8B87 ACTIVE_UNIFORM_MAX_LENGTH, 0x8B89 ACTIVE_ATTRIBUTES, 0x8B8A ACTIVE_ATTRIBUTE_MAX_LENGTH, 0x8E20}`.
+  `INFO_LOG_LENGTH` = `log.length + 1`, o **0 si vacío**. Método nuevo `maxNameLength()` para los dos
+  `ACTIVE_*_MAX_LENGTH` (nombre más largo + 1, 0 si nada activo). Verificado contra el constant pool:
+  `ShaderProgram` pide 35716 (0x8B84) en shader y programa; `ShaderBufferData$BufferUtility` usa 35718/35719.
+- `tools/pack/startup_extra.py` (nuevo): genera entradas derivadas de `PZ_HOME` (nunca inventadas):
+  `media/shaders/**` (196), texturepacks UI/UI2/IconsMoveables/RadioIcons/ApComUI/Mechanics/WeatherFx,
+  `media/lua/shared/defines.lua` y `media/lua/shared/Sandbox/**`. Causas confirmadas en bytecode:
+  constant pool de `ShaderProgram` (`media/shaders/{name}*.vert/.frag`), `ShaderUnit` resuelve `#include`
+  relativo (por eso van los `util/*.h`), y `SandboxOptions::<clinit>` → `RunLua("lua/shared/defines.lua")`.
+- `build/real-browser/startup.txt`: 232 → **442 entradas** (+57.519.423 B). Backup `/tmp/startup-round49-backup.txt`.
+- Re-empacado: `pack.py --max-bytes 80000000` (el default 32 MB rechazaba `UI2.pack` = 54,6 MB) → blob único
+  **76.542.942 B**; luego `alias_index.py --from-dir media/fonts/` (179 alias) y `media/fonts/EN/1x/` (12 alias).
+  `index.json` servido: **633 archivos**, montado 94.548.050 B (< presupuesto VFS 256 MB). El dev server 8092
+  no se reinició: `/packs/index.json` y `/media/shaders/default.vert` → HTTP 200.
+- `port/runtime/vfs.mjs`: `noteMissing(path)` registra rutas ausentes en `globalThis.pzRuntime.missingPaths`
+  (únicas, ≤200) y `missingPathCounts`; lo llaman `readFile`/`readInto` **antes** de lanzar ENOENT (el ENOENT
+  sigue propagando: observabilidad, no simulación). Resuelve el pendiente "hookear readFile para ver la ruta".
+- FNF de la ronda 49 asignadas: 7× `LuaManager::RunLua ← SandboxOptions::<clinit>` (defines.lua/Sandbox) y
+  `LoadTexturePack` (7 packs UI) → cubiertas por el nuevo pack. Las 3 líneas "AngelCodeFont failed to load
+  page 0" (`/media/mainfont_0.png`, `/media/mainfont2_0.png`, `/media/fonts/zomboidDialogue.bmfc_0.png`)
+  **no existen en la instalación vanilla** (`mainfont.fnt` apunta a `test_0.tga`, también ausente): error
+  tolerado por el juego, no empaquetable. oshi/RakNet64: ruido tolerado, sin tocar.
+- 13:33 lanzado **UN** build `--with-game` (foreground, `MAVEN_OPTS=-Xmx8g -Xss16m`) → `build-round49-game.log`.
+  Necesario porque `build.sh` re-copia `port/runtime/*.mjs` a `port/target/web/runtime/` y regenera los `.mjs`
+  de TeaVM con los fixes de gl.mjs/vfs.mjs.
+- 13:41 `diag140.log` (build 13:39, gate PASS, boot.wasm 143.118.755 B): los shaders **sí llegan** y compilea, pero
+  el pack nuevo cambió el frenado: `Unsupported WebGL2 shader parameter: 0x8b84` ×2. Causa: **`gl.INFO_LOG_LENGTH`
+  (y `SHADER_SOURCE_LENGTH`, `ACTIVE_*_MAX_LENGTH`, `TRANSFORM_FEEDBACK_BUFFER_COUNT`, `DELETE_STATUS`) no existen
+  en WebGL2** → el mapa daba `undefined` → raise → el link del `default` nunca ocurría → `defaultShader` seguía
+  null → el mismo trap de `StateRun::render`. Verificado en Chrome (`port/target/glconst.mjs`): WebGL2 expone
+  DELETE_STATUS 35712, COMPILE_STATUS 35713, LINK_STATUS 35714, VALIDATE_STATUS 35715, SHADER_TYPE 35663,
+  ATTACHED_SHADERS 35717, ACTIVE_UNIFORMS 35718, ACTIVE_ATTRIBUTES 35721, MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS
+  35979; los demás son `undefined`.
+- `gl.mjs`: `shaderParameter`/`programParameter` reescritos con `switch` (sin constantes inexistentes): los tokens
+  caídos responden desde el estado propio del bridge (compiled/linked/log/shaders/source) o desde introspección real
+  (`getActiveUniform`/`getActiveAttrib` para los `*_MAX_LENGTH`). Token desconocido → raise con su nombre.
+- 13:43 `diag141.log`: el 0x8b84 desapareció. Ahora el bloqueo es
+  `UnsupportedOperationException: WebGL2 does not expose glBindAttribLocation` ×3 (`GL20.java:208`), que aborta
+  `ShaderProgram` antes de `attachShader`/`linkProgram`: `programs:1 linked:false shaders:[]`, `glCalls` sin
+  `attachShader`/`linkProgram`, `shaderTrail` vacío, y sigue el trap de `StateRun::render` (defaultShader null).
+  `missingPaths` sigue vacío (todas las lecturas del VFS tienen ruta). DebugLog baja 28.567 → 16.734 B y las 8 FNF
+  desaparecieron.
+- Fix real (no stub): WebGL2 **sí** expone `bindAttribLocation`, `getAttachedShaders`, `getActiveUniform`,
+  `getActiveAttrib` y `getShaderSource` (verificado `typeof === 'function'` en Chrome). Implementados en
+  `port/src/main/java/port/shim/GL20.java` (`nglBindAttribLocation`, `nglGetAttachedShaders`,
+  `nglGetActiveUniform`, `nglGetActiveAttrib`, `nglGetShaderSource` con layout desktop: maxLength+NUL, `length`
+  sin terminador, size/type de WebGL2) y sus bridge methods en `port/runtime/gl.mjs`. Siguen lanzando honestamente
+  `getUniformfv/iv`, `getVertexAttrib{iv,fv,dv,Pointerv}` (WebGL2 no los tiene).
+- Tests nuevos `tests/node/gl-introspection.test.mjs` (2 casos, fixture sintético propio): tokens desktop
+  respondidos, `maxCount=0` no escribe, `maxNameLength`, raise de token desconocido, bindAttribLocation/attached/
+  active/shaderSource. **npm test 37 pass / 0 fail**.
+- 14:19 Ronda 49 (cont.) `BufferUtilsCompatibility` + `BufferUtilsBridge` completos: transformer de
+  `org.lwjglx.BufferUtils` que delega por descriptor exacto a `port.runtime.memory.BufferUtilsBridge`
+  (create*Buffer vía `NativeMemory.memAlloc*`, `getBufferAddress`, `getElementSizeExponent`, `getOffset`,
+  `zeroBuffer` vía `NativeMemory.memSet`); métodos sin equivalente → raise honesto con el descriptor.
+  Registrado en `BuildCompiler` tras `MemoryCompatibility`. Causa: `ShaderProgram.<clinit>` creaba su
+  `floatBuffer` con `ByteBuffer.allocateDirect().asFloatBuffer()` (view no registrada) →
+  `glUniformMatrix4fv` → `memAddress` → "Arena address requires a registered/direct ByteBuffer view".
+  `mvn compile` OK (exit 0). npm test 37 pass / 0 fail (sin cambios).
+- 14:19 `tools/pack/startup_extra.py`: agrega además `media/scripts/**` (1004 archivos `.txt`, 7.025.518 B
+  en la copia pinned: entities/generated/ragdolls/xui — son los que parsea `ScriptManager.searchFolders`,
+  que sólo acepta `.txt`). startup.txt 442 → 1446 entradas. Re-empacado `--max-bytes 80000000` → 2 blobs
+  (27.507.156 + 56.061.304 B) + alias fonts (179) y EN/1x (12): index 1637 archivos, montado 101.573.568 B
+  (< presupuesto VFS 256 MB). Dev server 8092 sin reiniciar: `/packs/index.json` 200 y el blob nuevo 200.
+- Nota de inventario: `media/lua` de la copia pinned tiene 2680 archivos (131 MB) y hoy sólo hay 7 montados;
+  `media/scripts` NO contiene `items.lua` (el instalador pinned no trae `media/lua/common`), así que el
+  `Base` de ScriptManager puede quedar vacío igual. Pendiente verificar en diag144 con `missingPaths`.
+- 14:22 lanzado UN build `--with-game` foreground → `build-round49d-game.log` (Java cambió por el transformer).
+- 14:46 build `build-round49d3-game.log` **EXIT=0 / BUILD SUCCESS** (5:55 min, `-Xmx7g`, RSS pico 6.6 GB;
+  el intento `-Xmx8g` de las 14:22 y el detached de 14:31 murieron sin `EXIT=` por OOM/kill del grupo
+  detached: los builds `--with-game` deben correrse en una sesión de tool viva, no con `setsid nohup`).
+  Gate fiberops False y `probe8 java.lang.Thread::<clinit>` → `no seed`. boot.wasm 143.120.424 B.
+- 14:48 `diag144.log`: los 1004 scripts se montan (`mediaDirs {'/media/scripts':1004, '/media/lua':7,
+  '/media/shaders':196, '/media/texturepacks':7}`), `missingPaths` vacío, DebugLog 2.401.465 B, y el
+  trap null de `createZedDmgMap` **desapareció**: el juego parsea scripts (353 × `RuntimeException:
+  Class cannot be created (missing no-arg constructor): zombie.scripting.entity.*`, 241 ×
+  `Bullet.defineVehicleScript`, y `[entity] removing script due to load error = X` tolerado por el juego).
+  Shaders siguen ok (`progs h257 linked:true`).
+- 14:52/14:54 `diag145.log`/`diag146.log`: freno nuevo = `RangeError: Maximum call stack size exceeded`
+  con 5504 frames de pila JS. Stack decodificado (wasm_stack.py): `java.util.regex.ReluctantGroupQuantifierSet::matches`
+  (recursión por expansión) ← `Matcher::runMatch` ← `Pattern::matches` ← `String::matches` ←
+  `zombie.util.StringUtils::containsWhitespace` ← `CraftRecipe::LoadIO` ← `CraftRecipe::Load` ←
+  `ScriptBucket::LoadScripts` ← `ScriptManager::loadScripts` ← `Load` ← `GameWindow::initShared`.
+  Causa verificada con javap: `containsWhitespace` = `String.matches("(.*?)\\s(.*?)")`.
+- Fix: `port/runtime/text/StringUtilsBridge.java` (nuevo) + transformer `port/compiler/StringUtilsCompatibility.java`
+  (registrado en BuildCompiler) que reemplaza **sólo** `containsWhitespace(String)Z` y
+  `removeWhitespace(String)String` de `zombie.util.StringUtils` por loops equivalentes sin regex
+  (semántica exacta: `.` no cruza line terminators → 0 terminadores = cualquier `\s`; 1 terminador =
+  ése debe ser `\s`; ≥2 = false). Test JVM propio `port.StringUtilsBridgeTest` comparando contra
+  `Pattern.compile("(.*?)\\s(.*?)")` y `replaceAll("\\s","")`: **2 pass**. `mvn compile` BUILD SUCCESS.
+- Nota: el mismo transformer podría activarse por descriptor en métodos privados con `(String)Z`; se
+  restringió por nombre exacto + descriptor (`MethodDescriptor.parse`) para no tocar `isWhitespace`.

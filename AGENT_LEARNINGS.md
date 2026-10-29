@@ -510,3 +510,44 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   `python3 scripts/wasm_stack.py port/target/web/game/boot.wasm <offsets>` traduce los offsets a nombres reales
   de función (`zombie.vehicles.Clipper::n_init ← port.natives.Clipper2::init`). Con eso el bloqueo se resuelve en
   un comando, sin speculation.
+
+## Ronda 49 — errores y patrones
+- Error: `(globalThis.pzRuntime ??= {}).missingPaths = []` → `SyntaxError` en Node. `??=` no puede ser
+  objetivo de una propiedad en la misma expresión de esa forma. Patrón a evitar:Assignment encadenada sobre
+  un logical-assignment. Mejor enfoque: `const runtime = globalThis.pzRuntime ?? (globalThis.pzRuntime = {});`
+  y luego asignar propiedades.
+- Error: `Path(home/'media').rglob('*')` ya devuelve rutas **con** prefijo `media/`, pero el tamaño se medía
+  en `home/'media'/name` (duplicando el prefijo) → todos los shaders daban tamaño 0 y `pack.py` fallaba.
+  Patrón: no re-preponer el prefijo cuando el glob ya lo incluye. Mejor enfoque: medir `(home / name)` y
+  verificar con `assert (home/name).exists()` antes de escribir el listado.
+- Error (arreglado): tokens de `pname` deducidos de memoria — `0x8B81` como SHADER_TYPE, y `0x8B85/0x8B86/
+  0x8B87/0x8B8D` como DELETE/INFO_LOG/COMPILE de shader. Los reales son `0x8B80 DELETE_STATUS, 0x8B81
+  COMPILE_STATUS, 0x8B84 INFO_LOG_LENGTH, 0x8B4F SHADER_TYPE, 0x8B88 SHADER_SOURCE_LENGTH`.
+  Mejor enfoque: `javap -p -c` de la clase del juego y leer los enteros reales del constant pool
+  (`ShaderProgram` usa 35716; `ShaderBufferData$BufferUtility` 35718/35719). Nunca deducir tokens GL de memoria.
+- Error: `pack.py --max-bytes` default 32 MB rechazó `UI2.pack` (54,6 MB) → el re-empacado se cortaba.
+  Mejor enfoque: subir el límite explícitamente (80 MB) y verificar el total montado contra el presupuesto VFS
+  (256 MB) antes de publicar `index.json` (que se escribe último para que el index nunca apunte a blobs incompletos).
+- Entorno: `PZ_HOME` en `scripts/env.sh` sigue apuntando a `/datos/Projects/pz-web` (stale). Patrón a evitar:
+  usar `PZ_HOME` del env tal cual. Mejor enfoque: `export PZ_HOME=/home/agente47/pz-pinned/25485521/projectzomboid`
+  en cada comando que la use (pack, inventarios, alias_index).
+- RAM: con Strata ~19 GB y swap casi lleno, `free -g` **antes** de cada build/navegador y nunca build + test
+  de navegador en paralelo (build ~7 min foreground, test ~2 min).
+
+## Ronda 49 — errores y patrones (continuación 14:30)
+- Error: `MAVEN_OPTS=-Xmx8g -Xss16m bash scripts/build.sh` → `/bin/bash: -Xss16m: command not found`,
+  exit 127 y el build nunca empezó (la variable debía quedar dentro del comando). Patrón: prefijo de
+  variable con dos tokens separados por espacio no es una asignación válida. Mejor enfoque:
+  `export MAVEN_OPTS="-Xmx8g -Xss16m"` y recién después lanzar `bash scripts/build.sh`.
+- Error: el build `--with-game` (14:22→14:30) murió en `port.CompilerRegressionTest` sin escribir
+  `EXIT=` en el log: con Strata ~19 GB y swap 14/15 usados, el JVM de tests/TeaVM fue matado por OOM
+  (sin registro en dmesg/journalctl accesible). Patrón: fiarse de que un log existente implica un build
+  vivo. Mejor enfoque: verificar `ps -C java` y el tamaño/mtime del log antes de asumir progreso; ante
+  OOM reintentar con `-Xmx6g` y registrar el intento.
+- Error de diagnóstico: asumir que el trap `ScriptManager::createZedDmgMap` se arregla montando
+  `media/scripts` era una hipótesis, no una causa. Verificado en bytecode: `searchFolders(URI,File,List)`
+  sólo acumula archivos terminados en `.txt` y `getModule("Base")` devuelve `moduleMap.get("Base")`
+  (null si ningún `.txt` con `module Base` fue parseado). La copia pinned tiene 1004 `.txt` de scripts
+  (7 MB) con `module Base`, y `media/lua/common` (items.lua) NO existe en esa instalación.
+  Mejor enfoque: montar el prefijo, y medir en el diag el resultado real (`mediaDirs`, `missingPaths`)
+  en vez de dar por hecho que el null desaparece.

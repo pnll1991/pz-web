@@ -205,27 +205,51 @@ public final class GL20 {
         throw new UnsupportedOperationException(
             "WebGL2 has no vertex attribute pointer query: org.lwjgl.opengl.GL20C#nglGetVertexAttribPointerv(IIJ)V");
     }
+    /* --- Introspection WebGL2 does expose ---------------------------------------------
+     * glBindAttribLocation, glGetAttachedShaders, glGetActiveUniform/Attrib and glGetShaderSource
+     * exist in WebGL2 (verified in Chrome: all are functions on the WebGL2RenderingContext). They
+     * are implemented over the real context through the bridge, so nothing is invented.
+     */
     public static void nglBindAttribLocation(int program, int index, long name) {
-        throw new UnsupportedOperationException(
-            "WebGL2 does not expose glBindAttribLocation: org.lwjgl.opengl.GL20C#nglBindAttribLocation(IIJ)V");
+        bindAttribLocationNative(program, index, NativeMemory.memASCII(name));
     }
     public static void nglGetAttachedShaders(int program, int maxCount, long count, long shaders) {
-        throw new UnsupportedOperationException(
-            "WebGL2 does not expose glGetAttachedShaders: org.lwjgl.opengl.GL20C#nglGetAttachedShaders(IIJJ)V");
+        Int32Array handles = attachedShadersNative(program, Math.max(0, maxCount));
+        for (int i = 0; i < handles.getLength(); i++) NativeMemory.memPutInt(shaders + 4L * i, handles.get(i));
+        if (count != 0L) NativeMemory.memPutInt(count, handles.getLength());
     }
     public static void nglGetActiveUniform(int program, int index, int maxLength, long length,
                                            long size, long type, long name) {
-        throw new UnsupportedOperationException(
-            "WebGL2 does not expose glGetActiveUniform: org.lwjgl.opengl.GL20C#nglGetActiveUniform(IIIJJJJ)V");
+        writeActiveInfo(program, index, 1, maxLength, length, size, type, name);
     }
     public static void nglGetActiveAttrib(int program, int index, int maxLength, long length,
                                           long size, long type, long name) {
-        throw new UnsupportedOperationException(
-            "WebGL2 does not expose glGetActiveAttrib: org.lwjgl.opengl.GL20C#nglGetActiveAttrib(IIIJJJJ)V");
+        writeActiveInfo(program, index, 0, maxLength, length, size, type, name);
     }
+    /**
+     * Desktop layout: at most maxLength characters plus a NUL go into `name`, and `length` (when
+     * given) receives the character count written without the terminator. size/type come from
+     * WebGL2's own getActiveUniform/getActiveAttrib, whose type tokens are the GL ones.
+     */
+    private static void writeActiveInfo(int program, int index, int kind, int maxLength,
+                                        long length, long size, long type, long name) {
+        String text = activeNameNative(program, index, kind);
+        Int32Array meta = activeSizeTypeNative(program, index, kind);
+        int chars = Math.min(text.length(), Math.max(0, maxLength - 1));
+        for (int i = 0; i < chars; i++) NativeMemory.memPutByte(name + i, (byte) text.charAt(i));
+        if (maxLength > 0) NativeMemory.memPutByte(name + chars, (byte) 0);
+        if (length != 0L) NativeMemory.memPutInt(length, chars);
+        if (size != 0L) NativeMemory.memPutInt(size, meta.get(0));
+        if (type != 0L) NativeMemory.memPutInt(type, meta.get(1));
+    }
+    /** {@code nglGetShaderSource}: the source this bridge actually handed WebGL2 (desktop GLSL after
+     * the glsl.mjs translation), written like the desktop call with a terminating NUL. */
     public static void nglGetShaderSource(int shader, int maxLength, long sourceLength, long source) {
-        throw new UnsupportedOperationException(
-            "WebGL2 does not expose glGetShaderSource: org.lwjgl.opengl.GL20C#nglGetShaderSource(IIJJ)V");
+        String text = shaderSourceTextNative(shader);
+        int chars = Math.min(text.length(), Math.max(0, maxLength - 1));
+        for (int i = 0; i < chars; i++) NativeMemory.memPutByte(source + i, (byte) text.charAt(i));
+        if (maxLength > 0) NativeMemory.memPutByte(source + chars, (byte) 0);
+        if (sourceLength != 0L) NativeMemory.memPutInt(sourceLength, chars);
     }
 
     /* --- Arena views ------------------------------------------------------------------
@@ -302,6 +326,16 @@ public final class GL20 {
     private static native int uniformLocationNative(int program, String name);
     @JSBody(params={"program","name"}, script="return globalThis.pzRuntime.gl.attribLocation(program,name);")
     private static native int attribLocationNative(int program, String name);
+    @JSBody(params={"program","index","name"}, script="globalThis.pzRuntime.gl.bindAttribLocation(program,index,name);")
+    private static native void bindAttribLocationNative(int program, int index, String name);
+    @JSBody(params={"program","maxCount"}, script="return new Int32Array(globalThis.pzRuntime.gl.attachedShaders(program,maxCount));")
+    private static native Int32Array attachedShadersNative(int program, int maxCount);
+    @JSBody(params={"program","index","kind"}, script="return globalThis.pzRuntime.gl.activeName(program,index,kind);")
+    private static native String activeNameNative(int program, int index, int kind);
+    @JSBody(params={"program","index","kind"}, script="return new Int32Array(globalThis.pzRuntime.gl.activeSizeType(program,index,kind));")
+    private static native Int32Array activeSizeTypeNative(int program, int index, int kind);
+    @JSBody(params="shader", script="return globalThis.pzRuntime.gl.shaderSourceText(shader);")
+    private static native String shaderSourceTextNative(int shader);
     @JSBody(params={"index","size","type","normalized","stride","offset"}, script="globalThis.pzRuntime.gl.vertexAttribPointer(index,size,type,normalized?1:0,stride,offset);")
     private static native void attribPointerNative(int index, int size, int type, boolean normalized, int stride, int offset);
     @JSBody(params="index", script="globalThis.pzRuntime.gl.enableAttrib(index);")
