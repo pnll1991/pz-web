@@ -27,6 +27,11 @@ LUA_FILES = ('lua/shared/defines.lua',)
 LUA_PREFIX = 'media/lua/'
 LUA_TRANSLATE_PREFIX = 'media/lua/shared/Translate/'
 LUA_TRANSLATE_KEEP = ('EN/',)
+# Round 65 (menu-r65-lua-console.txt): with Lua mounted, ISTermsOfServiceUI.createChildren dies on
+# "attempted index: getHeight of non-table: null" (its texture under media/ui is not mounted) and
+# "Failed to load texture: media/ui/controller/XBOX_X.png". The Lua UI reads textures from all of
+# media/ui by name, so the whole folder (28 MB in the pinned copy) is mounted.
+UI_TREE_PREFIX = 'media/ui/'
 LUA_REQUIRED = ('lua/client/OptionScreens/MainScreen.lua',)
 
 # Round 52 correction, verified against the pinned bytecode: javap -p -c zombie.core.Core shows
@@ -218,6 +223,8 @@ def main():
         elif name.startswith('media/' + UI_PROGRESS_PREFIX):
             keep.append(name)
         elif name == 'media/' + GUID_TABLE:
+            keep.append(name)
+        elif name.startswith(UI_TREE_PREFIX):
             keep.append(name)
         elif name.startswith(LUA_TRANSLATE_PREFIX):
             if name[len(LUA_TRANSLATE_PREFIX):].startswith(LUA_TRANSLATE_KEEP):

@@ -10,6 +10,7 @@ const race = (p, ms) => Promise.race([p, new Promise((_, rj) => setTimeout(() =>
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome',
   args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-dev-shm-usage'] });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+const cons = []; page.on('console', m => { cons.push(m.text().slice(0, 300)); if (cons.length > 4000) cons.shift(); });
 const errs = []; page.on('pageerror', e => errs.push(String(e.stack || e.message).slice(0, 4000)));
 await page.addInitScript((N) => {
   const S = globalThis.__px = { frames: 0, shots: [], log: [] };
@@ -60,7 +61,8 @@ while (Date.now() - t0 < MAX) {
   try { res = await race(page.evaluate(() => { const S = globalThis.__px; return { frames: S.frames, attrs: S.attrs, viewports: S.viewports, canvas: S.canvas && [S.canvas.width, S.canvas.height], winEvents: (globalThis.pzRuntime?.window?.events || []).filter(e => /created|resized|init/.test(e.type)).slice(0, 8), shots: S.shots.length, out: S.shots.length >= 3 ? S.shots : null,
     renders: Object.entries(globalThis.pzGameCounts || {}).filter(([k]) => /MainScreenState#render/.test(k)) }; }), 90000); }
   catch (e) { console.log('SAMPLE_FAIL', String(e)); continue; }
-  console.log('SAMPLE', Math.round((Date.now() - t0) / 1000), JSON.stringify({ frames: res.frames, shots: res.shots, renders: res.renders }));
+  writeFileSync(OUT.replace('.png', '-console.txt'), cons.join('\n'));
+  console.log('SAMPLE', Math.round((Date.now() - t0) / 1000), JSON.stringify({ frames: res.frames, shots: res.shots, renders: res.renders }), 'LAST', JSON.stringify(cons.slice(-2)));
   if (res.out) break;
 }
 if (res?.out) {
@@ -70,5 +72,6 @@ if (res?.out) {
   console.log('ATTRS', JSON.stringify(res.attrs), 'SAVED', OUT);
 } else console.log('RESULT no menu frame captured');
 try { await page.screenshot({ path: OUT.replace('.png', '-page.png'), timeout: 120000 }); console.log('PAGESHOT ok'); } catch (e) { console.log('PAGESHOT_FAIL', String(e).slice(0, 200)); }
+writeFileSync(OUT.replace('.png', '-console.txt'), cons.join('\n'));
 console.log('ERRS', JSON.stringify(errs.slice(0, 10)));
 await browser.close();
