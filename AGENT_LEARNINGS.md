@@ -610,3 +610,52 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Error propio parcheando con `python3 str.replace()` sobre `diag155.mjs`: reemplacé un string que contenía
   el cierre de `Promise.race([...])` y rompí la aridad (dos `SyntaxError`). Mejor enfoque: parchar archivos
   JS con `apply_patch` y validar siempre con `node --check` antes de correr el navegador.
+
+## Ronda 60 — errores y patrones
+- Error del conversor `.x`: `nFaces` se trató como un array plano de `nFaceVertexIndices` y las caras
+  salían mal contadas. Patrón a evitar: asumir el layout de un formato sin leer su plantilla.
+  Mejor enfoque: leer la estructura del template (`Material`, `Mesh`, `Faces`, `MeshHelper`) y
+  verificar vértices/caras contra valores conocidos del `.x` (MaleBody 617/916, FemaleBody 660/984).
+- Error de regeneración: `python3 tests/prepare_real.py` reescribió `startup.txt` y **perdió las
+  entradas de fuentes** que la ronda 40 había agregado a mano (`build/` está git-ignorado, así que
+  no son reconstruibles desde el repo). El arranque murió en `GameWindow#initFonts()`.
+  Patrón: datos requeridos escritos a mano en rutas ignoradas. Mejor enfoque: derivar cada lista con
+  una herramienta commiteable (`tools/pack/font_files.py`) y regenerar siempre desde `PZ_HOME`.
+- Error de montaje: el **listing** `media/fonts/EN/fonts.txt` también debe montarse. Su ausencia es
+  silenciosa: `FontsFile.read()` captura `FileNotFoundException` y devuelve `false`, el mapa de
+  fuentes queda vacío, cada `UIFont` conserva `AngelCodeFont == null` y el primer `getFontHeight()`
+  produce un NPE en `AngelCodeFont.getLineHeight` **lejos** de `initFonts` (aparecía en
+  `Core.EndFrameUI` via `ExceptionLogger.render`). Patrón: interpretar un error tardío como causa
+  tardía. Mejor enfoque: cuando una carga opcional captura su propia excepción, montar también el
+  archivo de índice que la habilita y comprobar su presencia por HTTP.
+- Error del shim GL15: `unmap()` liberaba el bloque del arena. `GLVertexBufferObject` cachea su
+  `ByteBuffer` y LWJGL llama `APIUtil.apiGetMappedBuffer(old_buffer, ...)` -> `memAddress(old)`, que
+  lanza para una view liberada (116 `IllegalStateException: Buffer allocation was freed` por frame).
+  Además el arena es bump allocator: liberar/reasignar 2 bloques por frame crecía ~131 KB/frame.
+  Mejor enfoque: mantener el bloque del último map por target en `reusable` y reutilizarlo cuando
+  `size >= size` pedido (semántica de escritorio: la dirección sigue estable entre maps).
+- Error de proceso: lanzar Playwright con `&`/`setsid` dentro del sandbox mata el proceso y deja el
+  log en 0 B. Mejor enfoque: correr el diag en foreground con `tty=true` y seguirlo con `write_stdin`
+  en trozos de 120-250 s.
+- Error de invocado: `scripts/build.sh --with-game` aborta con "requires PZ_HOME and a matching
+  inventory" si `PZ_HOME` no está exportado (no figura en `scripts/env.sh` con el valor real).
+  Mejor enfoque: exportar `PZ_HOME` junto con `JAVA_HOME` antes de cada build.
+- Error de observación (ronda 60): se asumió que el arranque colgaba en el bucle
+  `while(isLoadingAnimationMeshes())` de `ModelManager#initAnimationMeshes()` sin evidencia. Con
+  `ANIM_CLASSES` instrumentado, el anillo muestra `ModelManager#create()V:entered` como último límite
+  y `initAnimationMeshes` **nunca entra**: el bloqueo estaba antes. Patrón: inferir el punto de bloqueo
+  leyendo el fuente del juego en vez de observarlo. Mejor enfoque: instrumentar la clase justo antes de
+  la hipótesis y dejar que el PROGRESS diga qué llamada no retorna.
+- Error de instrumentación: `StartupProgress.FONT_CLASSES` estaba declarado pero el gate de
+  `transformClass` sólo lee `METHODS`/`EXTRA_METHODS`/`CLASSES`/`EXTRA_CLASSES`/`own()`, así que las
+  clases de fuentes nunca se instrumentaron (rondas 42+ de análisis sobre una sonda muda).
+  Mejor enfoque: agregar el set al gate y verificar el efecto en `port/target/web/game/pulse-map.json`
+  (1929 -> 2173 labels; 0 -> 244 de `skinnedmodel`).
+- Verificación de labels: `grep -c` sobre `boot.wasm` devuelve 0 para labels que sí existen (la data
+  section no es texto continuo). Fuente de verdad: `pulse-map.json`.
+- Error de invocado: `mvn -f port/pom.xml compile` sin `-Dmaven.repo.local="$PZ_WEB_ROOT/.toolchain/m2"`
+  falla con "Could not create local repository at /home/agente47/.m2/repository" (y `-o` agrava el
+  silencio). Mejor enfoque: usar `scripts/build.sh` (fuente de `scripts/env.sh`) o repetir el flag.
+- Señal nuevo a perseguir, no ignorar: `WebGL: INVALID_VALUE: clear: invalid mask` aparece en el
+  console **justo** después de `UI_Loading_ModelsAnimations`; una línea de console WebGL después de la
+  etapa de carga es evidencia directa del shim, no ruido.

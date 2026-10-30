@@ -71,9 +71,22 @@ DEPTHMAP_REQUIRED = 'media/depthmaps/SEAMS_01.png'
 # Kate folder (2,3 MB) because AnimationsMesh "Human" lists it as animationDirectory. The rest of
 # anims_X (Bob is 373 MB / 1615 files, Zombie 100+ MB) stays unmounted: the VFS budget is 512 MiB
 # and loadAnimsFromDir loads every file listFiles() returns, so a directory mount would load all.
+# Round 60: NO .x file is mounted at all (animations and meshes alike). diag166.log shows
+# UnsatisfiedLinkError: System.loadLibrary: browser implementation is missing for jassimp64 right
+# before every "Failed to load asset: AssetPath{ "Skinned/..." }". checkExtensionType tries
+# "<xprefix>/<lowercase>.fbx/.glb/.x" first and only falls back to "<mediaFilePath>/<lowercase>.txt"
+# when none of those exist, and that fallback is parsed by ModelLoader.loadTxt in pure Java. So the
+# .x sources are converted by x_anim_to_txt.py into a staging tree outside PZ_HOME and the .x stay
+# unmounted on purpose: mounting them would make the loader pick the .x and hit the missing native.
+# The .x sources below are still checked for existence because they are what the staged .txt came from.
 MODELS_X_REQUIRED = ('models_X/Skinned/MaleBody.x', 'models_X/Skinned/FemaleBody.x',
                      'models_X/Skinned/Male_Skeleton.x', 'models_X/Skinned/Female_Skeleton.x')
-ANIMS_X_REQUIRED = ('anims_X/Bob/Bob_Idle.x', 'anims_X/Bob/Bob_Walk.x', 'anims_X/Bob/Bob_Run.x')
+# Paths the staging root must provide (lowercase, exactly as checkExtensionType builds them):
+# meshes are looked up as media/models/<lowercase>.txt and anims as media/anims/<lowercase>.txt.
+STAGED_REQUIRED = ('models/skinned/malebody.txt', 'models/skinned/femalebody.txt',
+                   'models/skinned/male_skeleton.txt', 'models/skinned/female_skeleton.txt',
+                   'anims/bob/bob_idle.txt', 'anims/bob/bob_walk.txt', 'anims/bob/bob_run.txt',
+                   'anims_X/Bob/Bob_Idle.txt', 'anims_X/Bob/Bob_Walk.txt', 'anims_X/Bob/Bob_Run.txt')
 # AnimSets/*.xml are the animation-set definitions (14 MB, 2949 files); player.xml references the
 # Bob/Kate folders and is read by the anim-set loader after the meshes load.
 ANIMSETS_PREFIX = 'media/AnimSets/'
@@ -83,6 +96,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--pz-home', required=True)
     parser.add_argument('--files', required=True, type=Path, help='startup list to append to')
+    parser.add_argument('--stage', type=Path, default=None,
+                        help='Optional staging root (our own conversions, e.g. media/anims/*.txt). '
+                             'Its media/ tree is appended to the list; pass the same root to '
+                             'pack.py as --stage.')
     args = parser.parse_args()
     home = Path(args.pz_home).expanduser().resolve()
     media = home / 'media'
@@ -92,6 +109,21 @@ def main():
     for path in sorted(media.rglob('*')):
         if path.is_file():
             wanted.append('media/' + path.relative_to(media).as_posix())
+    staged = []
+    if args.stage is not None:
+        stage = args.stage.expanduser().resolve()
+        if stage.is_relative_to(home):
+            raise SystemExit(f'Staging root must stay outside PZ_HOME: {stage}')
+        if not (stage / 'media').is_dir():
+            raise SystemExit(f'Staging root has no media directory: {stage}')
+        for path in sorted((stage / 'media').rglob('*')):
+            if path.is_file():
+                staged.append('media/' + path.relative_to(stage / 'media').as_posix())
+        wanted.extend(staged)
+    staged_set = set(staged)
+    for relative in STAGED_REQUIRED:
+        if 'media/' + relative not in staged_set:
+            raise SystemExit(f'Staging root is missing a required converted file: media/{relative}')
     for name in TEXTUREPACKS:
         path = media / 'texturepacks' / name
         if not path.is_file():
@@ -110,7 +142,7 @@ def main():
             raise SystemExit(f'Missing required lua file: media/{relative}')
     if not (home / DEPTHMAP_REQUIRED).is_file():
         raise SystemExit(f'Missing required depthmap: {DEPTHMAP_REQUIRED}')
-    for relative in MODELS_X_REQUIRED + ANIMS_X_REQUIRED:
+    for relative in MODELS_X_REQUIRED:
         if not (media / relative).is_file():
             raise SystemExit(f'Missing required model/animation file: media/{relative}')
     if not (media / 'AnimSets').is_dir():
@@ -126,11 +158,13 @@ def main():
             keep.append(name)
         elif name.startswith(DEPTHMAP_PREFIX):
             keep.append(name)
-        elif name.startswith('media/models_X/') and name[len('media/'):] in MODELS_X_REQUIRED:
-            keep.append(name)
-        elif name.startswith('media/anims_X/') and name[len('media/'):] in ANIMS_X_REQUIRED:
-            keep.append(name)
-        elif name.startswith('media/anims_X/Kate/'):
+        elif (name in staged_set
+              and (name.startswith('media/models/skinned/')
+                   or name.startswith('media/anims/')
+                   or name.startswith('media/anims_X/'))):
+            # Only our converted .txt (staged outside PZ_HOME). The game's own .x under
+            # models_X/anims_X is deliberately NOT mounted: it would make checkExtensionType pick
+            # the .x path and die on the missing jassimp64 native.
             keep.append(name)
         elif name.startswith(ANIMSETS_PREFIX):
             keep.append(name)
@@ -149,15 +183,23 @@ def main():
     with args.files.open('a') as handle:
         for name in added:
             handle.write(name + '\n')
-    size = sum((home / name).stat().st_size for name in added)
+    def stat_size(name):
+        real = home / name
+        if real.is_file():
+            return real.stat().st_size
+        if args.stage is not None:
+            return (args.stage.expanduser().resolve() / name).stat().st_size
+        raise SystemExit(f'Startup entry has no source file: {name}')
+    size = sum(stat_size(name) for name in added)
     print(f'Appended {len(added)} startup entries ({size} B): shaders='
           f'{sum(1 for n in added if n.startswith("media/shaders/"))} '
           f'texturepacks={sum(1 for n in added if n.startswith("media/texturepacks/"))} '
           f'ui={sum(1 for n in added if n.startswith("media/ui/"))} '
           f'lua={sum(1 for n in added if n.startswith("media/lua/"))} '
           f'depthmaps={sum(1 for n in added if n.startswith(DEPTHMAP_PREFIX))} '
-          f'models_x={sum(1 for n in added if n.startswith("media/models_X/"))} '
-          f'anims_x={sum(1 for n in added if n.startswith("media/anims_X/"))} '
+          f'staged_meshes={sum(1 for n in added if n.startswith("media/models/skinned/"))} '
+          f'staged_anims_x={sum(1 for n in added if n.startswith("media/anims_X/"))} '
+          f'staged_anims_txt={sum(1 for n in added if n.startswith("media/anims/"))} '
           f'animsets={sum(1 for n in added if n.startswith(ANIMSETS_PREFIX))}')
 
 

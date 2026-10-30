@@ -87,7 +87,13 @@ public final class GL15 {
         if (mapped.containsKey(target)) unmap(target);
         int size = bufferParameterNative(target, BUFFER_SIZE).get(0);
         if (size <= 0) return 0L; // no storage on the bound buffer: nothing to map
-        long address = NativeMemory.nmemAllocChecked(size);
+        // Reuse the previous block of this target when it still fits: SpriteRenderer$RingBuffer maps
+        // 256 buffers per frame, so a fresh allocation per map would grow the arena unboundedly and
+        // would also break the cached-buffer reuse LWJGL relies on.
+        Mapped previous = reusable.get(target);
+        long address = previous != null && previous.size >= size
+            ? previous.address : NativeMemory.nmemAllocChecked(size);
+        reusable.put(target, new Mapped(address, size, access));
         getSubNative(target, 0, arena(address, size));
         mapped.put(target, new Mapped(address, size, access));
         return address;
@@ -106,10 +112,20 @@ public final class GL15 {
             "glUnmapBuffer without a live mapping: target 0x" + Integer.toHexString(target));
         if (entry.address != 0L && entry.size > 0) {
             bufferSubNative(target, 0, arena(entry.address, entry.size));
-            NativeMemory.nmemFree(entry.address);
+            // Round 60 (diag168: 116 IllegalStateException "Buffer allocation was freed" per frame,
+            // inside zombie.core.SpriteRenderer$RingBuffer.next -> GLVertexBufferObject.map): the block
+            // must stay live. LWJGL's APIUtil.apiGetMappedBuffer(old,addr,cap) starts with
+            // MemoryUtil.memAddress(old) on the cached ByteBuffer of the GLVertexBufferObject, and
+            // NativeArena.address raises for a freed view. Desktop GL leaves the client pointer
+            // comparable after unmap, so the block is kept and reused by the next map of the same
+            // target (which also keeps the address identical across maps, as desktop storage does).
+            reusable.put(target, entry);
         }
         return true;
     }
+
+    /** Last mapping block of each target, kept alive so a cached mapped buffer stays addressable. */
+    private static final Map<Integer, Mapped> reusable = new HashMap<>();
 
     // --- Occlusion queries (same handle model as desktop GL: 0 means "none") ---------------
     public static void nglGenQueries(int count, long queries) {

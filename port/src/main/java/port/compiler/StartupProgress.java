@@ -91,6 +91,19 @@ public final class StartupProgress implements ClassHolderTransformer {
     // notify (java.lang.Object is TeaVM's classlib, so observing it is not touching the game).
     private static final Set<String> EXTRA_CLASSES = Set.of(
         "org.lwjglx.opengl.Sync");
+    // Round 60: GameWindow#enter() never returns and the DebugLog stops at UI_Loading_ModelsAnimations
+    // with the page alive (4427 swaps). ModelManager#initAnimationMeshes() loops while
+    // isLoadingAnimationMeshes(), and ModelMesh#isReady() also needs the VBO, so the question is which
+    // of those two predicates never clears. FONT_CLASSES above is DEAD code (the gate below only reads
+    // METHODS/EXTRA_METHODS/CLASSES/EXTRA_CLASSES/own), so these go to EXTRA_CLASSES where the gate
+    // actually sees them. Only the animation-loading classes: no per-frame renderer classes, or the
+    // 400-event ring would lose the park point.
+    private static final Set<String> ANIM_CLASSES = Set.of(
+        "zombie.core.skinnedmodel.ModelManager",
+        "zombie.core.skinnedmodel.model.ModelMesh",
+        "zombie.core.skinnedmodel.model.ModelLoader",
+        "zombie.core.skinnedmodel.model.FileTask_AbstractLoadModel",
+        "zombie.core.skinnedmodel.model.FileTask_LoadAnimation");
     // Round 32: java.lang.Thread$SleepHandler and org.teavm.runtime.Fiber$AsyncCallbackImpl are
     // deliberately NOT instrumented: both run inside the suspend/resume machinery, and injected
     // code there corrupts the WasmGC fiber stack (see the removal of java.lang.Thread above).
@@ -222,7 +235,8 @@ public final class StartupProgress implements ClassHolderTransformer {
         for(var method:cls.getMethods()) {
             String key=cls.getName()+"#"+method.getDescriptor();
             if(!METHODS.contains(key)&&!EXTRA_METHODS.contains(key)&&!CLASSES.contains(cls.getName())
-                &&!EXTRA_CLASSES.contains(cls.getName())&&!own(cls.getName()))continue;
+                &&!EXTRA_CLASSES.contains(cls.getName())&&!ANIM_CLASSES.contains(cls.getName())
+                &&!own(cls.getName()))continue;
             if(method.getProgram()==null)continue;
             Program program=method.getProgram();
             Instruction first=program.basicBlockAt(0).getFirstInstruction();

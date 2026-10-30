@@ -110,7 +110,67 @@ def inverse(m):
                 f = a[r][c]; a[r] = [x - f * y for x, y in zip(a[r], a[c])]
     return [a[r][4 + c] for c in range(4) for r in range(4)]
 
+def mul(a, b):
+    """Row-major product, matching GLMatrix4f.mul(a, b) with row vectors v*a*b."""
+    return [sum(a[r * 4 + k] * b[k * 4 + c] for k in range(4)) for r in range(4) for c in range(4)]
+
 def fmt(v): return ', '.join('%.8f' % x for x in v)
+
+def mesh_of(root):
+    for m in find(root, 'Mesh'):
+        if len(m.data) > 1: return m
+    return None
+
+def _vec_list(node, n, per):
+    """Read a MeshNormals/MeshTextureCoords block: count, then count*per floats."""
+    if node is None or not node.data: return None
+    if int(node.data[0]) != n: return None
+    vals = [float(x) for x in node.data[1:1 + n * per]]
+    if len(vals) < n * per: return None
+    return [vals[i * per:(i + 1) * per] for i in range(n)]
+
+def parse_mesh(node, index):
+    """Return (positions, normals, uvs, faceIndices, perVertexSkin) or None.
+
+    Mesh.data holds the template's scalars/arrays in order: nVertices, 3*nVertices floats,
+    nFaces, then nFaces MeshFace entries ("3 i j k"; the leading number is that face's index
+    count). Skin weights come from the SkinWeights children ("Bone"; k; k vertex indices;
+    k weights; offset matrix).
+    """
+    d = node.data; p = 0
+    n = int(d[p]); p += 1
+    if n <= 0 or len(d) < 1 + 3 * n: return None
+    pos = [[float(d[p + 3 * i + k]) for k in range(3)] for i in range(n)]; p += 3 * n
+    if p >= len(d): return None
+    nfaces = int(float(d[p])); p += 1
+    faces = []
+    for _ in range(nfaces):
+        if p >= len(d): return None
+        k = int(float(d[p])); p += 1
+        idx = [int(float(x)) for x in d[p:p + k]]; p += k
+        if len(idx) < k or k < 3: return None
+        if k == 3:
+            faces.extend(idx)
+        else:                      # fan triangulation of a polygon face
+            for i in range(1, k - 1):
+                a, b, c = idx[0], idx[i], idx[i + 1]
+                if a != b and b != c and a != c: faces.extend((a, b, c))
+    normals = _vec_list(next((c for c in node.children if c.kind == 'MeshNormals'), None), n, 3)
+    uvs = _vec_list(next((c for c in node.children if c.kind == 'MeshTextureCoords'), None), n, 2)
+    skin = [[] for _ in range(n)]
+    for sw in node.children:
+        if sw.kind != 'SkinWeights' or not sw.data: continue
+        name = sw.data[0].strip('"'); q = 1
+        try: k = int(sw.data[q])
+        except (ValueError, IndexError): continue
+        q += 1
+        idx = [int(float(x)) for x in sw.data[q:q + k]]; q += k
+        wts = [float(x) for x in sw.data[q:q + k]]
+        if name not in index or len(idx) < k or len(wts) < k: continue
+        bi = index[name]
+        for vi, wv in zip(idx, wts):
+            if 0 <= vi < n and wv > 0.0: skin[vi].append((wv, bi))
+    return pos, normals, uvs, faces, skin
 
 def convert(path):
     with open(path, 'r', encoding='latin-1') as fh: text = fh.read()
@@ -118,6 +178,8 @@ def convert(path):
     bones = skeleton(root)
     index = {b[0]: i for i, b in enumerate(bones)}
     tps = next((float(n.data[0]) for n in find(root, 'AnimTicksPerSecond')), 4800.0)
+    mesh = parse_mesh(mesh_of(root), index) if mesh_of(root) is not None else None
+    has_geom = mesh is not None and mesh[1] is not None and mesh[2] is not None
     out = []
     W = out.append
     W('# Project Zomboid Animated Mesh'); W('# File Version:'); W('1.00000000')
@@ -126,7 +188,21 @@ def convert(path):
     W('# Vertex Stride Data:'); W('# (Int)    Offset'); W('# (String) Type')
     for o, n in ((0,'VertexArray'),(12,'NormalArray'),(24,'TangentArray'),(36,'TextureCoordArray'),(44,'BlendWeightArray'),(60,'BlendIndexArray')):
         W(str(o)); W(n)
-    W('# Vertex Count:'); W('0'); W('# Vertex Buffer:'); W('# Number of Faces:'); W('0'); W('# Face Data:')
+    if has_geom:
+        pos, normals, uvs, faces, skin = mesh
+        n = len(pos)
+        W('# Vertex Count:'); W(str(n)); W('# Vertex Buffer:')
+        for i in range(n):
+            W(fmt(pos[i])); W(fmt(normals[i])); W(fmt([0.0, 0.0, 0.0])); W(fmt(uvs[i]))
+            e = sorted(skin[i], key=lambda x: -x[0])[:4]
+            w = [e[k][0] if k < len(e) else -1.0 for k in range(4)]
+            b = [e[k][1] if k < len(e) else 0 for k in range(4)]
+            W(fmt(w)); W(', '.join(str(x) for x in b))
+        nf = len(faces) - (len(faces) % 3)
+        W('# Number of Faces:'); W(str(nf // 3)); W('# Face Data:')
+        for i in range(0, nf, 3): W(', '.join(str(x) for x in faces[i:i + 3]))
+    else:
+        W('# Vertex Count:'); W('0'); W('# Vertex Buffer:'); W('# Number of Faces:'); W('0'); W('# Face Data:')
     W('# Number of Bones:'); W(str(len(bones)))
     W('# Skeleton Hierarchy:'); W('# (Int)    Index'); W('# (Int)    Parent Index'); W('# (String) Bone Name')
     for i, (n, p, _) in enumerate(bones): W(str(i)); W(str(p)); W(n)
@@ -135,10 +211,18 @@ def convert(path):
         for i, m in enumerate(ms):
             W(str(i))
             for r in range(4): W(fmt([m[c * 4 + r] for c in range(4)]))
-    bind = [m for _, _, m in bones]; inv = [inverse(m) for m in bind]
+    # Verified against media/Bob_Sprint.txt (ships with the game): Bind Pose is the bone's local
+    # FrameTransformMatrix as stored; Inverse Bind Pose is the inverse of that local matrix; Skin
+    # Offset Matrices are the accumulated bind-world matrices W[k] = W[parent] * bind[k].
+    # ModelLoader.getMatrix() already reads rows in file order, so no transpose here.
+    bind = [m for _, _, m in bones]
+    inv = [inverse(m) for m in bind]
+    world = []
+    for i, (_, p, _) in enumerate(bones):
+        world.append(bind[i] if p is None or p < 0 or p >= i else mul(world[p], bind[i]))
     mats('Bind Pose', 'Bind Matrix', bind)
     mats('Inverse Bind Pose', 'Inverse Bind Matrix', inv)
-    mats('Skin Offset Matrices', 'Offset Matrix', inv)
+    mats('Skin Offset Matrices', 'Offset Matrix', world)
     sets = list(find(root, 'AnimationSet'))
     W('# Number of Animations:'); W(str(len(sets)))
     W('# Animations:'); W('# (String) Anim Name'); W('# (Float)  Duration in Seconds'); W('# (Int)    Number of Frames')
