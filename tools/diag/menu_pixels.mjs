@@ -10,7 +10,7 @@ const race = (p, ms) => Promise.race([p, new Promise((_, rj) => setTimeout(() =>
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome',
   args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-dev-shm-usage'] });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-const errs = []; page.on('pageerror', e => errs.push(String(e.message).slice(0, 300)));
+const errs = []; page.on('pageerror', e => errs.push(String(e.stack || e.message).slice(0, 4000)));
 await page.addInitScript((N) => {
   const S = globalThis.__px = { frames: 0, shots: [], log: [] };
   const orig = HTMLCanvasElement.prototype.getContext;
@@ -26,6 +26,9 @@ await page.addInitScript((N) => {
       for (const n of ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements'])
         wrap(n, () => { S.cur.draws++; if (fb === null) S.cur.drawsDefault++; });
       wrap('blitFramebuffer', () => S.cur.blits++);
+      S.viewports = {}; // distinct glViewport/scissor boxes (what area the game really drew into)
+      wrap('viewport', (v) => { const k = 'vp ' + v.join(','); S.viewports[k] = (S.viewports[k] || 0) + 1; });
+      wrap('scissor', (v) => { const k = 'sc ' + v.join(','); S.viewports[k] = (S.viewports[k] || 0) + 1; });
       S.getFb = () => fb;
     }
     return c;
@@ -54,7 +57,7 @@ await page.goto(`http://127.0.0.1:${PORT}/game.html?maplog=1`, { waitUntil: 'dom
 const t0 = Date.now(); let res = null;
 while (Date.now() - t0 < MAX) {
   await page.waitForTimeout(20000);
-  try { res = await race(page.evaluate(() => { const S = globalThis.__px; return { frames: S.frames, attrs: S.attrs, shots: S.shots.length, out: S.shots.length >= 3 ? S.shots : null,
+  try { res = await race(page.evaluate(() => { const S = globalThis.__px; return { frames: S.frames, attrs: S.attrs, viewports: S.viewports, canvas: S.canvas && [S.canvas.width, S.canvas.height], winEvents: (globalThis.pzRuntime?.window?.events || []).filter(e => /created|resized|init/.test(e.type)).slice(0, 8), shots: S.shots.length, out: S.shots.length >= 3 ? S.shots : null,
     renders: Object.entries(globalThis.pzGameCounts || {}).filter(([k]) => /MainScreenState#render/.test(k)) }; }), 90000); }
   catch (e) { console.log('SAMPLE_FAIL', String(e)); continue; }
   console.log('SAMPLE', Math.round((Date.now() - t0) / 1000), JSON.stringify({ frames: res.frames, shots: res.shots, renders: res.renders }));
@@ -63,6 +66,7 @@ while (Date.now() - t0 < MAX) {
 if (res?.out) {
   const first = res.out[0]; if (first.url) writeFileSync(OUT, Buffer.from(first.url.split(',')[1], 'base64'));
   for (const s of res.out) { delete s.url; console.log('SHOT', JSON.stringify(s)); }
+  console.log('VIEWPORTS', JSON.stringify(res.viewports), 'CANVAS', JSON.stringify(res.canvas), 'WIN', JSON.stringify(res.winEvents));
   console.log('ATTRS', JSON.stringify(res.attrs), 'SAVED', OUT);
 } else console.log('RESULT no menu frame captured');
 try { await page.screenshot({ path: OUT.replace('.png', '-page.png'), timeout: 120000 }); console.log('PAGESHOT ok'); } catch (e) { console.log('PAGESHOT_FAIL', String(e).slice(0, 200)); }
