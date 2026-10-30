@@ -141,6 +141,9 @@ export class GLBridge {
     // game's FBO gate asks for it; the gate is what triggers it, never a synthetic default.
     this.fboProbe = undefined;
     this.fboProbeRuns = 0;
+    // Desktop glClear masks whose bits WebGL2 cannot clear (accum, line, point, etc). Recorded,
+    // never silently ignored: {from, token, unmapped, seq}.
+    this.clearMaskGaps = [];
     this.lost = false;
     this.capabilities = new Map(); // desktop capability token -> {enabled, webgl} actually applied
     this.fixedFunctionCaps = new Map(); // desktop-only token -> last requested state, recorded not applied
@@ -221,7 +224,42 @@ export class GLBridge {
     this.attribRecords[key] = { fn: name, args: Array.from(args) };
   }
   clearColor(...args) { this.call('clearColor', ...args); }
-  clear(...args) { this.call('clear', ...args); }
+  /* Desktop glClear mask -> WebGL2 clear mask. The desktop bits are COLOR 0x00004000,
+   * DEPTH 0x00000100 and STENCIL 0x00000400 (verified with `javap -constants` over the pinned
+   * jar); WebGL2 only accepts COLOR 0x1, DEPTH 0x100 and STENCIL 0x200, so a desktop mask raises
+   * "WebGL: INVALID_VALUE: clear: invalid mask" - the last console line of round 60, right after
+   * UI_Loading_ModelsAnimations. DEPTH happens to be the same number in both systems. A mask with
+   * no desktop bit at all is passed through untouched, which keeps the bridge's own WebGL-token
+   * calls (the framebuffer probe) working. Bits WebGL2 cannot clear are never dropped silently:
+   * they are recorded in clearMaskGaps.
+   */
+  static CLEAR_BITS = new Map([
+    [0x4000, 'COLOR_BUFFER_BIT'], [0x100, 'DEPTH_BUFFER_BIT'], [0x400, 'STENCIL_BUFFER_BIT'],
+  ]);
+  clearMask(mask) {
+    const bits = Number(mask) >>> 0;
+    let token = 0;
+    let unmapped = bits;
+    for (const [bit, name] of GLBridge.CLEAR_BITS) {
+      if ((bits & bit) === 0) continue;
+      const value = this.context[name];
+      if (value === undefined)
+        throw new Error(`WebGL2 has no ${name} for glClear mask 0x${bits.toString(16)}`);
+      token |= value;
+      unmapped &= ~bit;
+    }
+    if (token === 0) return { token: bits, unmapped: 0 };
+    return { token, unmapped };
+  }
+  clear(...args) {
+    const mapped = this.clearMask(args[0]);
+    this.call('clear', mapped.token);
+    if (mapped.unmapped !== 0) {
+      this.clearMaskGaps.push({ from: args[0], token: mapped.token, unmapped: mapped.unmapped,
+        seq: this.callSeq });
+      if (this.clearMaskGaps.length > 32) this.clearMaskGaps.shift();
+    }
+  }
   viewport(...args) { this.call('viewport', ...args); }
   /**
    * Desktop glGetError: pops the oldest queued error and returns it, NO_ERROR when the queue is

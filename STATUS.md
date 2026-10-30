@@ -359,3 +359,23 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
   3. Verificar el `Texture(1024,1024,512)` de profundidad: `PerformanceSettings.useFbos=false` queda en
      false justo antes de construir el FBO en `create()`, así que la ruta de depth-textura es la nuestra.
   4. No montar más assets todavía (headroom ~110 MB) y no volver a montar `.x`.
+
+## Ronda 61 (2026-10-30, inicio 10:07)
+- 10:15 `port/runtime/gl.mjs`: `clear(...)` ahora traduce la máscara de escritorio a WebGL2
+  (`CLEAR_BITS`: COLOR 0x4000->COLOR_BUFFER_BIT, DEPTH 0x100->DEPTH_BUFFER_BIT, STENCIL 0x400->
+  STENCIL_BUFFER_BIT). Si la máscara no tiene ningún bit de escritorio se pasa tal cual (la sonda
+  de FBO del bridge usa tokens WebGL2 y sigue funcionando). Los bits que WebGL2 no puede limpiar se
+  registran en `clearMaskGaps` ({from,token,unmapped,seq}), nunca se descartan en silencio.
+  `node --check port/runtime/gl.mjs` OK. Evidencia que motiva el cambio: la última línea de
+  `build/real-browser/console-round60d.txt` es `WebGL: INVALID_VALUE: clear: invalid mask`.
+- 10:20 `port/src/main/java/port/compiler/StartupProgress.java`: nuevo set `FBO_CLASSES_METHODS`
+  sumado al gate de `transformClass` (antes el gate leía METHODS/EXTRA_METHODS/CLASSES/EXTRA_CLASSES/
+  ANIM_CLASSES/own). Cubre con descriptores confirmados por `javap -s` sobre el jar pinned:
+  `Texture#<init>(III)V`, `Texture#<init>(TextureID,String)V`, `TextureID#<init>(III)V`,
+  `TextureID#createTexture()V/(Z)V`, `TextureID#generateHwId(Z)V`, las tres rutinas de `TextureFBO`
+  (`<init>`, `init`, `initInternal`), `checkFBOSupport`, `getFuncs`, `attach`, `startDrawing`,
+  `endDrawing`, las equivalentes de `TextureFBODepth`, y los wrappers del shim
+  (`port.shim.GL11#glClear(I)V`, `glClearColor`, `nglGenTextures`, `glTexImage2D`, `glTexParameteri`,
+  `port.shim.GL30#glBindFramebuffer/glCheckFramebufferStatus/glFramebufferTexture2D/nglGenFramebuffers`).
+  Los natives `org.lwjgl.opengl.GL11/GL30` no existen post-rename: se instrumentan los wrappers
+  `port.shim.*` (confirmado en `pulse-map.json`, que sólo tiene `port.shim.*` y `org.lwjglx.*`).

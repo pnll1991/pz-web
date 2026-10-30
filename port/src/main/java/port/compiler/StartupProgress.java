@@ -104,6 +104,43 @@ public final class StartupProgress implements ClassHolderTransformer {
         "zombie.core.skinnedmodel.model.ModelLoader",
         "zombie.core.skinnedmodel.model.FileTask_AbstractLoadModel",
         "zombie.core.skinnedmodel.model.FileTask_LoadAnimation");
+    // Round 61: the ring's last boundary is ModelManager#create()V:entered and create() never
+    // returns. Its first statements are new Texture(1024,1024,16), new Texture(1024,1024,512) and
+    // new TextureFBO(tex, depth, false) before initAnimationMeshes (see
+    // /tmp/r60/out4/ModelManager.java:149-167), and the console's last line of that run is
+    // "WebGL: INVALID_VALUE: clear: invalid mask", i.e. our FBO path. These are method-only keys
+    // (descriptors from `javap -s` on the pinned jar) so the 400-event ring keeps the park point
+    // instead of filling with per-frame bind()/render() traffic.
+    private static final Set<String> FBO_CLASSES_METHODS = Set.of(
+        "zombie.core.textures.Texture#<init>(III)V",
+        "zombie.core.textures.Texture#<init>(Lzombie/core/textures/TextureID;Ljava/lang/String;)V",
+        "zombie.core.textures.TextureID#<init>(III)V",
+        "zombie.core.textures.TextureID#createTexture()V",
+        "zombie.core.textures.TextureID#createTexture(Z)V",
+        "zombie.core.textures.TextureID#generateHwId(Z)V",
+        "zombie.core.textures.TextureFBO#<init>(Lzombie/interfaces/ITexture;Lzombie/interfaces/ITexture;Z)V",
+        "zombie.core.textures.TextureFBO#init(Lzombie/interfaces/ITexture;Lzombie/interfaces/ITexture;Z)V",
+        "zombie.core.textures.TextureFBO#initInternal(Lzombie/interfaces/ITexture;Lzombie/interfaces/ITexture;Z)V",
+        "zombie.core.textures.TextureFBO#checkFBOSupport()Z",
+        "zombie.core.textures.TextureFBO#getFuncs()Lzombie/core/textures/IGLFramebufferObject;",
+        "zombie.core.textures.TextureFBO#attach(Lzombie/interfaces/ITexture;I)V",
+        "zombie.core.textures.TextureFBO#startDrawing()V",
+        "zombie.core.textures.TextureFBO#endDrawing()V",
+        "zombie.core.textures.TextureFBODepth#<init>(Lzombie/interfaces/ITexture;)V",
+        "zombie.core.textures.TextureFBODepth#initInternal(Lzombie/interfaces/ITexture;)V",
+        "zombie.core.textures.TextureFBODepth#checkFBOSupport()Z",
+        // The shim entrypoints the FBO path actually calls (org.lwjgl.opengl.GL11/GL30 natives are
+        // patched to these wrappers, so the shim names are what exists post-rename). The clear mask
+        // and the FBO attachment are what the WebGL console complained about.
+        "port.shim.GL11#glClear(I)V",
+        "port.shim.GL11#glClearColor(FFFF)V",
+        "port.shim.GL30#glBindFramebuffer(II)V",
+        "port.shim.GL30#glCheckFramebufferStatus(I)I",
+        "port.shim.GL30#glFramebufferTexture2D(IIIII)V",
+        "port.shim.GL30#nglGenFramebuffers(IJ)V",
+        "port.shim.GL11#nglGenTextures(IJ)V",
+        "port.shim.GL11#glTexImage2D(IIIIIIILjava/nio/ByteBuffer;)V",
+        "port.shim.GL11#glTexParameteri(III)V");
     // Round 32: java.lang.Thread$SleepHandler and org.teavm.runtime.Fiber$AsyncCallbackImpl are
     // deliberately NOT instrumented: both run inside the suspend/resume machinery, and injected
     // code there corrupts the WasmGC fiber stack (see the removal of java.lang.Thread above).
@@ -236,6 +273,7 @@ public final class StartupProgress implements ClassHolderTransformer {
             String key=cls.getName()+"#"+method.getDescriptor();
             if(!METHODS.contains(key)&&!EXTRA_METHODS.contains(key)&&!CLASSES.contains(cls.getName())
                 &&!EXTRA_CLASSES.contains(cls.getName())&&!ANIM_CLASSES.contains(cls.getName())
+                &&!FBO_CLASSES_METHODS.contains(key)
                 &&!own(cls.getName()))continue;
             if(method.getProgram()==null)continue;
             Program program=method.getProgram();
