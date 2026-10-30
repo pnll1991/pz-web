@@ -39,7 +39,12 @@ public final class BulletNativeCompatibility implements ClassHolderTransformer {
     private static final Map<String, MethodDescriptor> FORWARDED = Map.of(
         "initPZBullet()V", new MethodDescriptor("initLogging", ValueType.VOID),
         "getPZBulletVersion()Ljava/lang/String;", new MethodDescriptor("version", ValueType.object("java.lang.String")),
-        "isWorldInit()Z", new MethodDescriptor("worldInitialised", ValueType.BOOLEAN));
+        "isWorldInit()Z", new MethodDescriptor("worldInitialised", ValueType.BOOLEAN),
+        // Round 52: called 241 times from VehicleScript.toBullet during script load. The bridge
+        // keeps the same signature (String, float[]) and copies the block into the wasm module.
+        "defineVehicleScript(Ljava/lang/String;[F)V",
+        new MethodDescriptor("defineVehicleScript", ValueType.object("java.lang.String"),
+            ValueType.arrayOf(ValueType.FLOAT), ValueType.VOID));
 
     @Override public void transformClass(ClassHolder cls, ClassHolderTransformerContext context) {
         if (!cls.getName().equals(CLASS)) return;
@@ -53,7 +58,11 @@ public final class BulletNativeCompatibility implements ClassHolderTransformer {
             if (target == null) continue;
             method.getModifiers().remove(ElementModifier.NATIVE);
             var emitter = ProgramEmitter.create(method, context.getHierarchy());
-            var result = emitter.invoke(new MethodReference(BRIDGE, target));
+            // ProgramEmitter.invoke does not pass the method's own locals, so a bridge that keeps
+            // the game's signature (defineVehicleScript) receives each parameter explicitly.
+            var arguments = new org.teavm.model.emit.ValueEmitter[method.parameterCount()];
+            for (int i = 0; i < arguments.length; i++) arguments[i] = emitter.var(i + 1, method.parameterType(i));
+            var result = emitter.invoke(new MethodReference(BRIDGE, target), arguments);
             if (method.getResultType().equals(ValueType.VOID)) emitter.exit(); else result.returnValue();
         }
     }

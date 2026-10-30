@@ -925,8 +925,17 @@ export class GLBridge {
     const glType = this.textureType(type, 'glTexImage2D');
     const sized = this.sizedInternalFormat(internalformat, type);
     this.call('texImage2D', this.context[tname], level, sized, width, height, 0, glFormat, glType, data ?? null);
-    if (this.getError() !== this.context.NO_ERROR)
-      throw new Error(`glTexImage2D failed for texture ${this.activeBoundTexture()} level ${level} ${width}x${height}`);
+    const err = this.getError();
+    if (err !== this.context.NO_ERROR) {
+      // The GL error code plus every token is the only way to tell OUT_OF_MEMORY apart from
+      // INVALID_OPERATION/INVALID_VALUE; a bare "failed" message cannot be diagnosed.
+      const code = this.webglConstantName(err) ?? `0x${err.toString(16)}`;
+      this.lastUploadFailure = { op: 'texImage2D', error: code, target: tname, level, width, height,
+        internalformat, format, type, sized, data: data === null ? 'null' : 'view' };
+      throw new Error(`glTexImage2D failed: ${code} for texture ${this.activeBoundTexture()} level ${level} ` +
+        `${width}x${height} internalformat 0x${internalformat.toString(16)} format 0x${format.toString(16)} ` +
+        `type 0x${type.toString(16)} data=${data === null ? 'null' : 'arena view'}`);
+    }
     entry.levels.set(level, { width, height, format, type });
     entry.internalformat = internalformat;
     entry.width = width; entry.height = height;
@@ -938,8 +947,13 @@ export class GLBridge {
       throw new Error(`Texture ${this.activeBoundTexture()} has no level ${level} to update with glTexSubImage2D`);
     this.call('texSubImage2D', this.context[tname], level, xoffset, yoffset, width, height,
       this.textureFormat(format, 'glTexSubImage2D'), this.textureType(type, 'glTexSubImage2D'), data);
-    if (this.getError() !== this.context.NO_ERROR)
-      throw new Error(`glTexSubImage2D failed for texture ${this.activeBoundTexture()} level ${level}`);
+    const err = this.getError();
+    if (err !== this.context.NO_ERROR) {
+      const code = this.webglConstantName(err) ?? `0x${err.toString(16)}`;
+      this.lastUploadFailure = { op: 'texSubImage2D', error: code, target: tname, level, width, height, format, type };
+      throw new Error(`glTexSubImage2D failed: ${code} for texture ${this.activeBoundTexture()} level ${level} ` +
+        `${xoffset},${yoffset} ${width}x${height} format 0x${format.toString(16)} type 0x${type.toString(16)}`);
+    }
   }
 
   async loadTexture(url) {
@@ -1359,13 +1373,14 @@ export class GLBridge {
   }
   /**
    * Desktop uniform/attribute names and pointers become WebGL2 locations. A location handle
-   * is monotonic and 0 means "no such location" (WebGL2 returns null), matching the desktop
-   * GLint contract the game checks for.
+   * is monotonic and starts at 1, and a missing uniform returns **-1** exactly like desktop
+   * `glGetUniformLocation` (the game guards every setter with `!= -1`, e.g. PuddlesShader;
+   * returning 0 there made it call `glUniform1i(0,...)` and raise "Unknown uniform location 0").
    */
   uniformLocation(programHandle, name) {
     const program = this.programEntry(programHandle, 'getUniformLocation');
     const location = this.call('getUniformLocation', program.program, name);
-    if (location === null) return 0;
+    if (location === null) return -1;
     const handle = this.nextHandle++;
     this.locations.set(handle, { location, program: program.program });
     return handle;

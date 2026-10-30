@@ -551,3 +551,62 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   (7 MB) con `module Base`, y `media/lua/common` (items.lua) NO existe en esa instalación.
   Mejor enfoque: montar el prefijo, y medir en el diag el resultado real (`mediaDirs`, `missingPaths`)
   en vez de dar por hecho que el null desaparece.
+
+## Ronda 52 — errores y patrones
+- Error mío grande: di por hecho que `texture2x=false` en `options.ini` haría que el juego montara los
+  packs 1x. Verificado en el bytecode pinned (`javap -p -c zombie.core.Core`):
+  `getOptionTexture2x()` es `iconst_1; ireturn` (hardcodeado), así que `Core.tileScale` es siempre 2 y
+  los `Tiles1x/Overlays1x/JumboTrees1x/Tiles1x.floor` que agregué al pack nunca se leen.
+  Patrón a evitar: inferir el comportamiento de un getter por su nombre o por el campo que parece usar.
+  Mejor enfoque: antes de diseñar un fix sobre "lo que el juego pide", desensamblar el getter y leer el
+  bytecode; si devuelve una constante, la config es irrelevante.
+- Error: `MethodDescriptor("defineVehicleScript", ValueType.VOID)` en `BulletNativeCompatibility.FORWARDED`
+  declaró 0 parámetros y TeaVM falló 5 minutos después con
+  `Method port.shim.BulletLibrary.defineVehicleScript()V was not found`.
+  `MethodDescriptor(String, ValueType...)` toma `ValueType...` = **parámetros + resultado**, no sólo el resultado.
+  Patrón a evitar: escribir el descriptor del bridge "de memoria". Mejor enfoque: replicar la firma completa
+  (`object("java.lang.String"), arrayOf(FLOAT), VOID`) y comprobar con un probe JVM mínimo
+  (`ClassHolder.getMethod(...)` != null) antes de lanzar el build de 6 minutos.
+- Error: `std::string`/`std::vector` en `port/pzbullet/pzbullet_wrapper.cpp` -> wasm-ld con símbolos libc++
+  sin definir (`__init_copy_ctor_external`, `__libcpp_verbose_abort`) porque el módulo se compila
+  `-fno-exceptions` y linkea sólo `-lc++abi`. Patrón: STL en un módulo Emscripten mínimo.
+  Mejor enfoque: arrays C de tamaño fijo y buffers propios del módulo (nunca punteros foráneos retenidos).
+- Error: cwrap de Emscripten con tipo `'array'` marshala **bytes** por HEAP8 -> ancho de elemento incorrecto
+  para `float[]`. Mejor enfoque: scratch exportado por el módulo + `Float32Array` vista sobre
+  `HEAPU8.buffer`, recreada en cada llamada porque `ALLOW_MEMORY_GROWTH` desdetach las vistas.
+- Error: lanzar el build con `&` (background) -> el proceso fue matado, el log quedó sin `EXIT=` y sin
+  proceso java. Mejor enfoque: correr el build foreground dentro de la sesión de herramienta viva y
+  pollear con `write_stdin`; el log debe terminar con `EXIT=<code>`.
+- Error: en `startup_extra.py` el filtro de `UI_FILES` comparaba `name[len('media/ui/'):]` contra rutas
+  relativas `ui/cursor_*.png` -> 0 archivos agregados silenciosamente. Patrón: agregadores que imprimen
+  "Appended N" sin verificar N por categoría. Mejor enfoque: imprimir conteos por categoría y verificarlos.
+- Error: `ProgramEmitter.invoke` **no** pasa los locales del método compilado; un bridge que conserva la
+  firma del juego recibía 0 argumentos. Mejor enfoque: construir el array de `ValueEmitter` con
+  `emitter.var(i+1, method.parameterType(i))`.
+- Error: el test Node de bullet usaba `fetch(url)` con `file:` sin `fileURLToPath`, y un IndexedDB fake debe
+  disparar `oncomplete` **asincrónicamente** (`queueMicrotask`) porque el VFS asigna `transaction.oncomplete`.
+- Error de presupuesto: `alias_index.py` y `boot_options.py` tenían cada uno su `256*1024*1024` hardcodeado;
+  al reempaquetar con Tiles2x el alias reventó con "Alias index exceeds the VFS memory budget" y el index
+  quedó a medio actualizar. Patrón: límites duplicados en varios tools. Mejor enfoque: un único
+  `tools/pack/budget.py` compartido y sincronizado con el default de `port/runtime/vfs.mjs`.
+- Error de despliegue: cambié `port/runtime/vfs.mjs` (presupuesto 512 MB) y probé en Chrome sin copiar a
+  `port/target/web/runtime/`; el servidor sirve esa copia, así que el diag dio
+  `loader-failed: Pack preload exceeds VFS memory budget`. Patrón: editar el fuente y asumir que el
+  servidor ya ve el cambio. Mejor enfoque: `cp port/runtime/*.mjs port/target/web/runtime/` (o rebuild)
+  antes de cada prueba de navegador, y verificar con `grep` en el archivo servido.
+- `mount()` del VFS siempre hace `data.slice()`: montar un pack de 321 MB duplicaba el blob y nunca entraba
+  en el presupuesto. Mejor enfoque: `mountView()` con `blob.subarray()` (el blob queda vivo por la vista) y
+  `readFile()` sigue copiando, así el juego no puede corromper el pack.
+- Error de la ronda 52: un `page.evaluate` grande (DebugLog de 73 KB + mapa de shaders + contadores) con un
+  `Promise.race` de 30 s -> el diag murió con `{timeout:true}` y `EXIT=1` **sin ninguna evidencia** del
+  avance real. Patrón: observar todo el estado de una pestaña con 422 MB montados en un solo evaluate.
+  Mejor enfoque: divides la observación (phase/counts primero, GL y log después), races de 120 s, y recortar
+  el texto del log dentro de la página antes de serializarlo.
+- Error de instrumentación: `glTexImage2D failed for texture 336 level 0 1024x1024` no decía el código de
+  WebGL2 ni si `data` era `null`, así que la primera hipótesis fue OUT_OF_MEMORY (falso). Patrón: validar con
+  `getError()` y lanzar un mensaje sin el error ni los tokens. Mejor enfoque: guardar
+  `gl.lastUploadFailure = {error, tokens, sized, data}` y exponerlo en el diag; así se probó que era
+  `INVALID_VALUE` con `data=null` (allocación desktop sin datos que WebGL2 rechaza).
+- Error propio parcheando con `python3 str.replace()` sobre `diag155.mjs`: reemplacé un string que contenía
+  el cierre de `Promise.race([...])` y rompí la aridad (dos `SyntaxError`). Mejor enfoque: parchar archivos
+  JS con `apply_patch` y validar siempre con `node --check` antes de correr el navegador.

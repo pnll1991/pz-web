@@ -46,6 +46,52 @@ double g_transform[3] = {0, 0, 0};
 constexpr int k_logging_buffer_bytes = 4096;
 char *g_logging_buffer = nullptr;
 
+// Round 52: Bullet.defineVehicleScript(name, float[]) is the JNI entry point the real game
+// calls 241 times while loading vehicle scripts (VehicleScript.toBullet -> Bullet.defineVehicleScript,
+// verified in the pinned jar). The desktop native builds a wheeled vehicle from that parameter
+// block; PZBullet's exact units and ownership are NOT recovered, so this registry stores the
+// block verbatim and reports what was registered. It never pretends a vehicle body exists.
+// Plain C arrays only: this module is built with -fno-exceptions and links libc++abi but not
+// libc++-except-headers, so std::string/std::vector here produce undefined libc++ symbols
+// (verified: wasm-ld reports __init_copy_ctor_external and __libcpp_verbose_abort).
+constexpr int k_script_name_bytes = 128;
+constexpr int k_script_params = 256;
+constexpr int k_script_capacity = 4096;
+struct VehicleScriptEntry {
+  char name[k_script_name_bytes];
+  int count;
+  float params[k_script_params];
+};
+VehicleScriptEntry g_vehicle_scripts[k_script_capacity];
+int g_vehicle_script_slots = 0;      // index one past the last used slot
+int g_vehicle_script_unique = 0;     // distinct names
+int g_vehicle_script_overwrites = 0; // same-name redefinitions (the game re-loads scripts)
+float g_vehicle_scratch[k_script_params];
+
+// -1 when the name does not fit: nothing is stored, so callers cannot count a rejected call.
+int store_vehicle_script(const char *name, const float *params, int count) {
+  if (name == nullptr || name[0] == '\0' || params == nullptr) return -1;
+  if (count <= 0 || count > k_script_params) return -1;
+  size_t length = std::strlen(name);
+  if (length + 1 > k_script_name_bytes) return -1;
+  for (int i = 0; i < g_vehicle_script_slots; ++i) {
+    if (std::strncmp(g_vehicle_scripts[i].name, name, k_script_name_bytes) == 0) {
+      std::memcpy(g_vehicle_scripts[i].params, params, sizeof(float) * static_cast<size_t>(count));
+      g_vehicle_scripts[i].count = count;
+      ++g_vehicle_script_overwrites;
+      return 1;
+    }
+  }
+  if (g_vehicle_script_slots >= k_script_capacity) return -1;
+  VehicleScriptEntry &entry = g_vehicle_scripts[g_vehicle_script_slots++];
+  std::memset(&entry, 0, sizeof(entry));
+  std::memcpy(entry.name, name, length + 1);
+  std::memcpy(entry.params, params, sizeof(float) * static_cast<size_t>(count));
+  entry.count = count;
+  ++g_vehicle_script_unique;
+  return 0;
+}
+
 }  // namespace
 
 extern "C" {
@@ -141,6 +187,47 @@ void pzbullet_dispose_world() {
   pzbullet_remove_all_bodies();
   delete g_world;
   g_world = nullptr;
+}
+
+// Scratch area the JS bridge writes the parameter block into before calling
+// pzbullet_define_vehicle_script, so the block reaches C++ as floats (Emscripten's "array"
+// marshaller copies single bytes through HEAP8). The module owns this storage and the contents
+// are zeroed on every request. Valid until the next call to either function.
+float *pzbullet_vehicle_scratch(int count) {
+  if (count <= 0 || count > k_script_params) return nullptr;
+  std::memset(g_vehicle_scratch, 0, sizeof(float) * static_cast<size_t>(count));
+  return g_vehicle_scratch;
+}
+
+// Returns 1 (new name), 2 (redefinition of an existing name), or 0 when the arguments were
+// rejected and nothing was stored.
+int pzbullet_define_vehicle_script(const char *name, const float *params, int count) {
+  int result = store_vehicle_script(name, params, count);
+  return result == 0 ? 1 : (result == 1 ? 2 : 0);
+}
+
+int pzbullet_vehicle_script_count() { return g_vehicle_script_slots; }
+
+// Distinct names, i.e. registered scripts after collapsing same-name redefinitions.
+int pzbullet_vehicle_script_unique_count() { return g_vehicle_script_unique; }
+
+int pzbullet_vehicle_script_overwrite_count() { return g_vehicle_script_overwrites; }
+
+int pzbullet_vehicle_script_param_count(int index) {
+  if (index < 0 || index >= g_vehicle_script_slots) return -1;
+  return g_vehicle_scripts[index].count;
+}
+
+float pzbullet_vehicle_script_param(int index, int i) {
+  if (index < 0 || i < 0 || index >= g_vehicle_script_slots || i >= g_vehicle_scripts[index].count)
+    return 0.0f;
+  return g_vehicle_scripts[index].params[i];
+}
+
+// The registered script name, or nullptr for an unknown slot.
+const char *pzbullet_vehicle_script_name(int index) {
+  if (index < 0 || index >= g_vehicle_script_slots) return nullptr;
+  return g_vehicle_scripts[index].name;
 }
 
 }  // extern "C"

@@ -606,3 +606,160 @@ Captura de esta ronda: `test-results/round40-final.png` (1280×720) — 876.098 
   `ReflectionConfiguration.extendsAny(cls,bases)` camina `superclass()` por nombre, sin `findClass`.
   `mvn test`: **50 tests, 0 fallos**. `npm test`: **39 pass** (adapté el test de glsl de la ronda 50 a
   `hasMain`/`globalInits` y agregué un test de inicializadores globales no constantes).
+
+## Ronda 52 (inicio 18:30:51, corte duro 22:30)
+- 19:05 Fix #5 del diagnóstico (gl.mjs `uniformLocation`): una uniform inexistente ahora devuelve
+  **-1** (como `glGetUniformLocation` desktop) en vez de 0. Causa verificada en `/tmp/pz52/out/PuddlesShader.java`:
+  el juego guarda el resultado y guarda cada setter con `!= -1`; con 0 llamaba `glUniform1i(0,...)` y
+  el bridge lanzaba `Unknown uniform location 0` (8× en console-round51.txt). Los handles propios
+  arrancan en 1 (`nextHandle = 1`), así que -1/-0 no colisionan y `locationOf` sigue fallando para
+  handles desconocidos. Test nuevo en `tests/node/gl-introspection.test.mjs`: `npm test` **40 tests, 40 pass**.
+- 19:45 Fix #2 (los 353 "missing no-arg constructor"). Causa verificada, no hipótesis:
+  `ComponentScriptFactory$ScriptConstructor::findConstructor` llama
+  `ClassReflection.getConstructor(type,(Class[])null)` y `getDeclaredConstructor(type,(Class[])null)`
+  (javap: `aconst_null; checkcast [Ljava/lang/Class;`; scan de TODO el jar pinned = 1 solo sitio con
+  esa forma, ese). En desktop el varargs `null` ES la búsqueda sin-argumentos (verificado en JDK 25:
+  `T.class.getDeclaredConstructor((Class[])null)` devuelve el ctor privado), pero TeaVM 0.16.0
+  `TClass.getConstructor/getDeclaredConstructor` compara con `Arrays.equals(parameterTypes, null)` y
+  `TArrays.equals` da `false` si alguno es null → el ctor privado que la ronda 51 hizo reflectable
+  nunca se encuentra. Fix: transformer nuevo `port/compiler/ReflectionVarargsCompatibility.java`
+  (registrado en `BuildCompiler`) que reemplaza el `null` casteado a `Class[]` por `new Class[0]` en
+  los 2 sitios; falla el build si la forma del bytecode no es la esperada (cuenta != 2) y verifica
+  después del parche que ambos invokes reciben un `ConstructArrayInstruction`. Tests nuevos en
+  `TransformerPatchTest` (positivo + shape-reject): `mvn test` **52 tests, 0 fallos**.
+- 20:30 Evidencia de ronda 51 que faltaba registrar (build/real-browser/console-round51.txt, 2.402.425 B;
+  `build-round51-game.log` BUILD SUCCESS 17:55 con boot.wasm 144.942.806 B y gates PASS:
+  `fiberops False`, `probe8 'java.lang.Thread::<clinit>'` -> `no seed`, stringutils gate, assertions gate).
+  `port/target/diag153.log` (18:32): `{"phase":"main-returned","error":"","swap":3,"progress":602,"trace":400,
+  "glDraw":{"drawRangeElements":167},"progs":2,"shaders":6}` y `ERRS []` => **ya no hay trap de wasm**;
+  el loop de render llama `drawRangeElements` 167 veces. El freno restante son excepciones del juego:
+  8x FileNotFoundException de los packs 2x (GameWindow.enter), 353x "missing no-arg constructor",
+  241x `UnsupportedOperationException: Java_zombie_core_physics_Bullet_defineVehicleScript__Ljava_lang_String_2_3F`
+  (stack decodificado: `Bullet::defineVehicleScript <- VehicleScript::toBullet <- VehicleScript::Loaded <-
+  ScriptModule$16::onScriptLoad <- ScriptBucket::onScriptLoad <- LoadScripts <- ScriptManager::loadScripts <- Load`),
+  y 2x "failed to read image /media/ui/cursor_blank.png|cursor_white.png".
+- 21:03 El primer build --with-game de la ronda 52 (log `build-round52-game.log`) falló en TeaVM con
+  `ERROR: zombie.core.physics.Bullet.defineVehicleScript(Ljava/lang/String;[F)V: Method
+  port.shim.BulletLibrary.defineVehicleScript()V was not found`. Causa: en
+  `BulletNativeCompatibility.FORWARDED` puse `new MethodDescriptor("defineVehicleScript", ValueType.VOID)`,
+  que declara 0 parámetros, mientras el método real del bridge es `(String,float[])V`. Verificado con
+  un probe JVM contra teavm-core 0.16.0 (`/tmp/md52.java`): `signatureToString()` del descriptor corregido
+  es `(Ljava/lang/String;[F)V`, y `ClassHolder.getMethod` lo encuentra (el de 0 args no).
+  Fix: `ValueType.object("java.lang.String"), ValueType.arrayOf(ValueType.FLOAT), ValueType.VOID`.
+  `mvn compile` OK (10 s). Relancé UN build --with-game (21:09, sesión viva, foreground).
+- 21:15 BUILD SUCCESS del único build --with-game de la ronda 52 (5:57 min). Gates: `fiberops False` en
+  Thread::currentThread/setCurrentThread, `probe8 'java.lang.Thread::<clinit>'` -> `no seed`, stringutils gate
+  (StringUtilsBridge, sin String::matches/replaceAll), assertions gate (sin `desiredAssertionStatus`).
+  boot.wasm **144.945.224 B** (sha256 `850ae3be9adda12670199e3014c80421…`), `success:true`, 10.231 clases / 72.807 métodos.
+  Chequeo nuevo propio: `scripts/wasmfn.py ... 'zombie.core.physics.Bullet::defineVehicleScript'` ahora llama
+  `port.shim.BulletLibrary::defineVehicleScript` (antes era la guard fail-fast) => el puente real quedó compilado.
+- 21:16 Diagnóstico Chrome con `port/target/diag154.mjs` (nuevo; conserva DebugLog/missingPaths/mediaDirs/GL
+  programs+shaders/pzGameCounts/screenshot y agrega bullet counters, `vfs.isReadOnlyMounted('/Zomboid/options.ini')`,
+  el texto montado de options.ini, mountTrace y tally de los 5 frenos de la ronda 51). Salida:
+  `port/target/diag154.log`, `build/real-browser/console-round52.txt`, `build/real-browser/debuglog-round52.txt`,
+  captura `test-results/round52-diag154.png`.
+- 21:48 CORRECCIÓN IMPORTANTE de la ronda 52 (mi error de la ronda anterior, verificado con bytecode y
+  con el log de esta ronda): `javap -p -c zombie.core.Core` muestra
+  `public boolean getOptionTexture2x();  0: iconst_1  1: ireturn`, o sea está hardcodeado `true`.
+  Por lo tanto `GameWindow.enter()` hace SIEMPRE `Core.tileScale = 2` y monta los 8 packs 2x; el
+  `texture2x=false` que metí en options.ini no sirve de nada y los `Tiles1x/Overlays1x/JumboTrees1x/
+  Tiles1x.floor` que agregué al pack **nunca** se montan. El log de diag154 lo confirma:
+  `texturepack: loading Tiles2x / Overlays2x / JumboTrees2x / JumboTreesBigs2x / Tiles2x.floor /
+  B42ChunkCaching2x / B42ChunkCaching2x.floor / Clock2x` y 8 FileNotFoundException en
+  `TexturePackDevice::getSubTextureInfo <- FileSystemImpl::mountTexturePack <- GameWindow::LoadTexturePack
+  <- GameWindow::enter` (stacks 76632376/75490292/8839379/73600695 decodificados). El freno fatal sigue
+  siendo `TileIndieStoneTentFrontLeft == null` (Tiles2x.pack tiene ese nombre; Tiles1x también pero no se monta).
+- 21:50 Cambios para eso (sin rebuild: los packs no tocan boot.wasm):
+  * `port/runtime/vfs.mjs`: presupuesto 256 MB -> **512 MB** y método nuevo `mountView(path,blob,offset,length)`
+    que monta una **vista** (`blob.subarray`) en vez de copiar. `Tiles2x.pack` pesa 321 MB: con `mount()`
+    (que hace `data.slice()`) el blob + la copia no entraban nunca; con vistas el pack cuesta sus bytes
+    una sola vez. Sigue siendo readOnly (EROFS en write/writeAt/resize) y `flush()` lo ignora.
+    `READ_ONLY_MOUNTABLE` exportado (único /Zomboid montable: options.ini).
+  * `port/runtime/packs.mjs`: los archivos se verifican contra el blob y se montan como vistas
+    (`new Uint8Array(bytes, offset, length)`), y los blobs de más de 64 MB **no** se guardan en la
+    Cache API (risco de quota en un perfil chico; el dev server ya los sirve con ETag/Range) registrando
+    el skip en `globalThis.pzPackCacheSkipped` para que sea observable.
+  * `tools/pack/budget.py` (nuevo) = fuente única del presupuesto (512 MB), usado por `alias_index.py`
+    y `boot_options.py` (antes cada uno tenía su 256 MB hardcodeado, que fue lo que reventó el reempaquetado).
+  * `tools/pack/startup_extra.py`: `TILE_PACKS = ('Tiles2x.pack','Clock2x.pack')` (Tiles2x = el que
+    resuelve el chequeo fatal; Clock2x = el único con `animated_clock_01_*`, que `enter()` pide justo antes).
+    Los otros 6 packs 2x (107 MB más, JumboTreesBigs2x 82 MB) quedan sin montar a propósito para no pasar
+    el presupuesto de memoria de la pestaña; el juego los reporta honestamente como FileNotFoundException.
+  * `tools/pack/boot_options.py`: el comentario del options.ini ahora dice que texture2x es ignorado.
+  * Reempacado: **1642 archivos, 4 blobs, blob bytes 404.662.775, montado 422.667.883 B de 536.870.912 B**.
+    Tiles2x.pack 321.028.239 / Clock2x.pack 65.222 / UI2 54.629.788. Servidor 127.0.0.1:8092 verificado:
+    GET completo de Tiles2x = 200 con 321.028.239 B en 3.0 s y `Range: bytes=0-1000` = 206 Content-Range.
+- 21:52 `npm test`: **43 tests, 43 pass** (test nuevo de `mountView`: vista readOnly, comparte bytes del
+  blob, cuenta solo su longitud, `readFile()` copia así que no se puede corromper el pack, rangos inválidos,
+  rutas no permitidas, presupuesto).
+
+## Ronda 52 — cierre (22:04-22:28)
+- 22:03 primer intento con Tiles2x+Clock2x montados como vistas terminó **sin evidencia**: `diag154.mjs`
+  lanzó `{timeout:true}` desde el `Promise.race` del `page.evaluate` (30 s) porque serializar el DebugLog
+  de 73 KB + el mapa de shaders en una pestaña con 422 MB montados superó ese plazo. Error propio: el
+  `page.evaluate` único mezclaba lectura del log y todo el estado GL. Fix: `port/target/diag155.mjs` divides
+  la observación en 3 evaluates chicos (phase/error/counts) + races de 120 s + recorte del log
+  (cabecera 120 KB + cola 280 KB) y escribe en `debuglog-round52b.txt`/`console-round52b.txt` para no
+  pisar la evidencia de las 21:19. Agregado también en `diag155`: `pzRuntime.gl.lastUploadFailure`.
+- 22:07-22:12 corrida de `diag155` (EXIT=0, 200 s de espera). **El freno fatal de la ronda 51 desapareció**:
+  `Rebuild Tiles.pack ... TileIndieStoneTentFrontLeft` ya NO aparece, y el juego avanza dentro de
+  `GameWindow.enter()` por los packs UI, `UI_Loading_Scripts`, `UI_Loading_Clothing` (79 s),
+  `UI_Loading_Lua`, `texturepack: loading Tiles2x` OK, Clock2x OK, y llega a
+  `UI_Loading_ModelsAnimations` (log `build/real-browser/debuglog-round52b.txt`).
+  Contadores: `LoadTexturePack` 15 entered / 15 returned; `DoLoadingText` 22/22; `GameWindow#init()`
+  entered+returned; `mainThreadInit()` returned; `enter()` entered (nunca returned);
+  `RenderThread#invokeOnRenderContext` 12 entered / 11 returned; `swap:3`, `drawRangeElements:167`,
+  `progs:1`, `shaders:2` (ambos compilados y el programa linkeado `ok:true`),
+  bullet `vehicles:241 unique:241 overwrites:0`, Tiles2x montado como vista readOnly de 321.028.239 B,
+  `vfs.byteLength 422.881.260` B, y el 321 MB **no** entró en la Cache API (`pzPackCacheSkipped`).
+  RAM JS de la pestaña en ese momento: used 614 MB / limit 4192 MB (`performance.memory`), sin OOM.
+- 22:12 NUEVO freno (dos niveles, mismo origen):
+  1. `RuntimeException: dereferencing a null pointer` en
+     `TextureFBO::initInternal(30358) <- TextureFBO::init_0(465768) <- TextureFBO$<init>$lambda$_4_0::accept
+     <- Invokers$Params3$CallbackStackItem::run <- RenderContextQueueItem::invoke <- RenderThread::flushInvokeQueue
+     <- RenderThread::renderLoop <- MainScreenState::main <- port.GameBoot::launch` (pageerror, único error).
+     Decodificado con `scripts/wasm_stack.py`; el bytecode de `TextureFBO.initInternal` muestra que el NPE
+     propio del juego es `NullPointerException("Could not create FBO. Texture is null.")` cuando
+     `texture==null && depthTexture==null`, y que ese método además exige `checkFBOSupport()`.
+     TeaVM lo reporta como trampa de puntero nulo (field read sobre receiver/parámetro nulo), no como NPE Java.
+  2. Inmediatamente antes, el log registra el wrapper TeaVM
+     `Error: glTexImage2D failed for texture 336 level 0 1024x1024` en
+     `port.shim.GL11::nglTexImage2D(55576843) <- GL11C::nglTexImage2D <- GL11C::glTexImage2D <- GL11::glTexImage2D
+     <- TextureID::generateHwId(20108487) <- TextureID::createTexture_0 <- TextureID::lambda$new$0
+     <- RenderContextQueueItem::invoke <- RenderThread::flushInvokeQueue <- renderLoop`.
+     O sea: el *primer* FBO/textura de `UI_Loading_ModelsAnimations` (1024x1024 RGBA8) falla al subir y el
+     texture queda sin HW id, lo que produce el nulo del FBO. La trampa mata el fiber principal; el
+     `InvokeOnRenderContext` pendiente (12 vs 11) es ese mismo item de cola.
+- 22:16 Fix de diagnóstico (sin cambiar reglas de juego): `port/runtime/gl.mjs` ahora guarda
+  `gl.lastUploadFailure` y lanza el código real de WebGL2 + todos los tokens
+  (`glTexImage2D failed: INVALID_VALUE for texture 336 level 0 1024x1024 internalformat 0x1908 format 0x1908
+  type 0x1401 data=arena view|null`). Copiado a `port/target/web/runtime/gl.mjs` y `npm test` 43/43.
+- 22:20-22:25 corrida `diag156` con ese fix (`port/target/diag156.log`, `debuglog-round52c.txt`,
+  `console-round52c.txt`, `test-results/round52-diag156.png`). Resultado exacto de la subida:
+  `{op:'texImage2D', error:'INVALID_VALUE', target:'TEXTURE_2D', level:0, width:1024, height:1024,
+  internalformat:6408(GL_RGBA), format:6408(GL_RGBA), type:5121(GL_UNSIGNED_BYTE), sized:32856(GL_RGBA8),
+  data:'null'}` y `MAX_TEXTURE_SIZE=8192`, `getError()==0` antes de la llamada.
+  Es decir: el juego pide **allocación sin datos** (`glTexImage2D(...,NULL)`, válido en desktop GL) y WebGL2
+  lo rechaza con INVALID_VALUE en SwiftShader. No es falta de memoria: la pestaña iba en 614 MB de 4192 MB.
+- 22:25 Freno actual, dicho con precisión: la ruta `sizedInternalFormat`/`texImage2D` de `gl.mjs` no
+  reproduce la semántica desktop de `data==NULL` (allocación sin inicializar) en WebGL2/SwiftShader, y
+  por eso `TextureID.generateHwId` deja el id de HW inválido -> `TextureFBO.initInternal` con textura nula
+  -> trampa de puntero nulo -> el fiber principal muere en `UI_Loading_ModelsAnimations`.
+  Siguiente paso concreto (ronda 53): probe mínimo en Chrome de
+  `texImage2D(TEXTURE_2D,0,RGBA8,1024,1024,0,RGBA,UNSIGNED_BYTE,null)` (y variantes con `ArrayBuffer` de
+  1048576 B y con `srcData=undefined`) para determinar si INVALID_VALUE viene de la forma de la llamada
+  (arity/`null` vs `undefined`) o de la allocación sin datos; según eso, asignar el buffer en JS
+  (respetando que el juego luego usa `glTexSubImage2D`/`glGetTexImage`) sin simular éxito.
+- Pendientes honestos de esta ronda: 6 packs 2x siguen sin montar (Overlays2x, JumboTrees2x,
+  JumboTreesBigs2x, Tiles2x.floor, B42ChunkCaching2x, B42ChunkCaching2x.floor) -> 7 FileNotFoundException
+  tolerados por el juego; `failed to read image /media/ui/cursor_blank.png|cursor_white.png`
+  (el decodificador propio sólo acepta PNG RGB/RGBA 8-bit no interlaced; no se finge éxito);
+  15 `Class cannot be created (missing no-arg constructor)` de scripts de items (el juego los remueve y
+  sigue); `Unsupported platform: UNSUPPORTED` (oshi), `RakNet64`, y el nativo Bullet
+  `Java_zombie_core_physics_Bullet_defineRagdollBodyDynamics___3FZ` que sigue fail-fast por diseño.
+- Captura 22:25: `test-results/round52-diag156.png` (1280x720) sigue siendo negro con el texto de carga
+  (181 colores; la de las 21:19 tenía 1785 porque todavía dibujaba el splash anterior). **No hay menú
+  visible todavía**, por lo que no se crea ningún marcador MENU_REACHED.
+- Tests: `mvn test` 52/0 (build de las 21:15), `npm test` 43/43 (22:16). boot.wasm sin cambios
+  (144.945.224 B, sha256 `850ae3be9adda12670199e3014c80421…`); no se reconstruyó porque los cambios de
+  esta ronda son pack/runtime/JS.

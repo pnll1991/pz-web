@@ -1,6 +1,10 @@
 /** Loader for the locally built wasm32 Bullet module; never simulates a missing library. */
 const EXPORTED = ['version', 'initLogging', 'loggingInitialised', 'worldInitialised', 'createWorld',
-  'bodyCount', 'addBox', 'addSphere', 'stepSimulation', 'getTransform', 'removeAllBodies', 'disposeWorld'];
+  'bodyCount', 'addBox', 'addSphere', 'stepSimulation', 'getTransform', 'removeAllBodies', 'disposeWorld',
+  // Round 52: the game's Bullet.defineVehicleScript(name, float[]) JNI entry point. Our module
+  // registers the parameter block for real; nothing here simulates a physics vehicle.
+  'defineVehicleScript', 'vehicleScriptCount', 'vehicleScriptUniqueCount',
+  'vehicleScriptOverwriteCount', 'vehicleScriptParamCount', 'vehicleScriptParam'];
 
 async function loadManifest(locateFile) {
   const response = await fetch(locateFile('manifest.json'));
@@ -22,6 +26,29 @@ export async function bulletBridge({ locateFile = name => '/vendor/pzbullet/' + 
   };
   const transformPointer = call('pzbullet_get_transform', ['number', ['number']]);
   const readVector = pointer => pointer ? Array.from(new Float64Array(instance.HEAPU8.buffer, pointer, 3)) : null;
+  // The float block must reach C++ as floats. Emscripten's "array" marshaller writes single
+  // bytes through HEAP8, which is the wrong element width, so the block goes through the module's
+  // own scratch area: pzbullet_vehicle_scratch returns a pointer into module-owned memory and the
+  // bridge fills it with a Float32Array view over the module heap (rebuilt per call because
+  // ALLOW_MEMORY_GROWTH detaches older views). The module copies the values before returning.
+  const scratchPointer = call('pzbullet_vehicle_scratch', ['number', ['number']]);
+  const defineVehicleScriptRaw = call('pzbullet_define_vehicle_script', ['number', ['string', 'number', 'number']]);
+  const defineVehicleScript = (name, params) => {
+    // The module is the single validator (it rejects a null/empty name, a null block and a bad
+    // count by storing nothing and returning 0). Passing null through cwrap yields a null char*,
+    // and count 0 asks for no scratch, so invalid arguments reach C++ honestly instead of being
+    // judged here.
+    if (params !== null && params !== undefined && !(params instanceof Float32Array))
+      throw new TypeError('defineVehicleScript parameters must be a Float32Array');
+    const count = params ? params.length : 0;
+    if (count > 0) {
+      const pointer = scratchPointer(count);
+      if (!pointer) throw new Error(`pzbullet_vehicle_scratch refused ${count} floats`);
+      new Float32Array(instance.HEAPU8.buffer, pointer, count).set(params);
+      return defineVehicleScriptRaw(name, pointer, count);
+    }
+    return defineVehicleScriptRaw(name, 0, 0);
+  };
   const bridge = {
     manifest,
     exports: EXPORTED,
@@ -37,6 +64,12 @@ export async function bulletBridge({ locateFile = name => '/vendor/pzbullet/' + 
     stepSimulation: call('pzbullet_step_simulation', ['number', ['number', 'number', 'number']]),
     removeAllBodies: call('pzbullet_remove_all_bodies', ['void', []]),
     disposeWorld: call('pzbullet_dispose_world', ['void', []]),
+    vehicleScriptCount: call('pzbullet_vehicle_script_count', ['number', []]),
+    vehicleScriptUniqueCount: call('pzbullet_vehicle_script_unique_count', ['number', []]),
+    vehicleScriptOverwriteCount: call('pzbullet_vehicle_script_overwrite_count', ['number', []]),
+    vehicleScriptParamCount: call('pzbullet_vehicle_script_param_count', ['number', ['number']]),
+    vehicleScriptParam: call('pzbullet_vehicle_script_param', ['number', ['number', 'number']]),
+    defineVehicleScript,
     // The module owns the scratch buffer; the caller copies the three doubles.
     getTransform(index) { return readVector(transformPointer(index)); },
   };

@@ -14,6 +14,9 @@ export function normalizePath(value) {
 
 const writable = path => path.startsWith('/Zomboid/');
 const parent = path => path.slice(0, path.lastIndexOf('/')) || '/';
+// The only /Zomboid paths a pack may own. The game writes everything else under /Zomboid
+// (saves, logs, options backup), so those must never come from an immutable blob.
+export const READ_ONLY_MOUNTABLE = new Set(['/Zomboid/options.ini']);
 const requestValue = request => new Promise((resolve, reject) => {
   request.onsuccess = () => resolve(request.result);
   request.onerror = () => reject(request.error);
@@ -36,11 +39,17 @@ const ringTrace = (label) => {
 
 /** Preloaded synchronous reads, writable /Zomboid, atomic IndexedDB snapshots. */
 export class VirtualFileSystem {
-  constructor({ name = 'pz-web-saves-v1', maxBytes = 256 * 1024 * 1024 } = {}) {
+  // Round 52: raised from 256 MB. Verified in the pinned bytecode (javap -p -c zombie.core.Core:
+  // getOptionTexture2x() is `iconst_1; ireturn`) that Core.tileScale is always 2, so GameWindow.enter()
+  // always mounts the 2x tile packs and media/texturepacks/Tiles2x.pack alone is 321 MB. The pack
+  // files are mounted as views over the fetched blob (mountReadOnlyView), so the budget counts the
+  // blob bytes once instead of blob + copies.
+  constructor({ name = 'pz-web-saves-v1', maxBytes = 512 * 1024 * 1024 } = {}) {
     this.name = name; this.maxBytes = maxBytes;
     this.files = new Map(); this.database = null; this.pending = Promise.resolve();
     this.directories = new Set(['/', '/media', '/Zomboid']);
     this.metadata = new Map();
+    this.readOnlyMounted = new Set();
     this.listeners = new Set();
   }
   onChange(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
@@ -108,6 +117,47 @@ export class VirtualFileSystem {
     if (!path.startsWith('/media/')) throw new Error('Read-only resources must be under /media');
     this.store(path, data);
   }
+  /** Round 52: a game-owned file under /Zomboid that must never be writable.
+   *
+   * `writable()` above treats every /Zomboid path as user-writable, which is correct for saves
+   * and logs, but the game's own `Core.loadOptions()` ends with `saveOptions()` writing the
+   * whole option list back to /Zomboid/options.ini. If that file came from the immutable pack
+   * and stayed writable, the pack's texture2x=false would be silently replaced by whatever the
+   * in-memory defaults are, and the next reload would take the 2x tile path again. So the pack
+   * entry is marked readOnly here: `canWrite()`/`writeFile()`/`resize()`/`writeAt()` then fail
+   * with EROFS (the Java layer turns that into an honest IOException), and flush() skips it so
+   * a game asset never lands in the save snapshot. */
+  mountReadOnly(path, data) {
+    path = normalizePath(path);
+    if (path.startsWith('/media/')) throw new Error('Use mount() for /media resources');
+    if (!path.startsWith('/Zomboid/')) throw new Error(`Only /Zomboid files may be mounted read-only: ${path}`);
+    this.store(path, data);
+    this.metadata.set(path, { directory:false, modified:Date.now(), readOnly:true });
+    this.readOnlyMounted.add(path);
+    ringTrace(`vfs#mountReadOnly ${path} bytes=${data.byteLength}`);
+  }
+  /** Read-only mount without copying: the file is a subarray view over an already resident blob.
+   * The whole blob stays alive because the view references it, so a 321 MB pack costs its own
+   * bytes once instead of blob + slice (mount()/store() always slice). Writes still fail with
+   * EROFS and flush() skips it, so a view is only ever valid for immutable pack content. */
+  mountView(path, blob, offset, length) {
+    path = normalizePath(path);
+    if (!(blob instanceof Uint8Array)) throw new TypeError('Pack blob must be Uint8Array');
+    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0
+        || offset + length > blob.byteLength) throw new Error(`Invalid view range: ${path}`);
+    if (!path.startsWith('/media/') && !READ_ONLY_MOUNTABLE.has(path))
+      throw new Error(`Pack views are only allowed for /media or the read-only /Zomboid files: ${path}`);
+    if (this.byteLength + length > this.maxBytes) throw new Error('VFS memory budget exceeded');
+    if (this.directories.has(path)) throw new Error(`EISDIR: ${path}`);
+    const existed = this.files.has(path);
+    this.ensureParents(path);
+    this.files.set(path, blob.subarray(offset, offset + length));
+    this.metadata.set(path, { directory:false, modified:Date.now(), readOnly:true });
+    this.readOnlyMounted.add(path);
+    this.changed(path, existed ? 'modify' : 'create');
+    ringTrace(`vfs#mountView ${path} bytes=${length}`);
+  }
+  isReadOnlyMounted(path) { return this.readOnlyMounted.has(normalizePath(path)); }
   exists(path) { path = normalizePath(path); return this.files.has(path) || this.directories.has(path); }
   isDirectory(path) { return this.directories.has(normalizePath(path)); }
   canWrite(path) {
@@ -227,8 +277,9 @@ export class VirtualFileSystem {
   flush() {
     if (!this.database) return Promise.reject(new Error('VFS must be opened before flush'));
     ringTrace(`vfs#flush:entered pendingFiles=${[...this.files.keys()].filter(writable).length}`);
-    const snapshot = [...this.files].filter(([key]) => writable(key)).map(([key, data]) => [key, data.slice()]);
-    const metadata = [...this.metadata].filter(([key]) => writable(key)).map(([key, value]) => [key, { ...value }]);
+    const persistent = (key) => writable(key) && !this.readOnlyMounted.has(key);
+    const snapshot = [...this.files].filter(([key]) => persistent(key)).map(([key, data]) => [key, data.slice()]);
+    const metadata = [...this.metadata].filter(([key]) => persistent(key)).map(([key, value]) => [key, { ...value }]);
     // Serialize flushes, but let the caller retry after an aborted transaction.
     const operation = this.pending.catch(() => {}).then(async () => {
       const transaction = this.database.transaction(['files', 'metadata'], 'readwrite', { durability:'strict' });

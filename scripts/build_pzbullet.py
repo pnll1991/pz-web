@@ -21,7 +21,14 @@ EXPORTS = ['pzbullet_version', 'pzbullet_init_logging', 'pzbullet_logging_initia
            'pzbullet_logging_buffer_bytes', 'pzbullet_world_initialised', 'pzbullet_create_world', 'pzbullet_body_count',
            'pzbullet_add_box', 'pzbullet_add_sphere',
            'pzbullet_step_simulation', 'pzbullet_get_transform', 'pzbullet_remove_all_bodies',
-           'pzbullet_dispose_world']
+           'pzbullet_dispose_world',
+           # Round 52: Bullet.defineVehicleScript(name, float[]) is the native the real game calls
+           # during script load (241 times in console-round51.txt). These are the real registry
+           # entry points of our own module, not stubs.
+           'pzbullet_define_vehicle_script', 'pzbullet_vehicle_scratch', 'pzbullet_vehicle_script_name',
+           'pzbullet_vehicle_script_count',
+           'pzbullet_vehicle_script_unique_count', 'pzbullet_vehicle_script_overwrite_count',
+           'pzbullet_vehicle_script_param_count', 'pzbullet_vehicle_script_param']
 
 
 def sha256(path):

@@ -3,9 +3,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 
 const vendor = path.resolve('port/target/web/vendor/pzbullet');
+
+/**
+ * The real runtime bridge (port/runtime/bullet.mjs) is imported through Node's file loader, so
+ * only its manifest fetch has to be answered from disk. Response/Request exist in Node 24.
+ */
+async function runtimeBridge() {
+  const {bulletBridge} = await import(pathToFileURL(path.resolve('port/runtime/bullet.mjs')).href);
+  const locateFile = name => pathToFileURL(path.join(vendor, name)).href;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => new Response(await readFile(fileURLToPath(url)), {headers:{'Content-Type':'application/json'}});
+  try { return await bulletBridge({ locateFile }); } finally { globalThis.fetch = realFetch; }
+}
 
 async function loadBridge() {
   const locateFile = name => pathToFileURL(path.join(vendor, name)).href;
@@ -78,4 +90,52 @@ test('a dynamic box falls under gravity through real Bullet simulation steps', a
   assert.equal(bridge.bodyCount(), -1, 'after disposal there is no world');
   assert.equal(bridge.worldInitialised(), 0, 'disposal really removes the world');
   assert.equal(bridge.stepSimulation(1 / 30, 1, 1 / 60), -1);
+});
+
+test('defineVehicleScript registers the game parameter block in the compiled module', async () => {
+  const bridge = await runtimeBridge();
+  assert.ok(bridge.exports.includes('defineVehicleScript'), 'the bridge must declare the entry point');
+  assert.equal(bridge.vehicleScriptCount(), 0, 'a fresh module has no registered scripts');
+  assert.equal(bridge.vehicleScriptUniqueCount(), 0);
+  assert.equal(bridge.vehicleScriptOverwriteCount(), 0);
+
+  // VehicleScript.toBullet fills a float[200]: 11 scalars, 5 floats per wheel, then shapes.
+  const params = new Float32Array(200);
+  const block = [1.0, 1500, 0.98, 55, 0.3, 4.0, 36, 20, 1.5, 5.0, 4];
+  block.forEach((value, i) => { params[i] = value; });
+  for (let wheel = 0; wheel < 4; wheel++)
+    [wheel < 2 ? 1 : 0, 1.2 + wheel, -0.4, 0.8 - wheel, 0.35].forEach((value, i) => { params[11 + wheel * 5 + i] = value; });
+  params[31] = 2;                      // numShapes
+  params[32] = 1;                      // chassis shape
+  params[33] = 0.1; params[34] = 0.2; params[35] = 0.3;
+  params[36] = 1.0; params[37] = 0.7; params[38] = 1.9;
+
+  assert.equal(bridge.defineVehicleScript('vehicle.car.gasguzler', params), 1, 'first registration is new');
+  assert.equal(bridge.vehicleScriptCount(), 1);
+  assert.equal(bridge.vehicleScriptUniqueCount(), 1);
+  assert.equal(bridge.vehicleScriptParamCount(0), 200, 'the whole block is stored, not a truncated copy');
+  for (const index of [0, 1, 8, 10, 11, 15, 25, 31, 38])
+    assert.equal(bridge.vehicleScriptParam(0, index), params[index], `param ${index} must survive the float copy`);
+  assert.equal(bridge.vehicleScriptParam(0, 200), 0, 'an out-of-range index is reported as 0');
+  assert.equal(bridge.vehicleScriptParamCount(1), -1, 'an unknown slot is reported as -1');
+
+  // The game loads the same script again (reload/new scene): the name must not duplicate.
+  assert.equal(bridge.defineVehicleScript('vehicle.car.gasguzler', params), 2, 'a redefinition is reported as an overwrite');
+  assert.equal(bridge.vehicleScriptCount(), 1, 'a redefinition must not grow the registry');
+  assert.equal(bridge.vehicleScriptOverwriteCount(), 1);
+
+  assert.equal(bridge.defineVehicleScript('vehicle.truck.flatbed', params.subarray(0, 40)), 1);
+  assert.equal(bridge.vehicleScriptCount(), 2);
+  assert.equal(bridge.vehicleScriptUniqueCount(), 2);
+  assert.equal(bridge.vehicleScriptParamCount(1), 40);
+
+  // Rejected arguments store nothing (no simulated success): the compiled module decides.
+  assert.equal(bridge.defineVehicleScript('', params), 0, 'an empty name is rejected');
+  assert.equal(bridge.defineVehicleScript(null, params), 0, 'a missing name is rejected');
+  assert.equal(bridge.defineVehicleScript('x', new Float32Array(0)), 0, 'an empty block is rejected');
+  assert.equal(bridge.defineVehicleScript(null, null), 0, 'a missing block is rejected');
+  assert.equal(bridge.vehicleScriptCount(), 2, 'rejected calls must not add entries');
+  assert.equal(bridge.vehicleScriptOverwriteCount(), 1, 'rejected calls must not count as overwrites');
+  assert.throws(() => bridge.defineVehicleScript('x', [1, 2, 3]), TypeError,
+                'a plain JS array would be marshalled as bytes, so the bridge refuses it');
 });

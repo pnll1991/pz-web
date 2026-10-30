@@ -13,8 +13,12 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from budget import VFS_MAX_BYTES
 
 FALLBACK_DIRS = ('', 'fonts/')
 FALLBACK_PREFIXES = tuple('/media/' + d for d in FALLBACK_DIRS)
@@ -62,7 +66,7 @@ def main():
     index['files'].extend(added)
     index['files'].sort(key=lambda f: f['path'])
     total = sum(f['length'] for f in index['files'])
-    if total > 256 * 1024 * 1024:
+    if total > VFS_MAX_BYTES:
         raise SystemExit('Alias index exceeds the VFS memory budget')
     with tempfile.NamedTemporaryFile('w', dir=blob_dir, delete=False) as tmp:
         tmp.write(json.dumps(index, indent=2) + '\n')

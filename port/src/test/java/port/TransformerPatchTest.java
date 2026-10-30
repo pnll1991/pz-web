@@ -132,4 +132,70 @@ class TransformerPatchTest {
         assertEquals("containsWhitespace", good.getName());
         assertNotEquals("containsWhitespace", bad.getName());
     }
+
+    /** True when the program contains a {@code null} produced by a NullConstant and cast to Class[]. */
+    private static boolean hasNullClassArrayCast(ClassHolder cls) {
+        for (var method : cls.getMethods()) {
+            var program = method.getProgram();
+            if (program == null) continue;
+            java.util.List<org.teavm.model.Variable> nulls = new java.util.ArrayList<>();
+            for (var block : program.getBasicBlocks())
+                for (var instruction : block) {
+                    if (instruction instanceof org.teavm.model.instructions.NullConstantInstruction nullConstant)
+                        nulls.add(nullConstant.getReceiver());
+                    if (instruction instanceof org.teavm.model.instructions.CastInstruction cast
+                            && nulls.contains(cast.getValue())
+                            && org.teavm.model.ValueType.arrayOf(org.teavm.model.ValueType.object("java.lang.Class"))
+                                .equals(cast.getTargetType()))
+                        return true;
+                }
+        }
+        return false;
+    }
+
+    @Test void nullVarargsReflectionBecomesAnEmptyArray() {
+        // Round 52: ComponentScriptFactory$ScriptConstructor calls
+        // ClassReflection.getConstructor(type,(Class[])null) / getDeclaredConstructor(type,(Class[])null).
+        // On the desktop that is the no-arg lookup (verified on JDK 25), but TeaVM's TClass compares
+        // parameter types with Arrays.equals, which is false against a null array, so the private no-arg
+        // constructor that round 51 made reflectable was never found: 215x UiConfigScript + 134x
+        // FluidContainerScript + 3x ContextMenuConfigScript + 1x SpriteConfigScript "missing no-arg
+        // constructor" in build/real-browser/console-round51.txt.
+        File jar = gameJar();
+        var src = source(jar);
+        ClassHolder cls = src.get("zombie.entity.ComponentScriptFactory$ScriptConstructor");
+        assertNotNull(cls, "ScriptConstructor must be readable from the pinned jar");
+        assertTrue(hasNullClassArrayCast(cls), "the jar must hand null to the Class[] varargs parameter");
+        new port.compiler.ReflectionVarargsCompatibility().transformClass(cls, new TestContext(new org.teavm.model.ClassHierarchy(src)));
+        assertFalse(hasNullClassArrayCast(cls), "the patched class must not cast null to Class[]");
+        int sites = 0;
+        for (var method : cls.getMethods()) {
+            var program = method.getProgram();
+            if (program == null) continue;
+            for (var block : program.getBasicBlocks())
+                for (var instruction : block)
+                    if (instruction instanceof org.teavm.model.instructions.InvokeInstruction invoke
+                            && invoke.getMethod().getClassName().equals("zombie.entity.util.reflect.ClassReflection")) {
+                        sites++;
+                        var arg = invoke.getArguments().get(1);
+                        boolean constructed = false;
+                        for (var check : block)
+                            if (check instanceof org.teavm.model.instructions.ConstructArrayInstruction array
+                                    && array.getReceiver() == arg) constructed = true;
+                        assertTrue(constructed, "ClassReflection must receive a constructed Class[]: " + invoke.getMethod());
+                    }
+        }
+        assertEquals(2, sites, "both lookups must still be present");
+    }
+
+    @Test void nullVarargsTransformerRejectsUnexpectedShape() {
+        // The transformer must fail loudly rather than silently do nothing on a class it does not know.
+        var cls = new ClassHolder("zombie.entity.ComponentScriptFactory$ScriptConstructor");
+        cls.setParent("java.lang.Object");
+        assertThrows(IllegalStateException.class,
+            () -> new port.compiler.ReflectionVarargsCompatibility().transformClass(cls,
+                new TestContext(new org.teavm.model.ClassHierarchy(source(gameJar())))),
+            "0 null-varargs sites must not look like a successful patch");
+    }
+
 }

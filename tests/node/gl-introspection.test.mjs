@@ -112,3 +112,28 @@ test('bindAttribLocation, attached shaders, active info and shader source reach 
   assert.equal(gl.shaderSourceText(shader), gl.shaders.get(shader).source);
   assert.ok(gl.shaderSourceText(shader).includes('in vec4')); // translated to WebGL2 by glsl.mjs
 });
+
+/**
+ * zombie.iso.PuddlesShader (and every Shader subclass) stores glGetUniformLocation results and
+ * guards each setter with `!= -1`. Desktop returns -1 for a missing uniform; WebGL2 returns null.
+ * The bridge must hand back -1 (not 0, which the game treats as valid) so the guard works, and it
+ * must keep raising for handles it never handed out.
+ */
+test('uniformLocation answers -1 for missing uniforms like desktop glGetUniformLocation', () => {
+  const context = fakeContext();
+  context.getUniformLocation = (program, name) => (name === 'WaterGroundTex' ? { __loc: name } : null);
+  context.uniform1i = (loc, v) => context.calls.push(['uniform1i', loc && loc.__loc, v]);
+  const gl = bridge(context);
+  const program = gl.createProgram();
+
+  assert.ok(gl.uniformLocation(program, 'WaterGroundTex') > 0); // handles start at 1, 0 stays "none"
+  assert.equal(gl.uniformLocation(program, 'NoSuchUniform'), -1); // the game's `!= -1` guard
+  assert.equal(gl.uniformLocation(program, 'AlsoMissing'), -1);
+
+  // A real handle reaches WebGL2 through port.shim.GL20's dispatcher (gl.call + locationOf);
+  // a -1 handle raises instead of silently drawing to location 0.
+  gl.call('uniform1i', gl.locationOf(gl.uniformLocation(program, 'WaterGroundTex'), 'uniform1i'), 0);
+  assert.deepEqual(context.calls.find(([n]) => n === 'uniform1i'), ['uniform1i', 'WaterGroundTex', 0]);
+  assert.throws(() => gl.locationOf(-1, 'uniform1i'), /Unknown uniform location -1/);
+  assert.throws(() => gl.locationOf(999, 'uniform1i'), /Unknown uniform location 999/);
+});

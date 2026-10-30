@@ -59,3 +59,64 @@ test('random writes zero fill holes, preserve bytes and enforce read-only and qu
   assert.throws(() => vfs.writeAt('/Zomboid/file', 0, new Uint8Array([1])), /EROFS/);
   assert.throws(() => vfs.writeFile('/Zomboid/file', new Uint8Array([1])), /EROFS/);
 });
+
+test('a read-only /Zomboid pack entry cannot be rewritten or persisted', async () => {
+  const vfs = new VirtualFileSystem();
+  vfs.mountReadOnly('/Zomboid/options.ini', new TextEncoder().encode('version=8\ntexture2x=false\n'));
+  assert.equal(vfs.exists('/Zomboid/options.ini'), true);
+  assert.equal(vfs.canWrite('/Zomboid/options.ini'), false, 'the game must not overwrite the pack option file');
+  assert.throws(() => vfs.writeFile('/Zomboid/options.ini', new Uint8Array([1])), /EROFS/);
+  assert.throws(() => vfs.writeAt('/Zomboid/options.ini', 0, new Uint8Array([1])), /EROFS/);
+  assert.throws(() => vfs.resize('/Zomboid/options.ini', 0), /EROFS/);
+  assert.equal(vfs.isReadOnlyMounted('/Zomboid/options.ini'), true);
+  assert.equal(vfs.isReadOnlyMounted('/Zomboid/other.ini'), false);
+  assert.throws(() => vfs.mountReadOnly('/media/x.bin', new Uint8Array([1])), /Use mount\(\)/);
+  assert.throws(() => vfs.mountReadOnly('/elsewhere/x.bin', new Uint8Array([1])), /Only \/Zomboid/);
+  // Ordinary user data under /Zomboid stays writable.
+  vfs.writeFile('/Zomboid/other.ini', new Uint8Array([7]));
+  assert.equal(vfs.canWrite('/Zomboid/other.ini'), true);
+  // flush() builds the save snapshot: a game asset must never be copied into it.
+  const writes = [];
+  const fakeTransaction = () => {
+    const listeners = {};
+    const transaction = {
+      objectStore: name => ({ clear: () => writes.push(['clear', name]), put: (value, key) => writes.push([name, key]) }),
+      addEventListener: undefined,
+      set oncomplete(handler) { listeners.complete = handler; },
+      set onabort(handler) { listeners.abort = handler; },
+      set onerror(handler) { listeners.error = handler; },
+    };
+    // IndexedDB completes asynchronously; the VFS resolves on that event.
+    queueMicrotask(() => listeners.complete?.({ target: transaction }));
+    return transaction;
+  };
+  vfs.database = { transaction: fakeTransaction };
+  vfs.pending = Promise.resolve();
+  await vfs.flush();
+  const fileKeys = writes.filter(([name]) => name === 'files').map(([, key]) => key);
+  assert.deepEqual(fileKeys, ['/Zomboid/other.ini'], 'only real user data is persisted');
+  assert.ok(writes.some(([name, key]) => name === 'metadata' && key === '/Zomboid/other.ini'));
+  assert.ok(!writes.some(([, key]) => key === '/Zomboid/options.ini'));
+});
+test('a pack view is read-only, shares the blob bytes and counts once', () => {
+  const vfs = new VirtualFileSystem({maxBytes:64});
+  const blob = new Uint8Array(48);
+  for (let i = 0; i < blob.length; i++) blob[i] = i;
+  vfs.mountView('/media/big.bin', blob, 8, 16);
+  vfs.mountView('/Zomboid/options.ini', blob, 32, 8);
+  const view = vfs.readFile('/media/big.bin');
+  assert.equal(view.byteLength, 16);
+  assert.equal(view[0], 8, 'the view starts at the pack offset');
+  assert.equal(vfs.byteLength, 24, 'the mounted view costs its own length, not the blob size');
+  assert.equal(vfs.canWrite('/media/big.bin'), false);
+  assert.equal(vfs.isReadOnlyMounted('/Zomboid/options.ini'), true);
+  assert.throws(() => vfs.writeFile('/media/big.bin', new Uint8Array([1])), /EROFS/);
+  // readFile() copies the bytes, so rewriting the returned buffer cannot corrupt the pack view.
+  view[0] = 255;
+  assert.equal(vfs.readFile('/media/big.bin')[0], 8);
+  assert.throws(() => vfs.mountView('/media/x.bin', blob, 40, 16), /Invalid view range/);
+  assert.throws(() => vfs.mountView('/elsewhere/x.bin', blob, 0, 4), /Pack views are only allowed/);
+  assert.throws(() => vfs.mountView('/media/y.bin', [1, 2], 0, 2), /must be Uint8Array/);
+  const small = new VirtualFileSystem({maxBytes:4});
+  assert.throws(() => small.mountView('/media/big.bin', blob, 0, 8), /budget/);
+});
