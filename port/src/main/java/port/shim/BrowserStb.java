@@ -22,8 +22,8 @@ import port.runtime.memory.NativeMemory;
  */
 public final class BrowserStb {
     /** Guard against unreasonable allocations; the game's icons are 16/32/128 px. */
-    private static final int MAX_DIMENSION = 4096;
-    private static final int MAX_PIXEL_BYTES = 16 * 1024 * 1024;
+    private static final int MAX_DIMENSION = 16384; // media/depthmaps has 1024x11008 PNGs (stb_image accepts them)
+    private static final int MAX_PIXEL_BYTES = 64 * 1024 * 1024; // largest pinned depthmap: 16 777 216 px = 64 MiB RGBA
     /** STB's stbir_pixel_layout_channels table, read from the pinned jar's {@code <clinit>}. */
     private static final int[] LAYOUT_CHANNELS = {3, 1, 2, 3, 4, 4, 4, 4, 4, 2, 2, 4, 4, 4, 4, 2, 2};
     private static final byte[] SIGNATURE = {(byte)0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
