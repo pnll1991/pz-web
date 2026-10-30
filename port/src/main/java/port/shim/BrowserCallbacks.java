@@ -125,6 +125,7 @@ public final class BrowserCallbacks {
             case 2 -> 2; // cursor position: xoffset, yoffset as double
             case 3 -> 2; // scroll: xoffset, yoffset as double
             case 4 -> 1; // character codepoint
+            case 6, 8 -> 2; // window size / framebuffer size: width, height
             case KIND_JOYSTICK -> 2; // joystick: joystick index and connected/disconnected flag
             default -> throw new IllegalStateException("Unknown browser input event kind: " + kind);
         };
@@ -151,7 +152,7 @@ public final class BrowserCallbacks {
         for (int k = 1; k <= slots; k++) {
             long cell = port.runtime.memory.NativeMemory.nmemAllocChecked(8);
             switch (kind) {
-                case 0, 1 -> port.runtime.memory.NativeMemory.memPutInt(cell, eventInt(event, k + 1));
+                case 0, 1, 6, 8 -> port.runtime.memory.NativeMemory.memPutInt(cell, eventInt(event, k + 1));
                 case 2, 3 -> port.runtime.memory.NativeMemory.memPutDouble(cell, eventDouble(event, k + 1));
                 default -> port.runtime.memory.NativeMemory.memPutInt(cell, eventCodePoint(event, 2));
             }

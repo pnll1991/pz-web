@@ -267,6 +267,11 @@ export class BrowserWindow {
     this.canvas.height = Math.max(1, Math.round(height * ratio));
     this.events.push({type:'resized',backend:'browser',width,height,drawingBufferWidth:this.canvas.width,
       drawingBufferHeight:this.canvas.height});
+    // Native GLFW reports a resize through the window-size and framebuffer-size callbacks on the
+    // next glfwPollEvents. lwjglx Display.getWidth() returns the value its window-size callback
+    // stored (latestWidth), so without these events the game kept rendering at the 640x480 the
+    // window was created with while the canvas was already 1280x720 (round 65 viewport probe).
+    (this.sizeEvents ||= []).push([6, 1, width, height], [8, 1, this.canvas.width, this.canvas.height]);
   }
   // A tab has no window chrome: every frame edge is zero, and the content scale is the
   // device pixel ratio the canvas uses for its drawing buffer.
@@ -362,6 +367,10 @@ export class BrowserWindow {
     // onto themselves (keyScancode below). A joystick event (kind 11) instead carries
     // kind, slot, connected, because GLFWJoystickCallbackI reads slot 0 as the joystick index.
     if (this.initialized) this.refreshGamepads();
+    if (this.sizeEvents && this.sizeEvents.length > 0) {
+      this.dispatchedEvents++;
+      return this.sizeEvents.shift().join('\t');
+    }
     if (this.joystickEvents.length > 0) {
       const event = this.joystickEvents.shift();
       this.dispatchedEvents++;
