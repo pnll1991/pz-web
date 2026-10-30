@@ -16,8 +16,14 @@ const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH 
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const errs = [];
 const texts = [];
-page.on('pageerror', e => errs.push(String(e.message).slice(0, 300)));
-page.on('console', m => { const t = m.text(); if (/UI_Loading_|LOADING|Exception|ModelMesh|anims/i.test(t)) texts.push(t.slice(0, 300)); });
+// Ronda 64: "illegal cast" apareció como pageerror sin atribución (no está en boot.wasm ni en los
+// .js servidos). Sin el stack no se puede nombrar el origen, así que se guarda también la primera
+// parte del stack.
+page.on('pageerror', e => errs.push(String(e.message).slice(0, 300) + ' | ' + String(e.stack || '').slice(0, 600)));
+// Ronda 64b: GameStateMachine imprime "STATE: enter/exit/reenter/yield <clase>" por System.out,
+// que es la unica señal del estado actual de la maquina. Se agrega al filtro para ver si el
+// arranque queda en TISLogoState antes de MainScreenState.
+page.on('console', m => { const t = m.text(); if (/UI_Loading_|LOADING|Exception|ModelMesh|anims|STATE: (enter|exit|reenter|yield)/i.test(t)) texts.push(t.slice(0, 300)); });
 await page.goto(`http://127.0.0.1:${PORT}/game.html?maplog=1`, { waitUntil: 'domcontentloaded' });
 // Round 64: the boot reaches UI_Loading_OnGameBoot, so RE also covers the state machine and the
 // MapCollisionData natives (see StartupProgress.MENU_CLASSES_METHODS), and PZ_DIAG_TARGET decides
@@ -64,10 +70,13 @@ while (Date.now() - t0 < MAX) {
   if (key !== lastKey) { lastKey = key; lastChange = Date.now(); }
   console.log('SAMPLE', ++n, JSON.stringify(s));
   if (new RegExp(TARGET).test(texts.join('\n'))) { console.log('RESULT reached target /' + TARGET + '/'); break; }
-  // Round 64: the real menu signal is the state machine, not a loading string. Stop when
-  // MainScreenState#render() has completed a frame (that is what puts pixels on the canvas).
-  if ((s.counts['zombie.gameStates.MainScreenState#render'] || 0) >= 2) {
-    console.log('RESULT MainScreenState#render done', s.counts['zombie.gameStates.MainScreenState#render']);
+  // Round 64b: the sample keys keep the ":entered"/":returned" suffix (the regex in `sample` only
+  // strips the descriptor before the colon), so the previous key 'MainScreenState#render' never
+  // existed and the probe ran to MAX without a RESULT. Use the :returned counter, which is what
+  // proves a frame of the real menu was actually painted.
+  const menuRender = s.counts['zombie.gameStates.MainScreenState#render:returned'] || 0;
+  if (menuRender >= 2) {
+    console.log('RESULT MainScreenState#render returned', menuRender);
     break;
   }
   if (Date.now() - lastChange > STALL) {
@@ -81,9 +90,11 @@ while (Date.now() - t0 < MAX) {
   }
 }
 console.log('TEXTS', JSON.stringify(texts.slice(-40)));
-console.log('ERRS', JSON.stringify(errs.slice(0, 20)));
-const shot = 'test-results/menu-round64.png';
-await page.screenshot({ path: shot });
+console.log('ERRS', JSON.stringify(errs.slice(0, 20), null, 1));
+const shot = process.env.PZ_SHOT || 'test-results/menu-round64.png';
+// Round 64b: the wasm loop keeps the main thread busy, so the default 30 s screenshot timeout
+// expired ("waiting for fonts to load"). 120 s and no font wait (the page has no @font-face).
+await page.screenshot({ path: shot, timeout: 120000 });
 console.log('SHOT', shot);
 console.log('STATE', JSON.stringify(await race(page.evaluate(() => ({
   phase: globalThis.pzGame?.phase ?? null, error: String(globalThis.pzGame?.error ?? '').slice(0, 300),

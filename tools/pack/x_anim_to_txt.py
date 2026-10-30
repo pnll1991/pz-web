@@ -172,6 +172,32 @@ def parse_mesh(node, index):
             if 0 <= vi < n and wv > 0.0: skin[vi].append((wv, bi))
     return pos, normals, uvs, faces, skin
 
+def face_normals(pos, faces, n):
+    """Normals averaged over the fan-triangulated faces.
+
+    Bob_Idle.x / Bob_Run.x (and Kate_Idle/Kate_Run) carry no MeshNormals at all, and
+    ModelLoader.loadTxt refuses a file whose "# Vertex Count:" is 0: with numVertices == 0 the
+    `case 6` loop never runs, so its trailing `reader.readLine()` no longer eats the
+    "# Number of Faces:" comment and `case 8` then parses the skeleton's first "0" as a face and
+    crashes on spl[1] ("array element access out of bounds").  Every .txt the game ships has real
+    vertices, so we always emit geometry: positions come from the Mesh, normals are derived, and
+    texture coords are 0 when the .x has no MeshTextureCoords.
+    """
+    acc = [[0.0, 0.0, 0.0] for _ in range(n)]
+    for i in range(0, len(faces) - 2, 3):
+        a, b, c = pos[faces[i]], pos[faces[i + 1]], pos[faces[i + 2]]
+        ux, uy, uz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+        vx, vy, vz = c[0] - a[0], c[1] - a[1], c[2] - a[2]
+        nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+        for k in (faces[i], faces[i + 1], faces[i + 2]):
+            acc[k][0] += nx; acc[k][1] += ny; acc[k][2] += nz
+    out = []
+    for v in acc:
+        l = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+        out.append([v[0] / l, v[1] / l, v[2] / l] if l > 1e-9 else [0.0, 0.0, 1.0])
+    return out
+
+
 def convert(path):
     with open(path, 'r', encoding='latin-1') as fh: text = fh.read()
     root = parse(text)
@@ -179,7 +205,12 @@ def convert(path):
     index = {b[0]: i for i, b in enumerate(bones)}
     tps = next((float(n.data[0]) for n in find(root, 'AnimTicksPerSecond')), 4800.0)
     mesh = parse_mesh(mesh_of(root), index) if mesh_of(root) is not None else None
-    has_geom = mesh is not None and mesh[1] is not None and mesh[2] is not None
+    has_geom = mesh is not None and len(mesh[0]) > 0 and len(mesh[3]) >= 3
+    if has_geom and (mesh[1] is None or mesh[2] is None):
+        pos, _, uvs, faces, skin = mesh
+        normals = face_normals(pos, faces, len(pos))
+        uvs = uvs if uvs is not None else [[0.0, 0.0] for _ in pos]
+        mesh = (pos, normals, uvs, faces, skin)
     out = []
     W = out.append
     W('# Project Zomboid Animated Mesh'); W('# File Version:'); W('1.00000000')

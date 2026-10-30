@@ -460,3 +460,55 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
   `MainScreenState#<init>()V/#enter()V/#render()V/#renderBackground()V/#update()...StateAction;/
   #preloadBackgroundTextures()V`, `zombie.Lua.LuaManager#init()V/#LoadDirBase(Ljava/lang/String;)V/
   #initChecksum()V`. Ojo: la clase real es `zombie.Lua.LuaManager` (no `zombie.scripting.lua.LuaManager`).
+- 12:55 (ronda 64) Sonda con stack en el pageerror (`models_poll.mjs`: `e.stack` + `PZ_SHOT`) y
+  `StartupProgress` instrumentando `port.runtime.PortXmlBeans/PortUnmarshaller/PortMarshaller`
+  (`XML_BEAN_PREFIXES` en `own()`). Build sin cambios de wasm (solo `mvn compile`), corrida
+  `/tmp/diag-menu64b.log` + `test-results/menu-round64-stack.png`: el `illegal cast` quedó
+  **atribuido** por el stack: `RuntimeError: illegal cast at zombie.FileGuidTable::setModID <-
+  zombie.ZomboidFileSystem::loadFileGuidTable <- getFileGuidTable <- getFilePathFromGuid <-
+  resolveFileOrGUID`. La fibra NO está parkeda en el unmarshal: el unmarshal termina y el
+  `checkcast zombie/FileGuidPair` de `setModID` es lo que tira. `progress` 743 sigue congelado
+  porque ese RuntimeError mata la fibra del MainThread (por eso `GameWindow#mainThreadStep entered=1
+  returned=0` y nunca `GameStateMachine#update`).
+- 12:58 Causa (propia, no del juego): `PortXmlBeans.readBean` pasaba `field.getType()` como tipo de
+  cada hijo de una coleccion, asi que para `public ArrayList<FileGuidPair> files` instanciaba un
+  `java.util.ArrayList` vacio por cada `<files>` y lo guardaba en la lista. `javap -c
+  zombie.FileGuidTable` confirma `checkcast #48 zombie/FileGuidPair` en `setModID`.
+- 12:59 Fix: `PortXmlBeans.elementType(Field)` (RI: `@XmlElement(type=...)`, si no el unico
+  parametro generico del campo via `getGenericType()`; si no se puede determinar, `JAXBException`
+  con el nombre del campo, nunca adivinar) + `readValue` lanza `JAXBException` si el tipo declarado
+  es `Collection`/`Map` en vez de leer un elemento como coleccion. `mvn compile` EXIT=0.
+  Build completo en curso: `build-round64b-game.log` (`MAVEN_OPTS="-Xmx8g -Xss16m"`).
+- 13:50 Ronda 64 (2ª parte) causas confirmadas del corte del MainThread en `MainScreenState#renderBackground`
+  (sonda `/tmp/diag-menu66.log` + DebugLog `2026-10-30_16-36`): `renderBackground()` llama
+  `renderVideo()` -> `VideoTexture.getOrCreate("title_screen_background.bik",1920,1080)`, y el
+  `<clinit>` de `zombie.core.textures.VideoTexture` (javap -p -c, `/tmp/r64/vt.txt:458-487`) ejecuta
+  sin guarda `System.loadLibrary("Bink2x64")` + `"bink64"` (ruta Linux). Nuestro shim lanza la
+  excepción honesta con el nombre JNI -> `GameThread exited..` -> el menú nunca se pinta.
+- 13:52 Arreglo por la vía propia del juego (sin reimplementar Bink): `tools/pack/boot_options.py`
+  escribe ahora `doVideoEffects=false` en `/Zomboid/options.ini` (nuevo flag `--video-effects`).
+  Verificado en bytecode: `Core.loadOptions()` parsea cada línea vía `optionByName.get(...).parse(...)`
+  (`zombie.core.Core` 5476-269) y `BooleanConfigOption.parse/isValidString` acepta `true/false/1/0`;
+  `MainScreenState.renderBackground()` es `if (!getOptionDoVideoEffects() || !renderVideo())
+  renderOriginalBackground(a)` y el propio juego ya apaga la opción con <8 GB de RAM
+  (`MainScreenState.enter`), así que es el camino documentado del juego, no un stub.
+- 13:55 Arte del fondo estático montado en `tools/pack/startup_extra.py` (`MENU_UI_FILES`,
+  `MENU_UI_PREFIXES`): los 8 `media/ui/Title*.png`, `NinePatch1..4.png` (barra del logo),
+  `ui/Logos/TheIndieStoneLogo_credits.png`, `media/ui/playstyleIcons/` (6) y
+  `media/ui/controllerBindingsEditor/` (3) = 22 entradas, 4 106 333 B. Todo existe en la copia
+  pinned y se exige con `SystemExit` si falta.
+- 13:56 Re-empacado (ruta ignorada `build/`): `pack.py --stage build/real-browser/stage
+  --max-bytes 80000000` (4535 archivos, 3 blobs), `alias_index.py` (24 alias), `case_alias.py`
+  (2952 alias lowercase), `boot_options.py` -> `index.json` **7512 entradas, 417 867 444 B montados
+  de 536 870 912 B** (bajó por el re-empacado limpio; headroom ~119 MB). Verificado: las 22 rutas
+  nuevas responden 200 con sus bytes y `sha256` coincide con el blob (`/media/ui/Title.png` 497 338 B).
+- 14:30 (ronda 64, 3ª parte) Causa del `RuntimeError: array element access out of bounds` en
+  `ModelLoader::loadTxt` (2 pageerrors, `loadTxt entered=8 returned=6`): `Bob_Idle.x` y `Bob_Run.x`
+  (y `Kate_Idle.x`/`Kate_Run.x`) **no traen** `MeshNormals`/`MeshTextureCoords` (su geometría está
+  en `DeclData`), así que `x_anim_to_txt.convert` emitía `# Vertex Count: 0`. Con `numVertices == 0`
+  el `case 6` de `loadTxt` no entra nunca y su `reader.readLine()` final deja de comerse el comentario
+  `# Number of Faces:`, por lo que `case 8` lee la primera línea del esqueleto (`"0"`) como cara y
+  `spl[1]` queda fuera de bounds. Fuente: réplica exacta del consumo de líneas del parser
+  (`/tmp/r65/exact.py`, escrito sobre `/tmp/r60/out/ModelLoader.java`), que reporta el fallo en los 3
+  archivos con `Vertex Count: 0` y valida los 7 restantes sin errores. Ningún `.txt` que trae el
+  juego tiene 0 vértices (`media/animsold/*.txt`: 536/525 vértices).

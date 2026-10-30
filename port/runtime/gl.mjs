@@ -1788,6 +1788,11 @@ export class GLBridge {
     const previousDraw = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING);
     const previousRead = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);
     const previousTexture = gl.getParameter(gl.TEXTURE_BINDING_2D);
+    // Round 64b: the probe's viewport (0,0,64,64) and clear colour (0.5,0.25,0.75) leaked into the
+    // game's default framebuffer: the menu frame came out purple outside a black 640x480 area and
+    // gl VIEWPORT still read [0,0,64,64]. Save both here and restore them in finally.
+    const previousViewport = Array.from(gl.getParameter(gl.VIEWPORT));
+    const previousClear = Array.from(gl.getParameter(gl.COLOR_CLEAR_VALUE));
     const report = { complete: false, status: null, statusName: null, steps: [], rendered: false,
       readback: null, errors: [], size: 64 };
     const texture = this.call('createTexture');
@@ -1841,6 +1846,8 @@ export class GLBridge {
       this.call('deleteRenderbuffer', renderbuffer);
       this.call('deleteTexture', texture);
       this.call('bindFramebuffer', gl.READ_FRAMEBUFFER, previousRead ?? null);
+      this.call('viewport', ...previousViewport);
+      this.call('clearColor', ...previousClear);
       report.errors = this.internalErrors(startSeq + 1);
       // The game reads its own errors through glGetError; errors caused by this probe must not be
       // blamed on the game's next check. They are kept in report.errors, not silently discarded.

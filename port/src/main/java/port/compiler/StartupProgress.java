@@ -152,6 +152,17 @@ public final class StartupProgress implements ClassHolderTransformer {
     private static final Set<String> MENU_CLASSES_METHODS = Set.of(
         "zombie.gameStates.GameStateMachine#update()V",
         "zombie.gameStates.GameStateMachine#render()V",
+        // Ronda 64b: el state machine YA gira (GameStateMachine#update 18/18 en
+        // /tmp/diag-menu65.log) pero `current` es el primer estado de la lista, TISLogoState, y
+        // MainScreenState#enter nunca entra. Sin instrumentar los estados previos la sonda no puede
+        // decir en qué estado está el arranque ni por qué no avanza (TISLogoState#update necesita
+        // que alpha llegue a 1 con GameTime#getMultiplier y sostiene el logo 20 s).
+        "zombie.gameStates.TISLogoState#enter()V",
+        "zombie.gameStates.TISLogoState#update()Lzombie/gameStates/GameStateMachine$StateAction;",
+        "zombie.gameStates.TISLogoState#render()V",
+        "zombie.gameStates.TermsOfServiceState#enter()V",
+        "zombie.gameStates.TermsOfServiceState#update()Lzombie/gameStates/GameStateMachine$StateAction;",
+        "zombie.gameStates.TermsOfServiceState#render()V",
         "zombie.gameStates.MainScreenState#<init>()V",
         "zombie.gameStates.MainScreenState#enter()V",
         "zombie.gameStates.MainScreenState#render()V",
@@ -186,8 +197,19 @@ public final class StartupProgress implements ClassHolderTransformer {
         "org.w3c.dom.",
         "org.xml.sax.",
         "port.shim.BrowserDom");
+    // Ronda 64: el arranque se detiene dentro de la lectura del Guid table. El anillo termina en
+    // javax.xml.bind.JAXBContext#resolve y PortXmlBeans/PortUnmarshaller NO estaban instrumentados
+    // (own() no cubre port.runtime.*), así que la sonda no podía nombrar la llamada que no retorna.
+    // Son código propio del puerto, no del juego, y no participan del mecanismo suspend/resume de la
+    // fibra (a diferencia de port.shim.BrowserYield, que sigue excluido a propósito).
+    // PortMarshaller se agrega por simetría: usa las mismas primitivas (fields/instantiate/assign).
+    private static final Set<String> XML_BEAN_PREFIXES = Set.of(
+        "port.runtime.PortXmlBeans",
+        "port.runtime.PortUnmarshaller",
+        "port.runtime.PortMarshaller");
     private static boolean own(String name) {
         for (String prefix : OWN_PREFIXES) if (name.startsWith(prefix)) return true;
+        for (String prefix : XML_BEAN_PREFIXES) if (name.startsWith(prefix)) return true;
         return false;
     }
     private static final Set<String> EXTRA_METHODS = Set.of(

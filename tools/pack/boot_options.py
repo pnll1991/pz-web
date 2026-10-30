@@ -38,15 +38,28 @@ BUDGET = VFS_MAX_BYTES
 VERSION = 8
 
 
-def render(width, height, language, texture2x):
+def render(width, height, language, texture2x, do_video_effects):
     lines = [f'version={VERSION}', f'width={width}', f'height={height}',
-             f'language={language}', f'texture2x={str(texture2x).lower()}']
+             f'language={language}', f'texture2x={str(texture2x).lower()}',
+             f'doVideoEffects={str(do_video_effects).lower()}']
     # Round 52 correction: texture2x is written for completeness but the game ignores it.
     # javap -p -c zombie.core.Core shows getOptionTexture2x() returning iconst_1 unconditionally,
     # so Core.tileScale is always 2 and the 2x tile packs are always the ones the game asks for.
+    # Round 64: doVideoEffects IS honoured. Core.loadOptions() parses every option through
+    # optionByName -> ConfigOption.parse, and zombie.config.BooleanConfigOption.parse accepts
+    # "true"/"false"/"1"/"0" (javap -p -c). MainScreenState.renderBackground() is
+    # `if (!Core.getInstance().getOptionDoVideoEffects() || !this.renderVideo()) this
+    # .renderOriginalBackground(a);`, so false keeps the game on its own static background and
+    # never reaches VideoTexture.getOrCreate -> the class static block ->
+    # System.loadLibrary("Bink2x64") (verified: VideoTexture is the only class referencing
+    # Bink2x64, and its static block loads bink64/bink2w64/Bink2x64 unguarded). The game itself
+    # disables this option on hosts with < 8 GB (MainScreenState.enter), so this is the game's
+    # own documented path, not a stub.
     return ('# Project Zomboid browser port: options the real game asks for.\n'
             '# texture2x is read but ignored: zombie.core.Core.getOptionTexture2x() is hardcoded\n'
             '# true in the pinned build, so the game always mounts the 2x tile packs.\n'
+            '# doVideoEffects=false keeps MainScreenState on renderOriginalBackground (Title.png),\n'
+            '# i.e. it never loads the Bink video native library, which has no browser build.\n'
             + '\n'.join(lines) + '\n')
 
 
@@ -58,6 +71,9 @@ def main():
     parser.add_argument('--language', default='EN')
     parser.add_argument('--texture2x', action='store_true',
                         help='write texture2x=true instead of the port default false')
+    parser.add_argument('--video-effects', action='store_true',
+                       help='write doVideoEffects=true (needs the Bink native; no browser build '
+                            'exists, so the port default is false)')
     args = parser.parse_args()
     if not 1 <= args.width <= 16384 or not 1 <= args.height <= 16384:
         raise SystemExit('width/height must be inside the game option range 1..16384')
@@ -70,7 +86,8 @@ def main():
     if any(f['path'] == MOUNT_PATH for f in index['files']):
         raise SystemExit(f'{MOUNT_PATH} is already mounted; edit that blob instead of adding a second entry')
 
-    content = render(args.width, args.height, args.language, args.texture2x).encode('ascii')
+    content = render(args.width, args.height, args.language, args.texture2x,
+                     args.video_effects).encode('ascii')
     checksum = hashlib.sha256(content).hexdigest()
     name = checksum + '.bin'
     if any(p['name'] == name for p in index['packs']):
@@ -99,7 +116,8 @@ def main():
         tmp.write(json.dumps(index, indent=2) + '\n')
         os.replace(tmp.name, args.index)
     print(f'Mounted {MOUNT_PATH} read-only ({len(content)} B, blob {name}): texture2x='
-          f'{str(args.texture2x).lower()} {args.width}x{args.height} language={args.language}; '
+          f'{str(args.texture2x).lower()} doVideoEffects={str(args.video_effects).lower()} '
+          f'{args.width}x{args.height} language={args.language}; '
           f'mounted total now {total} B of {BUDGET} B')
 
 

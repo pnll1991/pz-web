@@ -569,3 +569,39 @@ Evidencia:
 Riesgos reales a medir (no confirmados): `Thread.sleep(10)` del juego no está redirigido a BrowserYield.pause (ronda 31: sleep(0) no reanudaba), y cada iteración hace un `invokeOnRenderContext` que espera a la fibra de render.
 
 Parche: /datos/Projects/pz-web-code/patches/ronda63-models-poll.patch agrega `tools/diag/models_poll.mjs`. Es una sonda que muestrea cada 15 s hasta 15 min y corta en OnGameBoot o tras 180 s sin cambios. Solo agrega un archivo, no compila nada y no finge éxito.
+
+## Ronda 64b — captura del menú y excepciones (2026-10-30, 14:28–14:45 hora de Mendoza)
+
+Una sola ejecución liviana (`pz-web-code/tools/menu_pixels.mjs`, servidor propio en :8097, mismo
+build ya generado, Chrome headless + SwiftShader). Se lee el framebuffer por defecto con `readPixels`
+dentro del mismo callback de rAF, una vez que `MainScreenState#render` llegó a 3 (`preserveDrawingBuffer`
+ya era `true` en `GLBridge`).
+
+- **No está negro.** El render 1 de `MainScreenState#render:returned` aparece a ~445 s del arranque, el 2 a
+  ~605 s. Frames 765/766: 66,95 % de pixeles no negros; frame 767: 90,97 % (2 clears y 12 draws, todo
+  al framebuffer por defecto, 0 blits, ningún clear después de los draws). Captura: `~/pzshots/menu-64b.png`.
+- Lo que se ve: violeta (128,64,191) en todo el canvas de 1280x720 excepto un rectángulo de 640x480
+  abajo a la izquierda. Ese rectángulo está negro en el frame 765 y empieza a tener contenido muy oscuro en el
+  767 (probablemente el fade-in). Además se ve la caja "ERROR 26" del contador de errores (la fuente
+  se dibuja bien).
+- **Causa del violeta:** `GLBridge.framebufferProbe()` (gl.mjs ~1820) hace `viewport(0,0,64,64)` y
+  `clearColor(0.5,0.25,0.75,1)` para probar el FBO y no restaura ninguno de los dos. Al final del frame,
+  `VIEWPORT` todavía vale `[0,0,64,64]`. Los clears del juego al framebuffer por defecto heredan ese color.
+  Parche: `pz-web-code/patches/ronda64b-fbo-probe-restore-state.patch`, que guarda y restaura viewport
+  y clearColor.
+- El área de 640x480 es el tamaño de pantalla del Core, no del canvas. Sigue pendiente confirmar con
+  una corrida posterior, cuando el fade termine, si las texturas Title aparecen.
+- Las capturas negras anteriores (diag-menu68, menu-round64c) se tomaron antes del primer render
+  real, o el `page.screenshot` venció porque el loop de wasm ocupa el hilo principal.
+
+Excepciones (javap sobre el jar fijado, sin copiar código):
+- `glfwCreateCursor` ×2: solo se llama desde `org.lwjglx.input.Cursor.<init>`, que usan
+  `zombie.input.Mouse.loadCursor` y `Mouse.initCustomCursor` (lo llama el constructor de `GameWindow`). Se registra
+  como "Exception thrown" y el arranque sigue hasta `MainScreenState#render`. **No bloquea.** Efecto real: no hay
+  cursor personalizado, se ve el cursor del navegador. Es un hueco honesto y queda pendiente
+  implementarlo con CSS `cursor:url()`.
+- `Bullet.defineRagdollBodyDynamics`: solo lo llama `RagdollScript.uploadBodyDynamics` ←
+  `toBullet` / `resetBodyDynamicsToDefaultValues`, durante la carga de scripts (y desde
+  `RagdollDebugWindow`). Después del error el log sigue (`UI_Loading_Clothing`) y llega al menú. **No bloquea
+  el menú.** Sí faltan los parámetros de ragdoll en Bullet: eso importa dentro de la partida, no en el
+  menú.

@@ -96,6 +96,21 @@ ANIMSETS_PREFIX = 'media/AnimSets/'
 # media/fileGuidTable.xml, which exists in the pinned copy (252,438 B) but was never mounted.
 # GUID lookups resolve asset paths, so the table is mounted whole (only that one file).
 GUID_TABLE = 'fileGuidTable.xml'
+# Round 64 (probe /tmp/diag-menu66.log): MainScreenState#renderBackground entered and never
+# returned -> DebugLog "UnsatisfiedLinkError: System.loadLibrary: browser implementation is
+# missing for Bink2x64" from the MainThread. With options.ini doVideoEffects=false the game takes
+# its own fallback branch renderOriginalBackground(), which is Texture.getSharedTexture on the
+# eight media/ui/Title*.png files, and MainScreenState.render() also draws the logo bar through
+# renderNinePatchTextures() (NinePatch1..4.png) and preloadBackgroundTextures() names the
+# playstyleIcons, the TIS credits logo and the three controller spritesheets. All of them exist in
+# the pinned copy; only these names/folders are mounted (3.5 MB), never the whole 24 MB media/ui.
+MENU_UI_FILES = ('ui/Title.png', 'ui/Title2.png', 'ui/Title3.png', 'ui/Title4.png',
+                 'ui/Title_lightning.png', 'ui/Title_lightning2.png',
+                 'ui/Title_lightning3.png', 'ui/Title_lightning4.png',
+                 'ui/NinePatch1.png', 'ui/NinePatch2.png', 'ui/NinePatch3.png',
+                 'ui/NinePatch4.png',
+                 'ui/Logos/TheIndieStoneLogo_credits.png')
+MENU_UI_PREFIXES = ('media/ui/playstyleIcons/', 'media/ui/controllerBindingsEditor/')
 
 
 def main():
@@ -145,6 +160,12 @@ def main():
         raise SystemExit(f'Missing required ui folder: media/{UI_PROGRESS_PREFIX}')
     if not (media / GUID_TABLE).is_file():
         raise SystemExit(f'Missing required guid table: media/{GUID_TABLE}')
+    for relative in MENU_UI_FILES:
+        if not (media / relative).is_file():
+            raise SystemExit(f'Missing required menu ui file: media/{relative}')
+    for prefix in MENU_UI_PREFIXES:
+        if not (home / prefix).is_dir():
+            raise SystemExit(f'Missing required menu ui folder: {prefix}')
     for relative in LUA_FILES:
         if not (media / relative).is_file():
             raise SystemExit(f'Missing required lua file: media/{relative}')
@@ -181,6 +202,10 @@ def main():
         elif name.startswith('media/texturepacks/') and name.split('/')[-1] in TILE_PACKS:
             keep.append(name)
         elif name.startswith('media/ui/') and name[len('media/'):] in UI_FILES:
+            keep.append(name)
+        elif name.startswith('media/ui/') and name[len('media/'):] in MENU_UI_FILES:
+            keep.append(name)
+        elif any(name.startswith(prefix) for prefix in MENU_UI_PREFIXES):
             keep.append(name)
         elif name.startswith('media/' + UI_PROGRESS_PREFIX):
             keep.append(name)

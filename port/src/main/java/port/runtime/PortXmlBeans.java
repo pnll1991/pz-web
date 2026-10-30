@@ -106,7 +106,8 @@ public final class PortXmlBeans {
             boolean many = Collection.class.isAssignableFrom(declared) && declared != Object.class;
             if (many) {
                 Collection<Object> target = collection(field, bean);
-                for (Element child : found) target.add(readValue(choiceType(choices, child.getTagName(), field.getType()), child));
+                for (Element child : found)
+                    target.add(readValue(choiceType(choices, child.getTagName(), elementType(field)), child));
             } else {
                 Class<?> type = field.getType().isArray() ? field.getType().getComponentType()
                         : choiceType(choices, found.get(0).getTagName(), field.getType());
@@ -133,6 +134,15 @@ public final class PortXmlBeans {
 
     private static Object readValue(Class<?> type, Element element) throws JAXBException {
         if (isLeaf(type)) return convert(type, element.getTextContent());
+        // Ronda 64: leer un elemento XML con el tipo de la propia coleccion es un error our, no del
+        // juego. Antes, para `public ArrayList<FileGuidPair> files` se pasaba field.getType()
+        // (java.util.ArrayList) como tipo de cada hijo: se instanciaba un ArrayList vacio por cada
+        // <files> y el juego hacia `checkcast zombie/FileGuidPair` en FileGuidTable#setModID, con
+        // RuntimeError "illegal cast" (stack del pageerror en /tmp/diag-menu64b.log). Ahora se lanza
+        // JAXBException honesto en vez de meter objetos de otra clase en la coleccion.
+        if (Collection.class.isAssignableFrom(type) || Map.class.isAssignableFrom(type))
+            throw new JAXBException("Element <" + element.getTagName() + "> has no declared item type for "
+                    + type.getName());
         return unmarshal(type, element);
     }
 
@@ -239,6 +249,23 @@ public final class PortXmlBeans {
         XmlElements choices = field.getAnnotation(XmlElements.class);
         if (choices != null && choices.value().length > 0 && !choices.value()[0].name().equals(DEFAULT)) return choices.value()[0].name();
         return field.getName();
+    }
+
+    // Ronda 64: el RI de JAXB usa el parametro generico declarado del campo como tipo de los
+    // elementos de una coleccion. Sin esa informacion (ni @XmlElement(type=...)) no se puede
+    // adivinar: se lanza JAXBException con el nombre del campo en vez de usar la coleccion.
+    private static Class<?> elementType(Field field) throws JAXBException {
+        XmlElement element = field.getAnnotation(XmlElement.class);
+        if (element != null && element.type() != Object.class) return element.type();
+        Class<?> declared = field.getType();
+        if (declared.isArray()) return declared.getComponentType();
+        if (field.getGenericType() instanceof ParameterizedType parameterized) {
+            Type[] arguments = parameterized.getActualTypeArguments();
+            if (arguments.length == 1 && arguments[0] instanceof Class<?> item) return item;
+        }
+        throw new JAXBException("Cannot determine the element type of collection field " + field.getName()
+                + " of " + field.getDeclaringClass().getName()
+                + ": no @XmlElement(type=...) and no single generic parameter");
     }
 
     private static String attributeName(String declared, String fallback) {
