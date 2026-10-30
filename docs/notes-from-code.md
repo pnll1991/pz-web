@@ -622,3 +622,16 @@ Build 16:43 (incluye 12f8017 PNG grandes y 102ae4c cache de NativeArena). Corrid
 Próximo paso: subir el heap de buffers directos (`TeaVMTool.setMinDirectBuffersSize` / `WasmGCTarget.setBufferHeapMinSize`,
 hoy sin configurar en BuildCompiler) y/o liberar el buffer de stb tras subir la textura (revisar que `stbi_image_free`
 llegue a `NativeArena.free`). Sin stubs: los depthmaps se tienen que cargar de verdad.
+
+## Ronda 67 (Code, 30/10 ~19:10 hora de Mendoza) — OOB de buffers directos resuelto
+- Causa real: en TeaVM 0.16 Wasm GC, `ByteBuffer.allocateDirect` sólo devuelve memoria al `Heap` desde un
+  `FinalizationRegistry` de JS (asíncrono, entre tareas). `NativeArena.free` era sólo contabilidad, así que los
+  depthmaps de ~45 MB se acumulaban hasta el tope de 2 GiB de la memoria lineal. Además `HeapIntrinsic` (Heap.grow)
+  descarta el resultado de `memory.grow`: un grow fallido se toma como éxito y termina en
+  "memory access out of bounds" en `Heap.allocFromFreeRecord`. Subir el heap a 1 GiB (corrida 18:10) NO alcanzó: el OOB volvió a ~530 s.
+- Fix: `NativeArena` reutiliza los bloques grandes liberados (pool ≥64 KiB, hasta 768 MiB, reuso si capacidad ≤ 1,25× lo pedido,
+  se ponen en cero como calloc). `BuildCompiler`: `setMinDirectBuffersSize(256 MiB)` para el juego.
+  `menu_pixels.mjs` imprime cada pageerror en vivo.
+- Corrida 18:50 (build 18:48): sin pageerror en 740 s. Pero el arranque sigue en trabajo sincrónico después de
+  `exit TISLogoState` (~4 frames cada 40 s); `MainScreenState#render` todavía no corre. Captura: ~/pzshots/menu-r67*.png.
+- Próximo: perfil CPU (`PZ_PROFILE_AT=400`) para ver qué consume ese tramo (sospecha: decode PNG/zeroing de depthmaps o NativeArena).

@@ -11,7 +11,7 @@ const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH 
   args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-dev-shm-usage'] });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const cons = []; page.on('console', m => { cons.push(m.text().slice(0, 300)); if (cons.length > 4000) cons.shift(); });
-const errs = []; page.on('pageerror', e => errs.push(String(e.stack || e.message).slice(0, 4000)));
+const errs = []; page.on('pageerror', e => { const s = String(e.stack || e.message).slice(0, 4000); errs.push(s); console.log('PAGEERROR', s.slice(0, 600).replace(/\n/g, ' | ')); });
 await page.addInitScript((N) => {
   const S = globalThis.__px = { frames: 0, shots: [], log: [] };
   const orig = HTMLCanvasElement.prototype.getContext;

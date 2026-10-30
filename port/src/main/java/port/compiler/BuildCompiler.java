@@ -68,6 +68,10 @@ public final class BuildCompiler {
             tool.setTargetFileName("boot.wasm");
             tool.setOptimizationLevel(TeaVMOptimizationLevel.SIMPLE);
             tool.setObfuscated(false);
+            // Direct-buffer heap (linear memory behind ByteBuffer.allocateDirect / NativeArena). The 2 MiB
+            // default grows on demand and hit "memory access out of bounds" in Heap.allocFromFreeRecord
+            // while loading 1024x11008 depthmaps (ronda 66). Real fix is the NativeArena reuse pool; 256 MiB up front.
+            tool.setMinDirectBuffersSize(game ? 256 << 20 : 2 << 20);
             tool.setLog(new ConsoleTeaVMToolLog(true));
             tool.setProgressListener(new org.teavm.vm.TeaVMProgressListener(){
                 private long last;

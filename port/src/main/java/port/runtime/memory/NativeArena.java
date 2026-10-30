@@ -14,15 +14,40 @@ public final class NativeArena {
     // same block millions of times; the TreeMap floor lookup per byte dominated the CPU profile
     // (menu-r65-prof-profile.txt). Same bounds check, cleared when that block is freed.
     private static Block last;
-    private record Block(long address, ByteBuffer bytes) { }
+    private record Block(long address, ByteBuffer bytes, ByteBuffer backing) { }
+    // Reuse pool for freed large blocks. TeaVM Wasm GC only returns direct-buffer memory to its Heap from a
+    // JS FinalizationRegistry callback, i.e. long after free() and only between tasks. During boot the
+    // 1024x11008 depthmaps (~45 MB each) piled up until linear memory hit its 2 GiB cap; TeaVM 0.16's
+    // Heap.grow drops the memory.grow result, so the failed grow surfaced as "memory access out of bounds"
+    // in Heap.allocFromFreeRecord (ronda 66/67). Freed backings are kept and handed out again (zeroed).
+    private static final int POOL_MIN = 1 << 16;
+    private static final long POOL_CAP = 768L << 20;
+    private static final TreeMap<Integer, ArrayDeque<ByteBuffer>> pool = new TreeMap<>();
+    private static long pooledBytes;
+    private static final byte[] ZEROS = new byte[1 << 16];
+    private static ByteBuffer takePooled(int size) {
+        var e = pool.ceilingEntry(size);
+        if (e == null || e.getKey() > size + (size >> 2)) return null;
+        ByteBuffer backing = e.getValue().pop(); if (e.getValue().isEmpty()) pool.remove(e.getKey());
+        pooledBytes -= backing.capacity();
+        return backing;
+    }
     private record View(Block block, int offset, int stride) { }
     public static synchronized long allocate(long size, long alignment) {
         if (size < 0 || size > Integer.MAX_VALUE) throw new IllegalArgumentException("Arena allocation size: " + size);
         if (alignment <= 0 || (alignment & (alignment - 1)) != 0 || alignment > 1L << 30) throw new IllegalArgumentException("Arena alignment");
         long address = Math.addExact(next, alignment - 1) & -alignment;
         next = Math.addExact(address, Math.max(1, size) + 16);
-        var bytes = ByteBuffer.allocateDirect((int) size).order(ByteOrder.LITTLE_ENDIAN);
-        var block = new Block(address, bytes); blocks.put(address, block); views.put(bytes, new View(block, 0, 1));
+        ByteBuffer backing = size >= POOL_MIN ? takePooled((int) size) : null;
+        ByteBuffer bytes;
+        if (backing != null) {
+            var z = backing.duplicate().clear(); while (z.position() < size) z.put(ZEROS, 0, (int) Math.min(ZEROS.length, size - z.position()));
+            bytes = backing.duplicate().clear().limit((int) size).slice().order(ByteOrder.LITTLE_ENDIAN);
+        } else {
+            bytes = ByteBuffer.allocateDirect((int) size).order(ByteOrder.LITTLE_ENDIAN);
+            backing = size >= POOL_MIN ? bytes : null;
+        }
+        var block = new Block(address, bytes, backing); blocks.put(address, block); views.put(bytes, new View(block, 0, 1));
         return address;
     }
     public static synchronized void free(long address) {
@@ -30,6 +55,10 @@ public final class NativeArena {
         Block block = blocks.remove(address);
         if (block == null) throw new IllegalArgumentException("Arena free requires a live allocation base: " + address);
         if (last == block) last = null;
+        if (block.backing != null && pooledBytes + block.backing.capacity() <= POOL_CAP) {
+            pool.computeIfAbsent(block.backing.capacity(), k -> new ArrayDeque<>()).push(block.backing);
+            pooledBytes += block.backing.capacity();
+        }
         views.entrySet().removeIf(e -> {if(e.getValue().block != block)return false;retired.add(new java.lang.ref.WeakReference<>(e.getKey()));return true;});
     }
     public static synchronized boolean live(long address, long size) {
@@ -63,7 +92,7 @@ public final class NativeArena {
                 throw new UnsupportedOperationException("Arena address requires a registered/direct ByteBuffer view");
             long address = Math.addExact(next, 15) & -16L; next = Math.addExact(address, Math.max(1, bytes.capacity()) + 16);
             var backing = bytes.duplicate().clear().order(ByteOrder.LITTLE_ENDIAN);
-            Block block = new Block(address,backing); blocks.put(address,block);
+            Block block = new Block(address,backing,null); blocks.put(address,block);
             view = new View(block,0,1); views.put(buffer,view);
         }
         if (!blocks.containsKey(view.block.address)) throw new IllegalStateException("Buffer allocation was freed");
