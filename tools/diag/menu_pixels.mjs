@@ -55,9 +55,21 @@ await page.addInitScript((N) => {
   });
 }, N);
 await page.goto(`http://127.0.0.1:${PORT}/game.html?maplog=1`, { waitUntil: 'domcontentloaded' });
-const t0 = Date.now(); let res = null;
+const t0 = Date.now(); let res = null; let profiled = false;
+const PROFILE_AT = Number(process.env.PZ_PROFILE_AT || '0'); // seconds; 0 = off
+async function profile() { // CPU profile of the main thread, top self-time functions (diagnostic only)
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 2000 });
+  await cdp.send('Profiler.start'); await new Promise(r => setTimeout(r, 30000));
+  const { profile: pr } = await cdp.send('Profiler.stop');
+  const self = new Map(), byId = new Map(pr.nodes.map(n => [n.id, n])); const dt = pr.timeDeltas || [];
+  pr.samples.forEach((id, i) => { const n = byId.get(id); const k = n.callFrame.functionName + ' ' + n.callFrame.url.split('/').pop() + ':' + n.callFrame.lineNumber; self.set(k, (self.get(k) || 0) + (dt[i] || 0)); });
+  const top = [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([k, v]) => (v / 1000).toFixed(0) + 'ms ' + k);
+  writeFileSync(OUT.replace('.png', '-profile.txt'), top.join('\n')); console.log('PROFILE saved');
+}
 while (Date.now() - t0 < MAX) {
   await page.waitForTimeout(20000);
+  if (PROFILE_AT && !profiled && Date.now() - t0 > PROFILE_AT * 1000) { profiled = true; try { await race(profile(), 120000); } catch (e) { console.log('PROFILE_FAIL', String(e)); } }
   try { res = await race(page.evaluate(() => { const S = globalThis.__px; return { frames: S.frames, attrs: S.attrs, viewports: S.viewports, canvas: S.canvas && [S.canvas.width, S.canvas.height], winEvents: (globalThis.pzRuntime?.window?.events || []).filter(e => /created|resized|init/.test(e.type)).slice(0, 8), shots: S.shots.length, out: S.shots.length >= 3 ? S.shots : null,
     renders: Object.entries(globalThis.pzGameCounts || {}).filter(([k]) => /MainScreenState#render/.test(k)) }; }), 90000); }
   catch (e) { console.log('SAMPLE_FAIL', String(e)); continue; }
