@@ -55,3 +55,13 @@ Toda salida de vineflower u otro decompilador va SIEMPRE a /tmp/..., nunca dentr
 ## Notas viejas de Code
 Fixes de notas de Code ya aplicados; no rehacer.
 
+
+## Regla apply_patch (ronda 57 terminó rc=1 por un hunk inválido)
+- En apply_patch cada hunk empieza con una línea `@@` (opcionalmente `@@ contexto`), y TODA línea siguiente lleva prefijo ' ', '+' o '-'. Nunca pongas código como encabezado de hunk.
+- Para cambios grandes en un archivo Java nuevo usá `*** Add File`; para archivos existentes, hunks chicos (<=80 líneas).
+- Si apply_patch falla, leé el error y reintentá el parche corregido en el mismo turno; no termines la ronda.
+
+## Ronda 52b de Code (parche listo, aplicar si no está)
+- `git apply --check /datos/Projects/pz-web-code/patches/ronda52b-png-grayalpha.patch && git apply` ese archivo (solo BrowserStb.java: PNG gris, gris+alpha y paleta). Si --check falla, ya está aplicado o hay conflicto: anotarlo en STATUS.md y seguir.
+- Verificación en el siguiente build: desaparecen las 2 líneas "failed to read image /media/ui/cursor_*.png".
+- Los 7 FileNotFound restantes son esperables (packs 2x excluidos a propósito); no perseguirlos.

@@ -786,7 +786,14 @@ export class GLBridge {
     const framebuffer = this.call('createFramebuffer');
     try {
       this.call('bindFramebuffer', gl.FRAMEBUFFER, framebuffer);
-      this.call('framebufferTexture2D', gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.context[tname], level);
+      // WebGL2 framebufferTexture2D needs target, attachment, textarget, the WebGLTexture object
+      // and the level. Measured in Chrome (diag162, round 58): without the texture object WebGL2
+      // raises "5 arguments required, but only 4 present", which the game reports as
+      // "FBO not compatible with gfx card at this time". The object is the one this GL handle owns.
+      const owned = this.textures.get(this.activeBoundTexture());
+      if (!owned) throw new Error(`glGetTexImage: texture ${this.activeBoundTexture()} has no WebGL2 object to attach`);
+      this.call('framebufferTexture2D', gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.context[tname],
+        owned.texture, level);
       if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE)
         throw new Error(`Texture ${this.activeBoundTexture()} level ${level} is not readable`);
       const readSeq = this.callSeq;
@@ -1674,8 +1681,11 @@ export class GLBridge {
   framebufferTexture2D(target, attachment, textarget, texture, level) {
     const entry = this.textureEntry(texture, 'glFramebufferTexture2D');
     const tname = this.textureTargetName(textarget);
+    // The WebGLTexture object is a required argument: WebGL2 raises
+    // "5 arguments required, but only 4 present" without it (measured in Chrome, diag162).
     this.call('framebufferTexture2D', this.fbTarget(target, 'glFramebufferTexture2D'),
-      this.fbAttachment(attachment, 'glFramebufferTexture2D'), this.context[tname], Number(level));
+      this.fbAttachment(attachment, 'glFramebufferTexture2D'), this.context[tname],
+      entry.texture, Number(level));
   }
   framebufferRenderbuffer(target, attachment, renderbuffertarget, renderbuffer) {
     if (Number(renderbuffertarget) !== 36161)
@@ -1775,7 +1785,15 @@ export class GLBridge {
         const read = new Uint8Array(4);
         this.call('readPixels', 0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, read);
         report.readback = [...read];
-        report.rendered = read[0] === 128 && read[1] === 64 && read[2] === 192 && read[3] === 255;
+        // The clear colour was (0.5, 0.25, 0.75, 1). Reading it back as bytes is a float->byte
+        // conversion, so an implementation is allowed to land 1 unit away (Chrome/SwiftShader
+        // really does: 0.75 -> 191, not 192). Accepting +/-2 per channel still proves the FBO took
+        // the draw - a broken or unbound FBO reads back 0,0,0 or stale pixels - without demanding
+        // an exact quantization that WebGL2 does not guarantee.
+        const expected = [128, 64, 192, 255];
+        report.rendered = expected.every((v, i) => Math.abs(read[i] - v) <= 2);
+        report.expected = expected;
+        report.maxChannelError = Math.max(...expected.map((v, i) => Math.abs(read[i] - v)));
       }
       report.complete = report.status === gl.FRAMEBUFFER_COMPLETE && report.rendered;
     } finally {

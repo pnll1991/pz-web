@@ -68,3 +68,39 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 - Sonda nueva `port/target/diag160.mjs` (clon de diag159 + `FBO_PROBE`, `NULL_HITS`, `NULL_FBO`,
   `LOG_FBO_LINES`; escribe `build/real-browser/debuglog-round57.txt`, `console-round57.txt`,
   `test-results/round57-diag160.png`).
+
+## Ronda 58 (inicio 02:18:56 según supervisor.log, corte duro ~06:18)
+- 02:20 Estado de partida: repo limpio (ronda 57 commiteada como 16655b9). El parche pedido por
+  CODEX_TASK_CONTINUE **ya está aplicado** desde la ronda 57 y verificado en el repo:
+  `port/runtime/gl.mjs#framebufferProbe()` (sondeo FBO real: textura WebGL2 con píxeles +
+  framebuffer + renderbuffer DEPTH24_STENCIL8 + checkFramebufferStatus + clear + readPixels;
+  `complete` sólo si COMPLETE y el clear renderizó) y el transformer
+  `port/src/main/java/port/compiler/FBOSupportCompatibility.java`, registrado en `BuildCompiler.java`,
+  que reemplaza la lectura de `GLCapabilities.OpenGL30` en `TextureFBO/TextureFBODepth.checkFBOSupport`
+  por ese sondeo. Shim `port.shim.BrowserGL.fboProbeComplete()/fboProbeReportText()` vía `@JSBody`.
+  `boot.wasm` servido es el del build 02:13 de la ronda 57 (144.945.646 B, BUILD SUCCESS, 10.229
+  clases) y el dev server 127.0.0.1:8092 está vivo. Por tanto esta ronda NO repite el análisis:
+  el paso que falta es **probar en Chrome si el sondeo se ejecuta y si el gate queda true**.
+- 02:21 `npm test` **48/48** OK (incluye los 5 tests del sondeo FBO de la ronda 57).
+- 02:22 Lanzada en background la sonda `port/target/diag160.mjs` (200 s de corrida) ->
+  `diag161.log`, `build/real-browser/debuglog-round57.txt`, `console-round57.txt`,
+  `test-results/round57-diag160.png`. Objetivo concreto: leer `FBO_PROBE.runs/probe` (¿se corrió el
+  sondeo? ¿complete?), `NULL_HITS` y si sigue el `dereferencing a null pointer` en
+  `TextureFBO::initInternal` (ronda 53: seguía ahí). RAM medida: 27 GiB usados de 31, swap 12 GiB;
+  no se lanza build pesado mientras corra el navegador.
+- 02:31 Resultado de diag161.log (sonda de la ronda 57 sobre el wasm 02:13): el sondeo **sí se
+  ejecuta** (`FBO_PROBE.runs=1`) y WebGL2 responde `FRAMEBUFFER_COMPLETE` en las dos etapas. Pero
+  `rendered=false` porque el readback del `clear` da `[128,64,191,255]` y el control de la ronda 57
+  exigía `[128,64,192,255]` exacto: SwiftShader cuantiza 0.75 -> 191. Por eso `complete=false`, el
+  gate quedó false y siguió `dereferencing a null pointer` en `TextureFBO::initInternal`
+  (`UI_Loading_ModelsAnimations`). Causa real: **la comparación exacta, no el FBO**.
+- 02:33 Fix: `port/runtime/gl.mjs` acepta tolerancia de cuantización +/-2 por canal y expone
+  `report.expected` / `report.maxChannelError` (un FBO roto lee 0,0,0 o píxeles viejos, sigue
+  dando false). Test nuevo en `tests/node/gl-fbo-probe.test.mjs` con el readback medido en Chrome
+  ([128,64,191,255] -> true) y deriva mayor (189 / color equivocado -> false). `npm test` **49/49**.
+  Copiado a `port/target/web/runtime/gl.mjs` (el dev server sirve esa copia; el wasm no cambia
+  porque el gate lee el sondeo vía `@JSBody`, no se recompila).
+- 02:34 Sonda nueva `port/target/diag161.mjs` (clon de diag160 con salidas round58) lanzada en
+  foreground -> `diag162.log`, `build/real-browser/debuglog-round58.txt`, `console-round58.txt`,
+  `test-results/round58-diag161.png`. Objetivo: ver `complete=true` y si el arranque avanza más allá
+  de `UI_Loading_ModelsAnimations`.

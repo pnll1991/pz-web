@@ -108,6 +108,25 @@ test('a clear that does not render makes the probe false', () => {
   assert.deepEqual(report.readback, [0, 0, 0, 0]);
 });
 
+test('the readback accepts the float->byte rounding the renderer performs', () => {
+  // Measured in Chrome with SwiftShader (diag161, round 58): clearing (0.5,0.25,0.75,1) and
+  // reading RGBA bytes gives [128,64,191,255] - blue lands 1 unit below the exact 192. The FBO
+  // really did take the draw, so the probe must be true; the exact equality of round 57 was the
+  // only reason the TextureFBO gate stayed false.
+  const gl = bridge(fakeContext({ pixel: [128, 64, 191, 255] }));
+  const report = gl.framebufferProbe();
+  assert.equal(report.rendered, true);
+  assert.equal(report.complete, true);
+  assert.deepEqual(report.readback, [128, 64, 191, 255]);
+  assert.equal(report.expected.join(','), '128,64,192,255');
+  assert.equal(report.maxChannelError, 1);
+  // Anything further away (wrong colour, stale or cleared-to-black pixels) is still rejected.
+  const stale = bridge(fakeContext({ pixel: [128, 64, 189, 255] }));
+  assert.equal(stale.framebufferProbe().complete, false, 'a 3-unit drift is not a rounding error');
+  const wrongColour = bridge(fakeContext({ pixel: [200, 64, 192, 255] }));
+  assert.equal(wrongColour.framebufferProbe().complete, false);
+});
+
 test('the probe records its WebGL2 errors and leaves the game queue clean', () => {
   const gl = bridge(fakeContext({ queueError: 1281 }));
   const report = gl.framebufferProbe();

@@ -122,6 +122,14 @@ test('readback fills the caller buffer and rejects other layouts', () => {
   const out = new Uint8Array(16);
   gl.getTexImage(3553, 0, 6408, 5121, out);
   assert.deepEqual([...out], [...new Uint8Array(16).map((_, i) => i & 0xff)]);
+  // The readback attaches the texture through WebGL2's framebufferTexture2D. Chrome raises
+  // "5 arguments required, but only 4 present" if the WebGLTexture object is not passed (diag162),
+  // which the game surfaces as "FBO not compatible with gfx card at this time".
+  const attach = gl.context.calls.filter((c) => c[0] === 'framebufferTexture2D');
+  assert.equal(attach.length, 1);
+  assert.equal(attach[0][4], gl.textures.get(id).texture,
+    'glGetTexImage must attach the WebGLTexture object of the bound texture');
+  assert.equal(attach[0][5], 0, 'and the requested mip level');
   assert.throws(() => gl.getTexImage(3553, 0, 6408, 5121, new Uint8Array(8)), /needs 16/);
   assert.throws(() => gl.getTexImage(3553, 0, 6407, 5121, new Uint8Array(16)), /cannot read a texture back/);
 });

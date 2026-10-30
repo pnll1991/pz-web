@@ -491,3 +491,11 @@ Método: sin build ni cambios al repo. Playwright contra :8092 (`/tmp/code-agent
 - **Fix:** ya está en el parche.
   - En `ReflectionConfiguration.setup()` se agrega `selectClasses(clases de reflection.txt que extienden zombie.scripting.entity.ComponentScript o zombie.entity.Component).reflectableMethods(m -> m.isConstructor() && m.parameters().isEmpty())`.
   - Requiere build del juego. No está compilado ni probado.
+
+## Ronda 52b: vehicle script, packs y cursores (contra HEAD 16655b9)
+
+Revisado contra 16655b9 y build/real-browser/debuglog-round57.txt + diag161.log:
+- Bullet.defineVehicleScript: ya resuelto en HEAD (commit b4bdd82, ronda 52, bullet.mjs exporta defineVehicleScript sobre pzbullet_define_vehicle_script). diag161 y debuglog-round57: 0 apariciones. Nada que parchear.
+- .pack: el índice servido (build/real-browser/packs/index.json) ya tiene UI, UI2, IconsMoveables, RadioIcons, ApComUI, Mechanics, WeatherFx, Tiles2x y Clock2x. --max-bytes NO excluye archivos (pack.py sólo corta el blob; un archivo >32 MB va en su propio blob). Quedan 7 FileNotFoundException: son los 2x packs no montados a propósito (startup_extra.py, para cuidar memoria) y el juego los tolera (el arranque sigue). No cambiar salvo que se necesite un tile de esos packs.
+- Cursores: cursor_blank.png y cursor_white.png SÍ están empaquetados; el error real es "Invalid PNG image: only 8-bit non-interlaced RGB/RGBA is supported": ambos son PNG 8-bit gray+alpha (color type 4). Tolerado (sólo falta el cursor), pero cualquier PNG gris/paleta falla igual.
+  Parche: /datos/Projects/pz-web-code/patches/ronda52b-png-grayalpha.patch (BrowserStb.decodePng acepta color types 0, 3 con PLTE/tRNS y 4, además de 2 y 6). git apply --check OK contra 16655b9 y contra el árbol actual. NO probado: es Java, necesita build del juego. Verificar que desaparezcan las 2 líneas "failed to read image /media/ui/cursor_*.png".

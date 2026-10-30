@@ -151,6 +151,14 @@ test('framebuffers and renderbuffers are real WebGL2 objects with validated targ
   assert.equal(gl.checkFramebufferStatus(36160), 36053);
   const tex = gl.genTextures(1)[0];
   gl.framebufferTexture2D(36160, 36064, 3553, tex, 0);
+  // Chrome/SwiftShader rejects the attach with "5 arguments required, but only 4 present" when the
+  // WebGLTexture object is missing (measured in diag162), so the emitted call must carry it.
+  const attach = gl.context.calls.filter((c) => c[0] === 'framebufferTexture2D');
+  assert.equal(attach.length, 1);
+  assert.deepEqual(attach[0].slice(1, 4), [36160, 36064, 3553]);
+  assert.equal(attach[0][4], gl.textures.get(tex).texture,
+    'the attach must carry the WebGLTexture object owned by the GL handle');
+  assert.equal(attach[0][5], 0);
   const rbo = gl.genRenderbuffers(1)[0];
   gl.bindRenderbuffer(36161, rbo);
   gl.renderbufferStorage(36161, 35056, 4, 4); // GL_DEPTH24_STENCIL8
