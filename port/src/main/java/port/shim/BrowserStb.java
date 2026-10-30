@@ -147,6 +147,7 @@ public final class BrowserStb {
         for (int i = 0; i < SIGNATURE.length; i++) if (file[i] != SIGNATURE[i]) { failure("Invalid signature"); return null; }
         int offset = SIGNATURE.length;
         int pngWidth = 0, pngHeight = 0, bitDepth = 0, colorType = 0, interlace = 0;
+        byte[] palette = null, transparency = null;
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
         while (offset + 12 <= file.length) {
             int length = readInt(file, offset);
@@ -159,6 +160,11 @@ public final class BrowserStb {
                 bitDepth = file[data + 8] & 0xFF; colorType = file[data + 9] & 0xFF;
                 if (file[data + 10] != 0 || file[data + 11] != 0) { failure("Unsupported PNG compression/filter method"); return null; }
                 interlace = file[data + 12] & 0xFF;
+            } else if ("PLTE".equals(type)) {
+                if (length % 3 != 0 || length > 768) { failure("Invalid PNG palette"); return null; }
+                palette = java.util.Arrays.copyOfRange(file, data, data + length);
+            } else if ("tRNS".equals(type)) {
+                transparency = java.util.Arrays.copyOfRange(file, data, data + length);
             } else if ("IDAT".equals(type)) {
                 compressed.write(file, data, length);
             } else if ("IEND".equals(type)) break;
@@ -167,10 +173,14 @@ public final class BrowserStb {
         if (pngWidth <= 0 || pngHeight <= 0 || pngWidth > MAX_DIMENSION || pngHeight > MAX_DIMENSION) {
             failure("Invalid image size"); return null;
         }
-        if (bitDepth != 8 || interlace != 0 || (colorType != 2 && colorType != 6)) {
-            failure("Invalid PNG image: only 8-bit non-interlaced RGB/RGBA is supported"); return null;
+        // 8-bit non-interlaced gray (0), RGB (2), palette (3), gray+alpha (4) and RGBA (6).
+        // media/ui/cursor_blank.png and cursor_white.png are gray+alpha (color type 4).
+        if (bitDepth != 8 || interlace != 0
+            || (colorType != 0 && colorType != 2 && colorType != 3 && colorType != 4 && colorType != 6)) {
+            failure("Invalid PNG image: only 8-bit non-interlaced gray/RGB/palette/RGBA is supported"); return null;
         }
-        int pngChannels = colorType == 6 ? 4 : 3;
+        if (colorType == 3 && palette == null) { failure("Palette PNG without PLTE"); return null; }
+        int pngChannels = colorType == 6 ? 4 : colorType == 2 ? 3 : colorType == 4 ? 2 : 1;
         int expected = (pngWidth * pngChannels + 1) * pngHeight;
         if ((long)pngWidth * pngHeight * 4 > MAX_PIXEL_BYTES) { failure("Image exceeds the pixel budget"); return null; }
         byte[] raw = inflate(compressed.toByteArray(), expected);
@@ -183,10 +193,22 @@ public final class BrowserStb {
             unfilter(raw[start], raw, start + 1, row, previous, stride, pngChannels);
             int target = (flipVertical ? pngHeight - 1 - y : y) * pngWidth * 4;
             for (int x = 0; x < pngWidth; x++) {
-                rgba[target + x * 4] = row[x * pngChannels];
-                rgba[target + x * 4 + 1] = row[x * pngChannels + 1];
-                rgba[target + x * 4 + 2] = row[x * pngChannels + 2];
-                rgba[target + x * 4 + 3] = pngChannels == 4 ? row[x * pngChannels + 3] : (byte)255;
+                int o = target + x * 4, i = x * pngChannels;
+                if (colorType == 3) {
+                    int index = row[i] & 0xFF;
+                    if (index * 3 + 2 >= palette.length) { failure("PNG palette index out of range"); return null; }
+                    rgba[o] = palette[index * 3]; rgba[o + 1] = palette[index * 3 + 1]; rgba[o + 2] = palette[index * 3 + 2];
+                    rgba[o + 3] = transparency != null && index < transparency.length ? transparency[index] : (byte)255;
+                } else if (colorType == 0 || colorType == 4) {
+                    byte gray = row[i];
+                    rgba[o] = gray; rgba[o + 1] = gray; rgba[o + 2] = gray;
+                    if (colorType == 4) rgba[o + 3] = row[i + 1];
+                    else rgba[o + 3] = transparency != null && transparency.length >= 2
+                        && (transparency[1] & 0xFF) == (gray & 0xFF) && transparency[0] == 0 ? (byte)0 : (byte)255;
+                } else {
+                    rgba[o] = row[i]; rgba[o + 1] = row[i + 1]; rgba[o + 2] = row[i + 2];
+                    rgba[o + 3] = pngChannels == 4 ? row[i + 3] : (byte)255;
+                }
             }
             System.arraycopy(row, 0, previous, 0, stride);
         }

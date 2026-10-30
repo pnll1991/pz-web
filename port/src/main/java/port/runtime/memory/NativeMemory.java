@@ -15,6 +15,19 @@ public final class NativeMemory {
     public static void nmemFree(long address){NativeArena.free(address);}
     public static void nmemAlignedFree(long address){nmemFree(address);}
     public static void memCopy(long source,long target,long bytes){NativeArena.copy(source,target,bytes);}
+    // Round 59 (diag165.log): zombie.core.textures.PNGDecoder.decodeFrame and ImageData.<init>
+    // call MemoryUtil.memCopy(ByteBuffer,ByteBuffer) while loading media/ui/Progress/*.png, and
+    // MemoryCompatibility raised "Browser LWJGL memory operation unavailable" because only the
+    // long/long/long overload existed here. LWJGL semantics (verified with javap -c on the pinned
+    // org.lwjgl.system.MemoryUtil): Checks.check(target, source.remaining()), then
+    // memcpy(memAddress(source), memAddress(target), source.remaining()) - the positions of both
+    // buffers are NOT advanced, which is what the game relies on because it rewinds the
+    // MipMapLevel buffer before copying.
+    public static void memCopy(ByteBuffer source,ByteBuffer target){
+        int bytes = source.remaining();
+        if (bytes > target.remaining()) throw new BufferOverflowException();
+        memCopy(NativeArena.address(source),NativeArena.address(target),bytes);
+    }
     public static void memSet(long address,int value,long bytes){NativeArena.fill(address,bytes,(byte)value);}
     public static long memAddress(Buffer buffer){return NativeArena.address(buffer);}
     public static long memAddressSafe(Buffer buffer){return buffer==null?0:memAddress(buffer);}

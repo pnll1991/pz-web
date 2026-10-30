@@ -65,3 +65,14 @@ Fixes de notas de Code ya aplicados; no rehacer.
 - `git apply --check /datos/Projects/pz-web-code/patches/ronda52b-png-grayalpha.patch && git apply` ese archivo (solo BrowserStb.java: PNG gris, gris+alpha y paleta). Si --check falla, ya está aplicado o hay conflicto: anotarlo en STATUS.md y seguir.
 - Verificación en el siguiente build: desaparecen las 2 líneas "failed to read image /media/ui/cursor_*.png".
 - Los 7 FileNotFound restantes son esperables (packs 2x excluidos a propósito); no perseguirlos.
+
+## Ronda 60: jassimp64 → cargador .txt del juego
+Diagnóstico YA hecho (no repetir): si no hay .x/.fbx/.glb en media/anims_x, el juego cae a media/anims/<nombre>.txt (ModelLoader.loadTxt).
+Primera acción obligatoria: git apply /datos/Projects/pz-web-code/patches/ronda59b-x-anim-to-txt.patch
+Luego, en tools/pack/startup_extra.py, montá la salida de python3 tools/pack/x_anim_to_txt.py $PZ_HOME/media/anims_X/Bob <tmp>/anims/Bob --only Bob_Idle.x Bob_Walk.x Bob_Run.x como media/anims/Bob/*.txt y NO montes esos .x. Build, probar, commit. Si loadTxt falla con 0 vértices, arreglá el conversor, no el juego. Después: ampliar el conversor a mallas Skinned (MaleBody.x).
+
+## Regla anti-loop (obligatoria)
+- Máximo 5 javap/unzip seguidos sin un apply_patch en el medio; al llegar a 5, editá algo o escribí el bloqueo en STATUS.md y terminá.
+- Prohibido investigar internas de TeaVM (org.teavm.parsing.*, RenamingClassHolderSource, substitute*); para sustituir clases, copiá un transformer existente de port/src/main/java/port/compiler/.
+- Prohibido reimplementar librerías nativas enteras: buscá primero un camino del juego que no las use.
+- Máximo 15 lecturas entre dos ediciones.

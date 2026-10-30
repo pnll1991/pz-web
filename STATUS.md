@@ -104,3 +104,89 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
   foreground -> `diag162.log`, `build/real-browser/debuglog-round58.txt`, `console-round58.txt`,
   `test-results/round58-diag161.png`. Objetivo: ver `complete=true` y si el arranque avanza más allá
   de `UI_Loading_ModelsAnimations`.
+
+## Ronda 59 (inicio 03:02:55 según supervisor.log, corte duro ~07:02)
+- 03:04 Estado de partida: el parche pedido por CODEX_TASK_CONTINUE ya está (rondas 57/58) y VERDE en
+  Chrome según `diag162.log`: `FBO_PROBE.probe.complete=true`, `FRAMEBUFFER_COMPLETE`, `rendered=true`,
+  readback `[128,64,191,255]`, y `NULL_FBO.count=0` / `NULL_HITS=[]` (desapareció el
+  `dereferencing a null pointer` de `TextureFBO::initInternal`). No se repite ese análisis.
+- 03:05 Nuevo bloqueo medido en esa misma corrida: `RuntimeError: dereferencing a null pointer` en
+  `zombie.tileDepth.TileSeamManager::init` ← `zombie.GameWindow::enter` ← `mainThreadStart`.
+  Causa verificada en bytecode pinned (`javap -p -c zombie.tileDepth.TileSeamManager`): `init()` hace
+  `ldc "media/depthmaps/SEAMS_01.png"` → `Texture.getSharedTexture(String;I)` → `aload_2;
+  invokevirtual Texture.getTextureId()`. `media/depthmaps/` **no estaba en el pack** (0 entradas en
+  `build/real-browser/packs/index.json`), así que el shared texture es null y se dereferencia.
+- 03:09 Aplicado el parche pendiente de Code `/datos/Projects/pz-web-code/patches/ronda52b-png-grayalpha.patch`
+  (`git apply --check` OK, aplicado): `port/shim/BrowserStb.java` ahora decodifica PNG gris (tipo 0),
+  gris+alpha (4) y paleta (3), que son los `media/ui/cursor_*.png`. `mvn -o -f port/pom.xml compile`
+  BUILD SUCCESS (293 fuentes).
+- 03:10 `tools/pack/startup_extra.py`: monta todo `media/depthmaps/` (221 archivos, 5.928.298 B en la
+  copia pinned; verificado `SEAMS_01.png` = PNG 1024x256 colortype 6, existe). startup.txt 1450 → 1671
+  entradas. Re-empacado `pack.py --max-bytes 80000000` → 3 blobs; luego `alias_index.py` (179 + 12) y
+  `boot_options.py` → `index.json` con 1863 entradas y **428.596.181 B montados de 536.870.912 B**
+  (sigue dentro del presupuesto de `tools/pack/budget.py`).
+- 03:12 El dev server de la ronda anterior ya no existía (solo Strata en 8083). Relanzado en sesión viva
+  foreground: `PORT=8092 PZ_PACKS=build/real-browser/packs node dev-server/server.mjs`. Verificado por
+  HTTP: `/packs/index.json` sirve 1863 entradas con 221 `depthmaps` y `/media/depthmaps/SEAMS_01.png`;
+  `/game/boot.wasm` 206 (Range) y `/runtime/gl.mjs` 200 con el fix de `framebufferTexture2D` de la ronda 58.
+- 03:14 Sonda nueva `port/target/diag163.mjs` (clon de diag161 con salidas round59) lanzada foreground
+  -> `diag163.log`, `build/real-browser/debuglog-round59.txt`, `console-round59.txt`,
+  `test-results/round59-diag163.png`. Objetivo: ver si `TileSeamManager::init` supera el null pointer y
+  en qué etapa queda el arranque.
+- 03:20 Resultado de `diag163.log` (EXIT=0, ~4 min, corrida 200 s sobre el wasm 02:13 con el pack 1863):
+  `ALIVE {"phase":"main-returned","error":"","progress":601,"trace":400}`, `ERRS []` (cero RuntimeError de
+  wasm). `GameWindow#init` y `GameWindow#mainThreadInit` **returned**; `GameWindow#enter` **entered** a los
+  184 370 ms. El `dereferencing a null pointer` de `TileSeamManager::init` **desapareció** (montar
+  `media/depthmaps/` lo resolvió). El arranque ahora llega más lejos y el bloqueo nuevo es Java-level:
+  `java.lang.NullPointerException: Required Animation Asset not found: bob/bob_idle` en MainThread ->
+  `GameThread exited` -> luego `UnsupportedOperationException: System.exit(0): a browser tab is not an OS
+  process` dentro de `MainScreenState.main`. Traducido con `scripts/wasm_stack.py`:
+  `ModelManager::getAnimationAssetRequired <- ModelManager::create <- GameWindow::enter <- mainThreadStart`.
+- 03:22 Causa: `build/real-browser/debuglog-round59.txt` muestra decenas de
+  `WARN: Failed to load asset: AssetPath{ "Skinned/MaleBody" }` (y FemaleBody, CowBody,
+  `IsoObject/fixtures_*`, `IsoObject/door_*.glb`) justo antes del NPE. Los `.x` de modelos/animaciones
+  **no están montados**: `models_X` y `anims_X` no figuran en `index.json`, el `ModelMesh` de "Human"
+  no queda `isReady()` y `loadHumanAnimations` hace `return` temprano (verificado en bytecode), por lo
+  que nunca se cargan `bob/bob_idle|walk|run` y `getAnimationAssetRequired` lanza.
+- 03:23 Inventario real de la copia pinned (sin copiar nada al repo): `media/models` 46 archivos .txt
+  (4,2 MB, no hay .x); `models_X` 312 MB con `Skinned/MaleBody.x` 194010 B, `FemaleBody.x` 200557 B,
+  `Male_Skeleton.x` 231141 B, `Female_Skeleton.x` 243910 B; `anims_X` 508 MB de los cuales `anims_X/Bob`
+  son 373 MB/1615 archivos (`Bob_Idle.x` 200774, `Bob_Walk.x` 194840, `Bob_Run.x` 222958) y `anims_X/Kate`
+  2,3 MB/11; `media/AnimSets` 14 MB/2949 .xml (`player.xml` con folderPrefixes Bob/Kate y namePrefixes
+  `Bob_`/`Kate_`; `base.xml` es 0 bytes). Presupuesto `tools/pack/budget.py` = 512 MiB; montado hoy
+  428.596.181 B -> headroom ~108 MB. No se montan los 373 MB de `anims_X/Bob`.
+- 04:10 Corrección real en `tools/pack/startup_extra.py`: el filtro montaba `'media/ui/' + UI_PROGRESS_PREFIX`
+  pero el prefijo ya es relativo a `media/` (`ui/Progress/`), por lo que nunca matcheaba y el comando reportaba
+  `Appended 0 startup entries`. Con `media/ + prefix` agrega las 3 entradas reales (26 837 B):
+  `media/ui/Progress/{MaleDoor,MaleSprint06,MaleWalk2.png}`. Re-empacado (4641 archivos, 3 blobs) +
+  `alias_index.py` (179/12 alias) + `case_alias.py` (18 alias lowercase) + `boot_options.py` →
+  `index.json` servido por HTTP con **4851 entradas y 438 727 957 B montados de 536 870 912 B** (headroom ~98 MB),
+  y las 3 rutas `/media/ui/Progress/*.png` respondiendo 200 con sus bytes.
+- 04:13 Sonda `port/target/diag165.mjs` (clon de diag164 con salidas round59c) sobre el mismo wasm 02:13:
+  `EXIT=0`, `ERRS []`, `NULL_FBO {"count":0}`, `ALIVE {"phase":"starting","progress":591}` y
+  `GameWindow#enter()V:entered` a 199 611 ms (nunca retorna). Los 3 `ExecutionException:
+  FileNotFoundException` de `media/ui/Progress/*.png` **desaparecieron**: el archivo ahora se lee, pero el
+  fallo se movió un paso adentro: `ExecutionException: UnsupportedOperationException: Browser LWJGL memory
+  operation unavailable: org.lwjgl.system.MemoryUtil.memCopy(Ljava/nio/ByteBuffer;Ljava/nio/ByteBuffer;)V`
+  (3 veces, `Message: /media/ui/Progress/{MaleDoor,MaleSprint06,MaleWalk2.png}`). `Failed to load asset` = 0.
+- 04:20 Causa verificada sin repetir análisis: `MemoryCompatibility` sustituye cada método estático de
+  `org.lwjgl.system.MemoryUtil` que existe en `port.runtime.memory.NativeMemory` con la misma firma, y
+  lanza el "memory operation unavailable" para las que no. `NativeMemory` tenía `memCopy(long,long,long)`
+  pero **no** el overload `(ByteBuffer,ByteBuffer)` que usan `zombie.core.textures.PNGDecoder#decodeFrame`
+  y `zombie.core.textures.ImageData#<init>` (verificado con `javap -c` sobre la copia fijada). El bytecode
+  de LWJGL hace `Checks.check(target, source.remaining())` y `memcpy(memAddress(source), memAddress(target),
+  source.remaining())` sin avanzar posiciones; el juego hace `MipMapLevel.rewind()` antes, así que conservo
+  esa semántica exacta.
+- 04:33 Build completo `bash scripts/build.sh --with-game` con `MAVEN_OPTS="-Xmx6g -Xss16m"`: BUILD SUCCESS,
+  `port/target/web/game/boot.wasm` 144 947 076 B (04:33) y los tres gates (thread-fiber, stringutils,
+  assertions) OK en `build-round59-game.log`. Incluye el parche de `BrowserStb` de Code y el `memCopy` nuevo.
+- 04:45 Sonda `port/target/diag166.mjs` (wasm nuevo, mismo pack 4851): `EXIT=0`, `ERRS []`, `NULL_FBO {"count":0}`.
+  Desaparecieron las 2 líneas `failed to read image /media/ui/cursor_*.png` (fix BrowserStb confirmado) y las 3
+  `ExecutionException` de `memCopy(ByteBuffer,ByteBuffer)` sobre `media/ui/Progress/*.png` (fix de NativeMemory
+  confirmado). El arranque llega a `UI_Loading_ModelsAnimations` y el bloqueo ahora es el esperado y honesto:
+  `UnsatisfiedLinkError: System.loadLibrary: browser implementation is missing for jassimp64` -> todos los
+  `Failed to load asset: AssetPath{ "Skinned/..." }` (0 en la corrida anterior por el FBO/NPE previo, 20+ ahora)
+  -> `NullPointerException: Required Animation Asset not found: bob/bob_idle` en MainThread ->
+  `UnsupportedOperationException: System.exit(0)` en `MainScreenState.main`. También 2 nuevas
+  `Browser GLFW operation unavailable: org.lwjgl.glfw.GLFW#glfwCreateCursor(GLFWImage;II)J` (cursor del UI,
+  toleradas por el juego).

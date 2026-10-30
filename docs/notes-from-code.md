@@ -499,3 +499,58 @@ Revisado contra 16655b9 y build/real-browser/debuglog-round57.txt + diag161.log:
 - .pack: el índice servido (build/real-browser/packs/index.json) ya tiene UI, UI2, IconsMoveables, RadioIcons, ApComUI, Mechanics, WeatherFx, Tiles2x y Clock2x. --max-bytes NO excluye archivos (pack.py sólo corta el blob; un archivo >32 MB va en su propio blob). Quedan 7 FileNotFoundException: son los 2x packs no montados a propósito (startup_extra.py, para cuidar memoria) y el juego los tolera (el arranque sigue). No cambiar salvo que se necesite un tile de esos packs.
 - Cursores: cursor_blank.png y cursor_white.png SÍ están empaquetados; el error real es "Invalid PNG image: only 8-bit non-interlaced RGB/RGBA is supported": ambos son PNG 8-bit gray+alpha (color type 4). Tolerado (sólo falta el cursor), pero cualquier PNG gris/paleta falla igual.
   Parche: /datos/Projects/pz-web-code/patches/ronda52b-png-grayalpha.patch (BrowserStb.decodePng acepta color types 0, 3 con PLTE/tRNS y 4, además de 2 y 6). git apply --check OK contra 16655b9 y contra el árbol actual. NO probado: es Java, necesita build del juego. Verificar que desaparezcan las 2 líneas "failed to read image /media/ui/cursor_*.png".
+
+## Ronda 59b: estancamiento y jassimp64
+
+### Por qué se estancó la 59
+No es un loop de javap idéntico: es parálisis de análisis. Tras el build OK (04:33) el modelo decidió reemplazar jassimp
+por una implementación Java "substituida" vía TeaVM y se puso a investigar CÓMO hacer la sustitución de clases dentro de TeaVM:
+- l.21635 `unzip -l teavm-core-0.16.0.jar | grep -i substitut`, l.22028 `grep -iE 'substitut|renam|ClassHolderTransformer'`
+- l.22046 `javap -p -c ... org.teavm.parsing.RenamingClassHolderSource > /tmp/RCHS.txt`, l.24476 `grep substituteToOriginal /tmp/RCHS.txt`
+- l.21904 lee CompatReferences.java (usa ClassRefsRenamer) y entre l.21646 y l.24629 vuelca con javap toda la API jassimp
+  (AiMesh, AiNodeAnim, AiScene, ProcessedAiScene, JAssImpImporter) y relee MaleBody.x / Bob_Idle.x.
+~465 `exec` en el log, 28 menciones a RenamingClassHolderSource, cero apply_patch desde el build. El objetivo (reimplementar
+jassimp.* entero con la misma ABI) es enorme y nunca llegó a un primer archivo, así que cada paso “necesitaba” más javap.
+La regla de "máx 10 lecturas antes de editar" está en CODEX_TASK_CONTINUE pero no se aplica después de la primera edición.
+
+### jassimp64: no hace falta assimp
+El juego ya trae un cargador Java puro: ModelLoader.loadTxt / ModelTxt (formato "# Project Zomboid Animated Mesh",
+ejemplo media/Bob_Sprint.txt). FileTask_AbstractLoadModel.checkExtensionType(): para un nombre sin extensión prueba en
+media/anims_x .fbx, .glb, .x y, si ninguno existe, media/anims/<nombre>.txt → ModelFileExtensionType.Txt → loadTxt(),
+sin tocar jassimp. Solución: convertir offline .x → .txt y montar media/anims/... SIN los .x.
+Descartado: assimp a wasm (pesado, mismo ABI JNI que emular) y reimplementar jassimp.* (lo que estancó la 59).
+
+Parche: /datos/Projects/pz-web-code/patches/ronda59b-x-anim-to-txt.patch (solo agrega tools/pack/x_anim_to_txt.py,
+git apply --check OK contra 4fee0f0 con el árbol sucio de la 59). Probado aislado (sin build):
+- convierte las 1650 .x de anims_X/Bob (incluye subcarpetas), 0 fallos, 62 s, 30 MB RAM.
+- convención verificada contra Bob_Sprint.txt del juego: quat .x (w,x,y,z) → txt (-x,-y,-z,w); Dummy01 y Bip01
+  salen idénticos en signo/orden (Bip01 run: 0.430,0.561,0.430,0.561); traslación igual; t = ticks/AnimTicksPerSecond.
+- NO probado en el juego: que loadTxt acepte 0 vértices/0 caras en un archivo solo-anim, ni el nombre que da
+  getAnimName al listar. Se confirma en el próximo build.
+Pendiente aparte: las mallas Skinned (models_X/Skinned/MaleBody.x etc.) también pasan por jassimp en FileTask_LoadMesh;
+hay que extender el conversor a Mesh/MeshNormals/MeshTextureCoords/SkinWeights → media/models/*.txt.
+
+### Tamaño
+anims_X/Bob: 387 MB .x → 272 MB .txt, 77 MB con gzip -1. Para el boot montar solo lo que pide ModelManager para el
+menú (Bob_Idle/Walk/Run, como ya hace ANIMS_X_REQUIRED en startup_extra.py) pero en .txt bajo media/anims/Bob/, y el
+resto como pack diferido comprimido. Bob_Idle: 72 KB txt / 11 KB gzip.
+
+### Texto para docs/CODEX_TASK_CONTINUE.md (ronda 60)
+```
+## Ronda 60: jassimp64 → cargador .txt del juego
+Bloqueo: UnsatisfiedLinkError jassimp64 en UI_Loading_ModelsAnimations → 'Required Animation Asset not found: bob/bob_idle'.
+Diagnóstico YA hecho (no repetir): FileTask_AbstractLoadModel cae a media/anims/<nombre>.txt (ModelLoader.loadTxt, Java puro)
+si no existe .x/.fbx/.glb en media/anims_x.
+Primera acción obligatoria: git apply /datos/Projects/pz-web-code/patches/ronda59b-x-anim-to-txt.patch
+Luego: en tools/pack/startup_extra.py montar la salida de
+  python3 tools/pack/x_anim_to_txt.py $PZ_HOME/media/anims_X/Bob <tmp>/anims/Bob --only Bob_Idle.x Bob_Walk.x Bob_Run.x
+como media/anims/Bob/*.txt y NO montar esos .x. Build, probar, commit.
+Si loadTxt falla con 0 vértices, arreglá el conversor (no el juego).
+
+## Regla anti-loop (obligatoria)
+- Máximo 5 javap/unzip seguidos sin un apply_patch en el medio; al llegar a 5, editá algo o escribí en STATUS.md el bloqueo y terminá.
+- Prohibido investigar internas de TeaVM (org.teavm.parsing.*, RenamingClassHolderSource, ClassRefsRenamer, substitute*).
+  Para sustituir clases copiá un transformer existente de port/src/main/java/port/compiler/.
+- Prohibido reimplementar librerías nativas enteras (jassimp, assimp) en Java: buscá primero un camino del juego que no las use.
+- Máximo 15 comandos de lectura en total entre dos ediciones.
+```
