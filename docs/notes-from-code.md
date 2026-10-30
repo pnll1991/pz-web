@@ -640,3 +640,9 @@ llegue a `NativeArena.free`). Sin stubs: los depthmaps se tienen que cargar de v
 - Perfil CPU (PZ_PROFILE_AT=400, build 41db5d5): top self-time = Object.monitorExit/Enter (~12.7 s), NativeArena.putByte (4.8 s), NativeArena.block (3 s), memCopy, fill; llamado desde TileDepthTexture.load / BrowserStb.decodePng. Causa: copia byte a byte sincronizada de los depthmaps (~45 MB).
 - Fix: NativeArena.putBytes/getBytes masivos (ByteBuffer.put(int,byte[],..)), copy = memmove masivo vía temporal, fill por bloques de 64 KiB; NativeMemory.memCopy(byte[]) usa los masivos.
 - Resultado r68b: a los 200 s se ve el logo TIS real (antes negro). El menú aún no se alcanza dentro de la ventana de ejecución; el log stdout de menu_pixels quedó vacío (sin perfil). Pendiente: repetir con ventana mayor + perfil y pasar a bulk los memCopy de short/int/float.
+
+## Ronda 69
+- memCopy bulk para short/char/int/long/float/double (vista LE sin registrar NativeArena.raw) y memASCII/UTF8/UTF16 con getBytes.
+- malloc vs calloc: nmemAlloc/nmemAlignedAlloc -> NativeArena.allocateUninit (bloque reciclado del pool sin poner a cero, como malloc real); nmemCalloc/memCalloc* siguen poniendo a cero. ByteBuffer.allocateDirect/allocate() por defecto ponen a cero.
+- r69 (PZ_SHOT_AFTER=400): se ve el diálogo real "TERMS OF SERVICE AND PRIVACY NOTICE" de PZ (mapache juez, botones ACCEPT/QUIT) — UI real de Lua/Xui renderizada, previa al menú principal.
+- Perfil a 300 s: getError 15.6 s (gl.mjs drainQueue llama gl.getError tras CADA llamada GL: sync roundtrip), NativeArena.free 1.8 s + removeIf 2.4 s (escaneo lineal de views por cada free). Próximos fixes.

@@ -33,7 +33,10 @@ public final class NativeArena {
         return backing;
     }
     private record View(Block block, int offset, int stride) { }
-    public static synchronized long allocate(long size, long alignment) {
+    public static synchronized long allocate(long size, long alignment) { return allocate(size, alignment, true); }
+    /** malloc semantics: a reused pooled block is NOT zeroed (fresh allocateDirect memory is still zero). */
+    public static synchronized long allocateUninit(long size, long alignment) { return allocate(size, alignment, false); }
+    private static long allocate(long size, long alignment, boolean zero) {
         if (size < 0 || size > Integer.MAX_VALUE) throw new IllegalArgumentException("Arena allocation size: " + size);
         if (alignment <= 0 || (alignment & (alignment - 1)) != 0 || alignment > 1L << 30) throw new IllegalArgumentException("Arena alignment");
         long address = Math.addExact(next, alignment - 1) & -alignment;
@@ -41,7 +44,7 @@ public final class NativeArena {
         ByteBuffer backing = size >= POOL_MIN ? takePooled((int) size) : null;
         ByteBuffer bytes;
         if (backing != null) {
-            var z = backing.duplicate().clear(); while (z.position() < size) z.put(ZEROS, 0, (int) Math.min(ZEROS.length, size - z.position()));
+            if (zero) { var z = backing.duplicate().clear(); while (z.position() < size) z.put(ZEROS, 0, (int) Math.min(ZEROS.length, size - z.position())); }
             bytes = backing.duplicate().clear().limit((int) size).slice().order(ByteOrder.LITTLE_ENDIAN);
         } else {
             bytes = ByteBuffer.allocateDirect((int) size).order(ByteOrder.LITTLE_ENDIAN);
@@ -106,6 +109,11 @@ public final class NativeArena {
         // through a temporary array, which gives memmove semantics.
         ByteBuffer from = buffer(source,(int) length), to = buffer(target,(int) length);
         byte[] tmp = new byte[(int) length]; from.get(0, tmp); to.put(0, tmp);
+    }
+    /** Unregistered little-endian view for bulk typed copies (bounds-checked, not tracked in views). */
+    public static synchronized ByteBuffer raw(long address, long size) {
+        Block b = block(address, size); int off = Math.toIntExact(address - b.address);
+        var d = b.bytes.duplicate(); d.limit(off + (int) size).position(off); return d.slice().order(ByteOrder.LITTLE_ENDIAN);
     }
     public static synchronized void putBytes(long address, byte[] data, int offset, int length) {
         Objects.checkFromIndexSize(offset, length, data.length); if (length == 0) return;
