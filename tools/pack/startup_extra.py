@@ -90,6 +90,12 @@ STAGED_REQUIRED = ('models/skinned/malebody.txt', 'models/skinned/femalebody.txt
 # AnimSets/*.xml are the animation-set definitions (14 MB, 2949 files); player.xml references the
 # Bob/Kate folders and is read by the anim-set loader after the meshes load.
 ANIMSETS_PREFIX = 'media/AnimSets/'
+# Round 64 (DebugLog 2026-10-30_15-02, right after UI_Loading_OnGameBoot): "Failed to load file
+# Guid table.." + FileNotFoundException. zombie.ZomboidFileSystem.loadFileGuidTable() (decompiled to
+# /tmp/r64/out_zfs/ZomboidFileSystem.java:1060) opens getMediaFile("fileGuidTable.xml"), i.e.
+# media/fileGuidTable.xml, which exists in the pinned copy (252,438 B) but was never mounted.
+# GUID lookups resolve asset paths, so the table is mounted whole (only that one file).
+GUID_TABLE = 'fileGuidTable.xml'
 
 
 def main():
@@ -137,6 +143,8 @@ def main():
             raise SystemExit(f'Missing required ui file: media/{relative}')
     if not (media / UI_PROGRESS_PREFIX).is_dir():
         raise SystemExit(f'Missing required ui folder: media/{UI_PROGRESS_PREFIX}')
+    if not (media / GUID_TABLE).is_file():
+        raise SystemExit(f'Missing required guid table: media/{GUID_TABLE}')
     for relative in LUA_FILES:
         if not (media / relative).is_file():
             raise SystemExit(f'Missing required lua file: media/{relative}')
@@ -176,6 +184,8 @@ def main():
             keep.append(name)
         elif name.startswith('media/' + UI_PROGRESS_PREFIX):
             keep.append(name)
+        elif name == 'media/' + GUID_TABLE:
+            keep.append(name)
         elif name.startswith('media/lua/shared/defines.lua') or name.startswith('media/lua/shared/Sandbox/'):
             keep.append(name)
     existing = {line.strip() for line in args.files.read_text().splitlines() if line.strip()}
@@ -200,7 +210,8 @@ def main():
           f'staged_meshes={sum(1 for n in added if n.startswith("media/models/skinned/"))} '
           f'staged_anims_x={sum(1 for n in added if n.startswith("media/anims_X/"))} '
           f'staged_anims_txt={sum(1 for n in added if n.startswith("media/anims/"))} '
-          f'animsets={sum(1 for n in added if n.startswith(ANIMSETS_PREFIX))}')
+          f'animsets={sum(1 for n in added if n.startswith(ANIMSETS_PREFIX))} '
+          f'guid_table={sum(1 for n in added if n == "media/" + GUID_TABLE)}')
 
 
 if __name__ == '__main__':

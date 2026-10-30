@@ -85,3 +85,5 @@ Bloqueo actual: NO está probado que la carga de modelos se cuelgue. diag172–1
    - FileTask creadas sin updateAsyncTransactions/ModelMesh#onLoaded -> la fibra del juego no se reanuda de Thread.sleep(10). Arreglo: redirigir Thread.sleep(J) del juego a port.shim.BrowserYield.pause() (como JdkSupport.yield), sin fingir el tiempo.
    - invokeOnRenderContext entered > returned por más de 30 s -> RenderContextQueueItem.waitUntilFinished pierde la reanudación; mirá pzRenderItemPending/pzYield.
 4. No investigues internos de TeaVM ni bytecode de FileSystemImpl sin un SAMPLE que lo justifique. Máximo 5 javap seguidos, y siempre una edición real con tool call por cada cosa que anuncies.
+
+- Pedido de Paolozky: guardá una captura al final de models_poll (o en cada RESULT) en test-results/roundN-models.png, para ver cómo se ve.

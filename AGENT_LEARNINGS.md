@@ -659,3 +659,30 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Señal nuevo a perseguir, no ignorar: `WebGL: INVALID_VALUE: clear: invalid mask` aparece en el
   console **justo** después de `UI_Loading_ModelsAnimations`; una línea de console WebGL después de la
   etapa de carga es evidencia directa del shim, no ruido.
+
+## Ronda 63 (2026-10-30) — dos causas reales bajo un mismo síntoma
+- Error de cobertura de transformer: `BufferUtilsCompatibility` sólo reescribía
+  `org.lwjglx.BufferUtils` (LWJGL2) y el juego llama **`org.lwjgl.BufferUtils`** (LWJGL3) desde
+  `VertexBufferObject$VertexArray.<init>`. El `ByteBuffer` quedaba una vista heap de TeaVM y
+  `MemoryUtil.memAddress` lanzaba `UnsupportedOperationException: Arena address requires a
+  registered/direct ByteBuffer view` dentro del render item de `ModelLoader#applyToMesh`, dejando
+  `ModelMesh#isReady()` false para siempre (bucle infinito en `ModelManager#initAnimationMeshes`).
+  Patrón a evitar: asumir que una sustitución de una librería cubre las dos familias de paquetes.
+  Mejor enfoque: en los transformers de sustitución usar `Set.of("org.lwjglx.X","org.lwjgl.X")` y
+  comprobar contra el constant pool del juego (`javap -c` o vineflower sobre la clase concreta), no
+  contra el nombre que usa nuestro shim.
+- Error de verificación: `grep -c "Arena address"` sobre el DebugLog **no** sirve para comprobar que
+  un fix funcionó (las líneas tienen prefijo de timestamp y tabuladores). Fuente de verdad: el
+  *tally* del DebugLog que la sonda ya calcula (`DEBUGLOG_FINAL.tally`) + los contadores de
+  `entered/returned` de la función implicada.
+- Error de observación: la sonda `models_poll.mjs` marcaba `RESULT stalled` en falso porque el "key"
+  incluía contadores del loop por frame (`Display#update`, `isLoadingAnimationMeshes`,
+  `ModelMesh#isReady`, `DoLoadingText`) que suben ~33/s. Patrón: un detector de estancamiento debe
+  ignorar el ruido por frame (lista `LOOP_NOISE`) y mirar sólo contadores que avanzan cuando el
+  arranque avanza.
+- Error de proceso: `java` y `javap` no están en `PATH`; sólo `.toolchain/jdk/bin`. Un `java -jar`
+  fallido en medio de una cadena deja la carpeta de salida vacía y parece un fallo del decompilador.
+  Mejor enfoque: exportar `JAVA_HOME` y usar `$JAVA_HOME/bin/...` en cada comando.
+- Error de invocación: `unzip` de `projectzomboid.jar` con un patrón inexistente (`zombie/core/utilities/*.class`)
+  abortaba la cadena con exit 11 y el `&&` cortaba el resto. Mejor enfoque: separar el `unzip` del
+  resto con `;` y verificar `ls` después.

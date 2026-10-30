@@ -379,3 +379,84 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
   `port.shim.GL30#glBindFramebuffer/glCheckFramebufferStatus/glFramebufferTexture2D/nglGenFramebuffers`).
   Los natives `org.lwjgl.opengl.GL11/GL30` no existen post-rename: se instrumentan los wrappers
   `port.shim.*` (confirmado en `pulse-map.json`, que sólo tiene `port.shim.*` y `org.lwjglx.*`).
+
+## Ronda 63 (2026-10-30, inicio 11:22)
+- 11:23 `git apply /datos/Projects/pz-web-code/patches/ronda63-models-poll.patch` OK ->
+  `tools/diag/models_poll.mjs` (nuevo, `node --check` OK). Primera corrida
+  `PZ_DIAG_MAX=900000 node tools/diag/models_poll.mjs` (`/tmp/diag-models.log`): **la carga de
+  modelos SÍ arranca y se estanca medido**, no es un artefacto de la ventana de espera.
+  Desde ~203 s de `performance.now()`: `ModelManager#initAnimationMeshes:entered=1`,
+  75 `FileTask_AbstractLoadModel#<init>` (75/75), 75 `#call` (75/75), 1 `ModelLoader#loadTxt`
+  (1/1, 108 getMatrix / 684 getVector / 684 getQuaternion), 1 `ModelMesh#onLoadedTxt` (1/1),
+  1 `ModelMesh#onBeforeReady` (1/1), 1 `ModelLoader#applyToMesh` (1/1) y
+  **`ModelLoader#lambda$applyToMesh$1:entered=1` con `returned=0` durante 170+ s** (SAMPLE 4..13,
+  203 s -> 353 s). El loop del juego sigue vivo: `Display#update` y `isLoadingAnimationMeshes`
+  suben 406 -> 5506 y `swaps` 408 -> 5508, o sea la fibra de render no está muerta; el lambda del
+  render item nunca termina. `ERRS []`, `error:""`, `progress` fijo en 672.
+- 11:31 Parche a la sonda (mismo archivo): excluye del "key" de estancamiento las claves del loop
+  por frame (`Display#update`, `isLoadingAnimationMeshes`, `ModelMesh#isReady`, `DoLoadingText`) y
+  vuelca `RING` + `DEBUGLOG` al detectar el stall. Segunda corrida con `PZ_STALL_MS=120000`
+  (`/tmp/diag-models2.log`): **RESULT stalled** y el DebugLog
+  (`/Zomboid/Logs/2026-10-30_14-34_DebugLog.txt`, 89 492 B) termina con las dos últimas entradas
+  `ERROR: ... java.lang.UnsupportedOperationException: Arena address requires a registered/direct
+  ByteBuffer view` (una de ellas "thrown during invoke()") justo después de
+  `UI_Loading_ModelsAnimations`. Eso es el `funcs.glBufferData(...)` del VBO.
+- 11:40 **Causa confirmada** (vineflower sobre clases extraídas del jar pinned, salida en
+  `/tmp/r63/...`, nada en el repo): `zombie.core.skinnedmodel.model.VertexBufferObject$VertexArray.<init>`
+  usa **`org.lwjgl.BufferUtils.createByteBuffer(numVertices * stride)`** (LWJGL3), y nuestro
+  transformer `BufferUtilsCompatibility` sólo reescribía `org.lwjglx.BufferUtils` (LWJGL2). El
+  buffer queda una vista heap de TeaVM, y `MemoryUtil.memAddress` en
+  `VertexBufferObject.LoadVBO -> funcs.glBufferData(GL_ARRAY_BUFFER, vertices.buffer, ...)` lanza
+  el `UnsupportedOperationException` del DebugLog. `ModelMesh#isReady()` sigue pidiendo `vb != null`
+  -> el loop de `initAnimationMeshes` no termina nunca.
+- 11:42 Fix: `BufferUtilsCompatibility` ahora reescribe **ambas** clases
+  (`TARGETS = Set.of("org.lwjglx.BufferUtils","org.lwjgl.BufferUtils")` + `import java.util.Set`).
+  `mvn -q -f port/pom.xml -Dmaven.repo.local=.toolchain/m2 compile` -> EXIT=0 (19 s).
+- 11:52 Build completo `scripts/build.sh --with-game` (log `build-round63-game.log`, termina `EXIT=0`, 7:50).
+  `boot.wasm` 144 949 958 B; `pulse-map.json` 2217 labels / 244 de `skinnedmodel`.
+- 12:04 Tercera corrida (`PZ_DIAG_MAX=900000 PZ_STALL_MS=120000 PZ_POLL_MS=20000`, `/tmp/diag-models3.log`,
+  `local-run-63.log`): **`RESULT reached OnGameBoot`** (~200 s). `ModelLoader#lambda$applyToMesh$1` 1/1,
+  `ModelManager#loadAnimsFromDir` 1/1, `initAnimationMeshes:returned=1`, `GameWindow#enter:returned=1`,
+  `mainThreadStep` 214/213 y `frameStep/logic/renderInternal` girando. En el tally del DebugLog
+  (`2026-10-30_15-02_DebugLog.txt`, 91 188 B) **desaparecieron** las entradas "Arena address".
+  La carga de modelos quedó resuelta por el fix de `BufferUtilsCompatibility` (LWJGL3 + LWJGL2).
+- 12:06 Nuevo bloqueo (primer error post-`UI_Loading_OnGameBoot`, DebugLog 15:04:35.461):
+  `java.lang.UnsupportedOperationException: Java_zombie_MapCollisionData_n_1setGameState__Ljava_lang_String_2Z`
+  -> native `zombie.MapCollisionData.setGameState(String,boolean)` sin implementación de navegador.
+  En la misma cadena: `LOG: Failed to load file Guid table..` + `FileNotFoundException` (tally 8; los 7
+  restantes de packs 2x son esperables y no se persiguen). Preexistentes no bloqueantes:
+  `glfwCreateCursor` x2, `System.loadLibrary RakNet64`, `Bullet.defineRagdollBodyDynamics`,
+  `Class cannot be created (missing no-arg constructor)` de scripts de entidades.
+- Siguiente paso concreto (orden): (1) módulo JSBody honesto para `MapCollisionData.setGameState`
+  siguiendo el patrón `NativeModuleCompatibility` + `port/natives/*` (nunca simular éxito; el resto de
+  sus natives sigue con fail-fast); (2) investigar el `Guid table` con `vfs.exists/list` vía evaluate,
+  no suponer la ruta; (3) instrumentar `MainScreenState`/`LoadingState`/`GameStateMachine`/`LuaManager`
+  en `StartupProgress` para ver el tramo del menú; (4) build + sonda con `PZ_DIAG_MAX` mayor.
+  `MENU_REACHED` sigue sin crearse: el menú todavía no se renderiza.
+## Ronda 64 (2026-10-30, inicio 12:07 tras cerrar la 63)
+- 12:10 Cierre documentado de la ronda 63 arriba (build + 3ª corrida `RESULT reached OnGameBoot` +
+  nuevo bloqueo `Java_zombie_MapCollisionData_n_1setGameState__Ljava_lang_String_2Z`).
+- 12:15 Fix del nativo: `port/src/main/java/port/natives/MapCollision64.java` (nuevo) registra en
+  `globalThis.pzRuntime.mapCollision.state` cada clave/valor que el juego publica, con contador por
+  tipo y `recordedKeys()` para Playwright. Los cinco overloads de `n_setGameState` (descriptores
+  confirmados con `javap -p -s`: `(Ljava/lang/String;Z/I/F/D/Ljava/lang/String;)V`) se reescriben con
+  `port/compiler/MapCollisionStateCompatibility.java` (patrón `LightingNativeCompatibility`, registrado
+  en `BuildCompiler` después de `NativeModuleCompatibility`). Las 12 natives restantes de
+  `zombie.MapCollisionData` (n_init, n_initMeta*, n_chunkUpdateTask, n_squareUpdateTask, n_pathTask,
+  n_hasDataForThread, n_shouldWait, n_update, n_save, n_stop) siguen con fail-fast por su nombre JNI.
+  `mvn -q -f port/pom.xml compile` EXIT=0.
+- 12:20 Causa del `Failed to load file Guid table..`: `ZomboidFileSystem.loadFileGuidTable()` abre
+  `getMediaFile("fileGuidTable.xml")`; el archivo existe en `PZ_HOME/media` (252 438 B) pero no está
+  montado en el VFS -> FileNotFoundException (es el FileNotFound nº 8).
+- 12:25 Montaje del Guid table: `startup_extra.py` (`GUID_TABLE='fileGuidTable.xml'`) lo exige y lo
+  agrega; `startup.txt` 4513 entradas. Re-empacado completo (ruta ignorada `build/`):
+  `pack.py --stage build/real-browser/stage --max-bytes 80000000` (3 blobs), `alias_index.py`
+  (24 + 99 alias), `case_alias.py` (2952 alias lowercase), `boot_options.py` ->
+  `index.json` **7589 entradas, 427 129 259 B montados de 536 870 912 B**. Verificado por HTTP sin
+  reiniciar el server: `/packs/index.json` 200 con `/media/fileGuidTable.xml` y
+  `/media/fileGuidTable.xml` -> 200, 252 438 B.
+- 12:28 `StartupProgress`: nuevo set `MENU_CLASSES_METHODS` sumado al gate de `transformClass` para
+  ver el tramo post-OnGameBoot: `GameStateMachine#update()V/#render()V`,
+  `MainScreenState#<init>()V/#enter()V/#render()V/#renderBackground()V/#update()...StateAction;/
+  #preloadBackgroundTextures()V`, `zombie.Lua.LuaManager#init()V/#LoadDirBase(Ljava/lang/String;)V/
+  #initChecksum()V`. Ojo: la clase real es `zombie.Lua.LuaManager` (no `zombie.scripting.lua.LuaManager`).

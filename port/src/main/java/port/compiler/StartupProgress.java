@@ -141,6 +141,26 @@ public final class StartupProgress implements ClassHolderTransformer {
         "port.shim.GL11#nglGenTextures(IJ)V",
         "port.shim.GL11#glTexImage2D(IIIIIIILjava/nio/ByteBuffer;)V",
         "port.shim.GL11#glTexParameteri(III)V");
+    // Round 64: the boot now reaches UI_Loading_OnGameBoot (see /tmp/diag-models3.log), so the
+    // next question is the state machine: does GameStateMachine#update() ever instantiate
+    // MainScreenState, and does LuaManager#init() complete? Method-only keys (descriptors from
+    // `javap -p -s` on the pinned jar: MainScreenState#enter()V, #render()V,
+    // #update()Lzombie/gameStates/GameStateMachine$StateAction;, GameStateMachine#update()V,
+    // #render()V, zombie.Lua.LuaManager#init()V and #LoadDirBase(Ljava/lang/String;)V; note the
+    // class is zombie.Lua.LuaManager, NOT zombie.scripting.lua.LuaManager) so the counts show the
+    // per-frame state traffic without pulling whole classes into the ring.
+    private static final Set<String> MENU_CLASSES_METHODS = Set.of(
+        "zombie.gameStates.GameStateMachine#update()V",
+        "zombie.gameStates.GameStateMachine#render()V",
+        "zombie.gameStates.MainScreenState#<init>()V",
+        "zombie.gameStates.MainScreenState#enter()V",
+        "zombie.gameStates.MainScreenState#render()V",
+        "zombie.gameStates.MainScreenState#renderBackground()V",
+        "zombie.gameStates.MainScreenState#update()Lzombie/gameStates/GameStateMachine$StateAction;",
+        "zombie.gameStates.MainScreenState#preloadBackgroundTextures()V",
+        "zombie.Lua.LuaManager#init()V",
+        "zombie.Lua.LuaManager#LoadDirBase(Ljava/lang/String;)V",
+        "zombie.Lua.LuaManager#initChecksum()V");
     // Round 32: java.lang.Thread$SleepHandler and org.teavm.runtime.Fiber$AsyncCallbackImpl are
     // deliberately NOT instrumented: both run inside the suspend/resume machinery, and injected
     // code there corrupts the WasmGC fiber stack (see the removal of java.lang.Thread above).
@@ -274,6 +294,7 @@ public final class StartupProgress implements ClassHolderTransformer {
             if(!METHODS.contains(key)&&!EXTRA_METHODS.contains(key)&&!CLASSES.contains(cls.getName())
                 &&!EXTRA_CLASSES.contains(cls.getName())&&!ANIM_CLASSES.contains(cls.getName())
                 &&!FBO_CLASSES_METHODS.contains(key)
+                &&!MENU_CLASSES_METHODS.contains(key)
                 &&!own(cls.getName()))continue;
             if(method.getProgram()==null)continue;
             Program program=method.getProgram();
