@@ -10,6 +10,10 @@ public final class NativeArena {
     private static final IdentityHashMap<Buffer, View> views = new IdentityHashMap<>();
     private static final List<java.lang.ref.WeakReference<Buffer>> retired=new ArrayList<>();
     private static long next = 65536;
+    // Last block hit by block(): per-byte access (TileDepthTexture.load, Texture uploads) hits the
+    // same block millions of times; the TreeMap floor lookup per byte dominated the CPU profile
+    // (menu-r65-prof-profile.txt). Same bounds check, cleared when that block is freed.
+    private static Block last;
     private record Block(long address, ByteBuffer bytes) { }
     private record View(Block block, int offset, int stride) { }
     public static synchronized long allocate(long size, long alignment) {
@@ -25,6 +29,7 @@ public final class NativeArena {
         if (address == 0) return;
         Block block = blocks.remove(address);
         if (block == null) throw new IllegalArgumentException("Arena free requires a live allocation base: " + address);
+        if (last == block) last = null;
         views.entrySet().removeIf(e -> {if(e.getValue().block != block)return false;retired.add(new java.lang.ref.WeakReference<>(e.getKey()));return true;});
     }
     public static synchronized boolean live(long address, long size) {
@@ -33,8 +38,10 @@ public final class NativeArena {
         return entry != null && address - entry.getKey() <= entry.getValue().bytes.capacity() - size;
     }
     private static Block block(long address, long size) {
+        Block hit = last;
+        if (hit != null && size >= 0 && address >= hit.address && address - hit.address <= hit.bytes.capacity() - size) return hit;
         if (!live(address, size)) throw new IllegalStateException("Invalid/freed arena address or bounds: " + address + " + " + size);
-        return blocks.floorEntry(address).getValue();
+        return last = blocks.floorEntry(address).getValue();
     }
     public static synchronized ByteBuffer buffer(long address, int size) {
         var block = block(address, size); int offset = Math.toIntExact(address - block.address);
