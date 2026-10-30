@@ -38,7 +38,7 @@ await page.addInitScript((N) => {
   globalThis.requestAnimationFrame = cb => raf(ts => {
     const r = cb(ts); S.frames++;
     const n = (globalThis.pzGameCounts || {})['zombie.gameStates.MainScreenState#render()V:returned'] || 0;
-    if (S.gl && n >= N && S.shots.length < 5) {
+    if (S.gl && (n >= N || (globalThis.__pxForce && S.frames % 30 === 0)) && S.shots.length < 5) {
       const gl = S.gl, w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
       const prev = S.getFb(); gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       const px = new Uint8Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
@@ -57,6 +57,7 @@ await page.addInitScript((N) => {
 await page.goto(`http://127.0.0.1:${PORT}/game.html?maplog=1`, { waitUntil: 'domcontentloaded' });
 const t0 = Date.now(); let res = null; let profiled = false;
 const PROFILE_AT = Number(process.env.PZ_PROFILE_AT || '0'); // seconds; 0 = off
+const SHOT_AFTER = Number(process.env.PZ_SHOT_AFTER || '0'); // seconds; 0 = only after MainScreenState renders
 async function profile() { // CPU profile of the main thread, top self-time functions (diagnostic only)
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 2000 });
@@ -70,6 +71,7 @@ async function profile() { // CPU profile of the main thread, top self-time func
 while (Date.now() - t0 < MAX) {
   await page.waitForTimeout(20000);
   if (PROFILE_AT && !profiled && Date.now() - t0 > PROFILE_AT * 1000) { profiled = true; try { await race(profile(), 120000); } catch (e) { console.log('PROFILE_FAIL', String(e)); } }
+  if (SHOT_AFTER && Date.now() - t0 > SHOT_AFTER * 1000) { try { await race(page.evaluate(() => { globalThis.__pxForce = true; return Object.keys(globalThis.pzGameCounts || {}).filter(k => /State#/.test(k)).join(' '); }).then(k => console.log('FORCE states:', k)), 60000); } catch (e) {} }
   try { res = await race(page.evaluate(() => { const S = globalThis.__px; return { frames: S.frames, attrs: S.attrs, viewports: S.viewports, canvas: S.canvas && [S.canvas.width, S.canvas.height], winEvents: (globalThis.pzRuntime?.window?.events || []).filter(e => /created|resized|init/.test(e.type)).slice(0, 8), shots: S.shots.length, out: S.shots.length >= 3 ? S.shots : null,
     renders: Object.entries(globalThis.pzGameCounts || {}).filter(([k]) => /MainScreenState#render/.test(k)) }; }), 90000); }
   catch (e) { console.log('SAMPLE_FAIL', String(e)); continue; }

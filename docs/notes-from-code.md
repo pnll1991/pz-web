@@ -605,3 +605,20 @@ Excepciones (javap sobre el jar fijado, sin copiar código):
   `RagdollDebugWindow`). Después del error el log sigue (`UI_Loading_Clothing`) y llega al menú. **No bloquea
   el menú.** Sí faltan los parámetros de ragdoll en Bullet: eso importa dentro de la partida, no en el
   menú.
+
+## Ronda 66 (Code, 30/10 ~17:25 hora de Mendoza) — bloqueo real: memoria de buffers directos
+Build 16:43 (incluye 12f8017 PNG grandes y 102ae4c cache de NativeArena). Corrida única de
+`tools/diag/menu_pixels.mjs` (:8097, PZ_HOME pinned, nuevo `PZ_SHOT_AFTER=560` para capturar aunque
+`MainScreenState#render` no llegue). Restos de corridas previas (chrome headless y server :8097) matados.
+- Ya no hay "Invalid image size" de depthmaps, pero `TileDepthTextures.createTileset` →
+  `TilesetDepthTexture.load` → `BrowserStb.decodePng` → `NativeMemory.memAlloc` → `NativeArena.allocate` →
+  `ByteBuffer.allocateDirect` → `Heap.allocFromFreeRecord` termina en **RuntimeError: memory access out of
+  bounds** (pageerror). Es el mismo tipo de error que los 2 pageerror de la ronda 65: el heap de buffers
+  directos de TeaVM se queda sin lugar/corrompe con depthmaps de 1024x11008 RGBA (~45 MB cada uno).
+- Después del error la wasm queda muerta: rAF sigue (~60 fps) pero 0 draws; `MainScreenState#render`
+  nunca corre (sí `<init>`, `preloadBackgroundTextures`, `loadIcons`). Captura: ~/pzshots/menu-r66.png (negro, 5 % pixeles casi negros).
+- Viewport: ventana creada 640x480 y luego `resized` 1280x720; ya hay viewports 0,0,1280,720 (355) además de 640x480 (46). El problema del recuadro chico probablemente quedó resuelto por a449524, falta verlo con el menú.
+- Antes de 12f8017 (corrida 16:37) los depthmaps fallaban con "Invalid image size" y el arranque avanzaba muy lento (TreeMap de NativeArena), tampoco llegaba al menú.
+Próximo paso: subir el heap de buffers directos (`TeaVMTool.setMinDirectBuffersSize` / `WasmGCTarget.setBufferHeapMinSize`,
+hoy sin configurar en BuildCompiler) y/o liberar el buffer de stb tras subir la textura (revisar que `stbi_image_free`
+llegue a `NativeArena.free`). Sin stubs: los depthmaps se tienen que cargar de verdad.
