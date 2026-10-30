@@ -20,6 +20,14 @@ from pathlib import Path
 TEXTUREPACKS = ('UI.pack', 'UI2.pack', 'IconsMoveables.pack', 'RadioIcons.pack',
                 'ApComUI.pack', 'Mechanics.pack', 'WeatherFx.pack')
 LUA_FILES = ('lua/shared/defines.lua',)
+# Round 65 (debuglog-round65.txt): "UI_Loading_Lua" passes with nothing loaded because only
+# defines.lua and Sandbox/ were mounted, so LuaManager.LoadDirBase finds no shared/client/server
+# scripts and the Lua MainScreen (logo + buttons) never exists. The whole media/lua tree is mounted
+# except Translate/ for languages other than EN (Translate is 110 MB of the 131 MB).
+LUA_PREFIX = 'media/lua/'
+LUA_TRANSLATE_PREFIX = 'media/lua/shared/Translate/'
+LUA_TRANSLATE_KEEP = ('EN/',)
+LUA_REQUIRED = ('lua/client/OptionScreens/MainScreen.lua',)
 
 # Round 52 correction, verified against the pinned bytecode: javap -p -c zombie.core.Core shows
 #   public boolean getOptionTexture2x();  0: iconst_1  1: ireturn
@@ -166,7 +174,7 @@ def main():
     for prefix in MENU_UI_PREFIXES:
         if not (home / prefix).is_dir():
             raise SystemExit(f'Missing required menu ui folder: {prefix}')
-    for relative in LUA_FILES:
+    for relative in LUA_FILES + LUA_REQUIRED:
         if not (media / relative).is_file():
             raise SystemExit(f'Missing required lua file: media/{relative}')
     if not (home / DEPTHMAP_REQUIRED).is_file():
@@ -211,7 +219,10 @@ def main():
             keep.append(name)
         elif name == 'media/' + GUID_TABLE:
             keep.append(name)
-        elif name.startswith('media/lua/shared/defines.lua') or name.startswith('media/lua/shared/Sandbox/'):
+        elif name.startswith(LUA_TRANSLATE_PREFIX):
+            if name[len(LUA_TRANSLATE_PREFIX):].startswith(LUA_TRANSLATE_KEEP):
+                keep.append(name)
+        elif name.startswith(LUA_PREFIX):
             keep.append(name)
     existing = {line.strip() for line in args.files.read_text().splitlines() if line.strip()}
     added = [name for name in keep if name not in existing]
