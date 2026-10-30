@@ -92,6 +92,7 @@ public final class BuildCompiler {
             tool.getTransformers().add(AssertionDisabledCompatibility.class.getName());
             tool.getTransformers().add(WindowCompatibility.class.getName());
             tool.getTransformers().add(GLCompatibility.class.getName());
+            tool.getTransformers().add(FBOSupportCompatibility.class.getName());
             tool.getTransformers().add(StbCompatibility.class.getName());
             tool.getTransformers().add(OptionalTelemetry.class.getName());
             if (game) {

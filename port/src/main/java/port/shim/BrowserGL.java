@@ -39,6 +39,28 @@ public final class BrowserGL {
     @JSBody(params="name", script="return globalThis.pzRuntime.gl.hasEntrypoint(name) ? 1 : 0;")
     private static native int hasEntrypointRaw(String name);
 
+    /**
+     * The bridge's real framebuffer-object probe: it creates a WebGL2 texture, attaches it to a
+     * WebGL2 framebuffer with a DEPTH24_STENCIL8 renderbuffer, clears through it and reads a pixel
+     * back. The bridge caches the result and records the WebGL2 status, so nothing here invents a
+     * capability: it is 1 only when WebGL2 reported FRAMEBUFFER_COMPLETE and the clear actually
+     * rendered.
+     */
+    @JSBody(script="return globalThis.pzRuntime.gl.framebufferProbe().complete ? 1 : 0;")
+    private static native int fboProbeCompleteRaw();
+
+    /** Diagnostic string for the same probe: status name, steps, readback and WebGL2 errors. */
+    @JSBody(script="return JSON.stringify(globalThis.pzRuntime.gl.framebufferProbe());")
+    private static native String fboProbeReport();
+
+    public static boolean fboProbeComplete() {
+        return fboProbeCompleteRaw() != 0;
+    }
+
+    public static String fboProbeReportText() {
+        return fboProbeReport();
+    }
+
     public static int versionMajor() {
         int dot = apiVersion().indexOf('.');
         return dot < 1 ? 0 : parse(apiVersion().substring(0, dot));

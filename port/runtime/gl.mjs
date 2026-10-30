@@ -137,6 +137,10 @@ export class GLBridge {
     this.pendingErrors = []; // [{seq, name, code}] oldest first
     this.uploadFailCount = 0;   // failed level uploads (glTexImage2D/glTexSubImage2D)
     this.firstUploadFailure = undefined;
+    // Result of the real framebuffer-object probe (see framebufferProbe). Undefined until the
+    // game's FBO gate asks for it; the gate is what triggers it, never a synthetic default.
+    this.fboProbe = undefined;
+    this.fboProbeRuns = 0;
     this.lost = false;
     this.capabilities = new Map(); // desktop capability token -> {enabled, webgl} actually applied
     this.fixedFunctionCaps = new Map(); // desktop-only token -> last requested state, recorded not applied
@@ -1716,6 +1720,79 @@ export class GLBridge {
     if (name === undefined || this.context[name] === undefined)
       throw new Error(`WebGL2 has no renderbuffer internalformat for GL token 0x${(internalformat >>> 0).toString(16)}`);
     this.call('renderbufferStorage', this.context.RENDERBUFFER, this.context[name], Number(width), Number(height));
+  }
+  /**
+   * Real framebuffer-object probe for the game's FBO gate. The desktop capability bits
+   * (GLCapabilities.OpenGL30 / GL_ARB_framebuffer_object) are read from a host symbol table that
+   * does not exist here, so the gate asks this instead: a WebGL2 texture is created, filled with
+   * real pixels, attached to a WebGL2 framebuffer, given a DEPTH24_STENCIL8 renderbuffer exactly
+   * as zombie.core.textures.TextureFBODepth does, and the probe finally clears and reads a pixel
+   * back through it. `complete` is true only when WebGL2 itself reported FRAMEBUFFER_COMPLETE and
+   * the readback matched the clear colour, so an incomplete FBO is never reported as usable.
+   * The result is cached (the gate is asked once per FBO) and every WebGL2 error the probe caused
+   * is recorded instead of left in the game's error queue.
+   */
+  framebufferProbe() {
+    if (this.fboProbe !== undefined) return this.fboProbe;
+    if (this.lost) throw new Error('WebGL context lost: the framebuffer probe needs a live context');
+    const gl = this.context;
+    const startSeq = this.callSeq;
+    const previousDraw = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING);
+    const previousRead = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);
+    const previousTexture = gl.getParameter(gl.TEXTURE_BINDING_2D);
+    const report = { complete: false, status: null, statusName: null, steps: [], rendered: false,
+      readback: null, errors: [], size: 64 };
+    const texture = this.call('createTexture');
+    const framebuffer = this.call('createFramebuffer');
+    const renderbuffer = this.call('createRenderbuffer');
+    try {
+      this.call('bindTexture', gl.TEXTURE_2D, texture);
+      this.call('texParameteri', gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      this.call('texParameteri', gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      this.call('texParameteri', gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      this.call('texParameteri', gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      const size = report.size;
+      const pixels = new Uint8Array(size * size * 4);
+      for (let i = 0; i < pixels.length; i += 4) { pixels[i] = 13; pixels[i + 1] = 210; pixels[i + 2] = 90; pixels[i + 3] = 255; }
+      this.call('texImage2D', gl.TEXTURE_2D, 0, gl.RGBA8, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      this.call('bindFramebuffer', gl.FRAMEBUFFER, framebuffer);
+      this.call('framebufferTexture2D', gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+      const colorStatus = Number(this.call('checkFramebufferStatus', gl.FRAMEBUFFER));
+      report.steps.push({ step: 'color attachment', status: this.webglConstantName(colorStatus) ?? String(colorStatus) });
+      this.call('bindRenderbuffer', gl.RENDERBUFFER, renderbuffer);
+      this.call('renderbufferStorage', gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, size, size);
+      this.call('bindRenderbuffer', gl.RENDERBUFFER, null);
+      this.call('framebufferRenderbuffer', gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, renderbuffer);
+      report.status = Number(this.call('checkFramebufferStatus', gl.FRAMEBUFFER));
+      report.statusName = this.webglConstantName(report.status) ?? String(report.status);
+      report.steps.push({ step: 'depth-stencil attachment', status: report.statusName });
+      if (report.status === gl.FRAMEBUFFER_COMPLETE) {
+        // "FRAMEBUFFER_COMPLETE" alone is not enough: the FBO has to actually take draws, which is
+        // what TextureFBO.initInternal does next. A clear through it and a readback prove that.
+        this.call('viewport', 0, 0, size, size);
+        this.call('clearColor', 0.5, 0.25, 0.75, 1);
+        this.call('clear', gl.COLOR_BUFFER_BIT);
+        const read = new Uint8Array(4);
+        this.call('readPixels', 0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, read);
+        report.readback = [...read];
+        report.rendered = read[0] === 128 && read[1] === 64 && read[2] === 192 && read[3] === 255;
+      }
+      report.complete = report.status === gl.FRAMEBUFFER_COMPLETE && report.rendered;
+    } finally {
+      this.call('bindFramebuffer', gl.FRAMEBUFFER, previousDraw ?? null);
+      this.call('bindTexture', gl.TEXTURE_2D, previousTexture ?? null);
+      this.call('deleteFramebuffer', framebuffer);
+      this.call('deleteRenderbuffer', renderbuffer);
+      this.call('deleteTexture', texture);
+      this.call('bindFramebuffer', gl.READ_FRAMEBUFFER, previousRead ?? null);
+      report.errors = this.internalErrors(startSeq + 1);
+      // The game reads its own errors through glGetError; errors caused by this probe must not be
+      // blamed on the game's next check. They are kept in report.errors, not silently discarded.
+      this.pendingErrors = this.pendingErrors.filter((e) => e.seq <= startSeq);
+    }
+    this.fboProbe = report;
+    this.fboProbeRuns = (this.fboProbeRuns || 0) + 1;
+    return report;
   }
   /* --- Draw calls (GL11 natives) ------------------------------------------------------ */
   drawElements(mode, count, type, indices) {
