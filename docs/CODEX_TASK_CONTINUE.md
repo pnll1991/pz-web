@@ -76,3 +76,12 @@ Luego, en tools/pack/startup_extra.py, montá la salida de python3 tools/pack/x_
 - Prohibido investigar internas de TeaVM (org.teavm.parsing.*, RenamingClassHolderSource, substitute*); para sustituir clases, copiá un transformer existente de port/src/main/java/port/compiler/.
 - Prohibido reimplementar librerías nativas enteras: buscá primero un camino del juego que no las use.
 - Máximo 15 lecturas entre dos ediciones.
+
+## Ronda 63 — medir antes de arreglar (PRIORIDAD sobre secciones anteriores)
+Bloqueo actual: NO está probado que la carga de modelos se cuelgue. diag172–175 esperan 170–175 s y la carga recién empieza a los ~187 s. FBO OK (FRAMEBUFFER_COMPLETE).
+1. Aplicá /datos/Projects/pz-web-code/patches/ronda63-models-poll.patch (git apply) y corré UNA vez: PZ_DIAG_MAX=900000 node tools/diag/models_poll.mjs | tee /tmp/diag-models.log. Nada de clonar diagNNN.mjs con espera fija.
+2. Si sale 'RESULT reached OnGameBoot': la carga funciona; siguiente bloqueo = menú principal.
+3. Si sale 'RESULT stalled', mirá el último SAMPLE:
+   - FileTask creadas sin updateAsyncTransactions/ModelMesh#onLoaded -> la fibra del juego no se reanuda de Thread.sleep(10). Arreglo: redirigir Thread.sleep(J) del juego a port.shim.BrowserYield.pause() (como JdkSupport.yield), sin fingir el tiempo.
+   - invokeOnRenderContext entered > returned por más de 30 s -> RenderContextQueueItem.waitUntilFinished pierde la reanudación; mirá pzRenderItemPending/pzYield.
+4. No investigues internos de TeaVM ni bytecode de FileSystemImpl sin un SAMPLE que lo justifique. Máximo 5 javap seguidos, y siempre una edición real con tool call por cada cosa que anuncies.

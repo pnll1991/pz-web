@@ -554,3 +554,18 @@ Si loadTxt falla con 0 vértices, arreglá el conversor (no el juego).
 - Prohibido reimplementar librerías nativas enteras (jassimp, assimp) en Java: buscá primero un camino del juego que no las use.
 - Máximo 15 comandos de lectura en total entre dos ediciones.
 ```
+
+## Ronda 63 (diagnóstico de Code, 30/10 11:20 hora de Mendoza)
+
+Conclusión: no hay un cuelgue medido en la carga de modelos. Las sondas terminan antes de que la carga tenga tiempo de correr.
+
+Evidencia:
+- diag172/173/174 usan `PZ_DIAG_WAIT=170000/175000` (local-run-62.log) y sacan una sola foto.
+- En diag174, `ModelManager#create` entra a los 187211 ms (performance.now) y la foto FIBERS es de `now: 188556`. La carga de modelos llevaba 1,3 s. En ese lapso: 75 `FileTask_AbstractLoadModel#<init>`, 2 `isLoadingAnimationMeshes`, 13/12 `invokeOnRenderContext` y la entrada sin retorno es de 188533, 23 ms antes de la foto.
+- En diag173 el ring termina en 186150 con `invokeOnRenderContext` recién entrado (también ms antes de la foto). El "entered 15 / returned 14" es el último instante muestreado, no un estancamiento.
+- diag168 (09:00) y diag170 también terminan en UI_Loading_ModelsAnimations. Las claves UI_EpilepsyWarning_* son claves de traducción cargadas, no avance real. No hay regresión entre d584901 y d75c415 que explique esto. El FBO pasa (FBO_PROBE FRAMEBUFFER_COMPLETE; TextureFBO init devuelve).
+- Bucle real (javap de ModelManager.initAnimationMeshes(Z), no copiado): `while (isLoadingAnimationMeshes()) { fileSystem.updateAsyncTransactions(); Thread.sleep(10); Core.StartFrame/EndFrame/StartFrameUI/EndFrameUI }`. Las FileTask corren en un `Executors.newFixedThreadPool(availableProcessors)` (port.compat Pool: fibras TeaVM). Solo avanzan cuando la fibra del juego cede en `Thread.sleep(10)` o en `Object.wait` de `RenderContextQueueItem.waitUntilFinished`.
+
+Riesgos reales a medir (no confirmados): `Thread.sleep(10)` del juego no está redirigido a BrowserYield.pause (ronda 31: sleep(0) no reanudaba), y cada iteración hace un `invokeOnRenderContext` que espera a la fibra de render.
+
+Parche: /datos/Projects/pz-web-code/patches/ronda63-models-poll.patch agrega `tools/diag/models_poll.mjs`. Es una sonda que muestrea cada 15 s hasta 15 min y corta en OnGameBoot o tras 180 s sin cambios. Solo agrega un archivo, no compila nada y no finge éxito.
