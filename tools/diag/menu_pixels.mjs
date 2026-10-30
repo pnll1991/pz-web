@@ -4,7 +4,7 @@ import { chromium } from '@playwright/test';
 import { writeFileSync } from 'node:fs';
 const PORT = process.env.PZ_DIAG_PORT || '8097';
 const MAX = Number(process.env.PZ_DIAG_MAX || '900000');
-const N = Number(process.env.PZ_RENDERS || '3');
+const N = Number(process.env.PZ_RENDERS || '6');
 const OUT = process.env.PZ_SHOT || `${process.env.HOME}/pzshots/menu-64b.png`;
 const race = (p, ms) => Promise.race([p, new Promise((_, rj) => setTimeout(() => rj(new Error('timeout')), ms))]);
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome',
@@ -33,9 +33,7 @@ await page.addInitScript((N) => {
   const raf = globalThis.requestAnimationFrame.bind(globalThis);
   globalThis.requestAnimationFrame = cb => raf(ts => {
     const r = cb(ts); S.frames++;
-    const k = 'zombie.gameStates.MainScreenState#render(J)V:returned';
-    const c = globalThis.pzGameCounts || {}; let n = 0;
-    for (const [key, v] of Object.entries(c)) if (key.startsWith('zombie.gameStates.MainScreenState#render') && key.endsWith(':returned')) n = Math.max(n, v);
+    const n = (globalThis.pzGameCounts || {})['zombie.gameStates.MainScreenState#render()V:returned'] || 0;
     if (S.gl && n >= N && S.shots.length < 5) {
       const gl = S.gl, w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
       const prev = S.getFb(); gl.bindFramebuffer(gl.FRAMEBUFFER, null);
