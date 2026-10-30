@@ -101,13 +101,25 @@ public final class NativeArena {
     public static long address(Buffer buffer) { return address(buffer,buffer.position()); }
     public static synchronized void copy(long source, long target, long length) {
         if (length < 0 || length > Integer.MAX_VALUE) throw new IllegalArgumentException("Arena copy size");
-        // memmove semantics for overlap; bounded temporary rather than corrupting aliases.
+        if (length == 0) return;
+        // Bulk memmove (was one get/put per byte: 45 MB depthmaps took minutes in wasm). Overlap goes
+        // through a temporary array, which gives memmove semantics.
         ByteBuffer from = buffer(source,(int) length), to = buffer(target,(int) length);
-        if (target > source && target - source < length) for (int i=(int)length-1;i>=0;i--) to.put(i,from.get(i));
-        else for (int i=0;i<length;i++) to.put(i,from.get(i));
+        byte[] tmp = new byte[(int) length]; from.get(0, tmp); to.put(0, tmp);
+    }
+    public static synchronized void putBytes(long address, byte[] data, int offset, int length) {
+        Objects.checkFromIndexSize(offset, length, data.length); if (length == 0) return;
+        Block b = block(address, length); b.bytes.put(Math.toIntExact(address - b.address), data, offset, length);
+    }
+    public static synchronized void getBytes(long address, byte[] data, int offset, int length) {
+        Objects.checkFromIndexSize(offset, length, data.length); if (length == 0) return;
+        Block b = block(address, length); b.bytes.get(Math.toIntExact(address - b.address), data, offset, length);
     }
     public static synchronized void fill(long address, long length, byte value) {
-        var data = buffer(address,Math.toIntExact(length)); for (int i=0;i<data.capacity();i++) data.put(i,value);
+        if (length == 0) return;
+        var data = buffer(address,Math.toIntExact(length)); byte[] chunk = new byte[(int) Math.min(length, 1 << 16)];
+        if (value != 0) Arrays.fill(chunk, value);
+        while (data.hasRemaining()) data.put(chunk, 0, Math.min(chunk.length, data.remaining()));
     }
     public static synchronized long reallocate(long address, long size) {
         if (address == 0) return allocate(size,8);

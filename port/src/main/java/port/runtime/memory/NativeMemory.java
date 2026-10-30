@@ -57,9 +57,9 @@ public final class NativeMemory {
     public static byte memGetByte(long address){return NativeArena.getByte(address);}
     public static void memPutByte(long address,byte value){NativeArena.putByte(address,value);}
     public static void memCopy(byte[] data,long address){memCopy(data,address,0,data.length);}
-    public static void memCopy(byte[] data,long address,int offset,int length){Objects.checkFromIndexSize(offset,length,data.length);for(int i=0;i<length;i++)NativeArena.putByte(address+(long)i*1,data[offset+i]);}
+    public static void memCopy(byte[] data,long address,int offset,int length){Objects.checkFromIndexSize(offset,length,data.length);NativeArena.putBytes(address,data,offset,length);}
     public static void memCopy(long address,byte[] data){memCopy(address,data,0,data.length);}
-    public static void memCopy(long address,byte[] data,int offset,int length){Objects.checkFromIndexSize(offset,length,data.length);for(int i=0;i<length;i++)data[offset+i]=NativeArena.getByte(address+(long)i*1);}
+    public static void memCopy(long address,byte[] data,int offset,int length){Objects.checkFromIndexSize(offset,length,data.length);NativeArena.getBytes(address,data,offset,length);}
     public static long memAddress(ShortBuffer buffer){return NativeArena.address(buffer);}
     public static long memAddress(ShortBuffer buffer,int position){return NativeArena.address(buffer,position);}
     public static long memAddress0(ShortBuffer buffer){return NativeArena.address(buffer,0);}

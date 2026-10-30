@@ -635,3 +635,8 @@ llegue a `NativeArena.free`). Sin stubs: los depthmaps se tienen que cargar de v
 - Corrida 18:50 (build 18:48): sin pageerror en 740 s. Pero el arranque sigue en trabajo sincrónico después de
   `exit TISLogoState` (~4 frames cada 40 s); `MainScreenState#render` todavía no corre. Captura: ~/pzshots/menu-r67*.png.
 - Próximo: perfil CPU (`PZ_PROFILE_AT=400`) para ver qué consume ese tramo (sospecha: decode PNG/zeroing de depthmaps o NativeArena).
+
+## Ronda 68
+- Perfil CPU (PZ_PROFILE_AT=400, build 41db5d5): top self-time = Object.monitorExit/Enter (~12.7 s), NativeArena.putByte (4.8 s), NativeArena.block (3 s), memCopy, fill; llamado desde TileDepthTexture.load / BrowserStb.decodePng. Causa: copia byte a byte sincronizada de los depthmaps (~45 MB).
+- Fix: NativeArena.putBytes/getBytes masivos (ByteBuffer.put(int,byte[],..)), copy = memmove masivo vía temporal, fill por bloques de 64 KiB; NativeMemory.memCopy(byte[]) usa los masivos.
+- Resultado r68b: a los 200 s se ve el logo TIS real (antes negro). El menú aún no se alcanza dentro de la ventana de ejecución; el log stdout de menu_pixels quedó vacío (sin perfil). Pendiente: repetir con ventana mayor + perfil y pasar a bulk los memCopy de short/int/float.
