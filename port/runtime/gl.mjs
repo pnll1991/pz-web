@@ -122,6 +122,21 @@ export class GLBridge {
     this.textureUnits = [null]; // unit index -> bound texture handle (0/null = none)
     this.activeUnit = 0;        // unit index set by glActiveTexture
     this.nextHandle = 1; // 0 is reserved for "none", as in desktop GL
+    // Diagnosis of upload failures (observability only). The WebGL2 error queue is sticky: an
+    // error raised by an earlier call is reported by the *next* glGetError. callLog keeps the
+    // ordered calls and lastErrorDrainSeq marks where the game last drained the queue, so a
+    // failing glTexImage2D can be attributed to a real call instead of guessing.
+    this.callSeq = 0;
+    this.callLog = [];       // [{seq, name}] last 160 WebGL2 calls actually reached
+    this.errorDrains = [];   // [{seq, code, fromSeq, fromCall}] last 32 glGetError with an error
+    this.lastErrorDrainSeq = 0;
+    // Emulated desktop error queue. WebGL2's queue is FIFO and glGetError pops it, so the bridge
+    // drains it after every call into this list and answers glGetError from here. Each error is
+    // still reported once, in order, and now carries the call that really produced it (the sticky
+    // queue otherwise blames whichever call checks first).
+    this.pendingErrors = []; // [{seq, name, code}] oldest first
+    this.uploadFailCount = 0;   // failed level uploads (glTexImage2D/glTexSubImage2D)
+    this.firstUploadFailure = undefined;
     this.lost = false;
     this.capabilities = new Map(); // desktop capability token -> {enabled, webgl} actually applied
     this.fixedFunctionCaps = new Map(); // desktop-only token -> last requested state, recorded not applied
@@ -140,6 +155,9 @@ export class GLBridge {
   }
   call(name, ...args) {
     if (this.lost) throw new Error('WebGL context lost: reload required');
+    this.callSeq++;
+    this.callLog.push({ seq: this.callSeq, name });
+    if (this.callLog.length > 160) this.callLog.shift();
     this.calls[name] = (this.calls[name] || 0) + 1;
     if (name === 'viewport') this.viewportBox = args.slice(0, 4).map(Number);
     if (name === 'scissor') this.scissorBox = args.slice(0, 4).map(Number);
@@ -147,7 +165,34 @@ export class GLBridge {
     if (typeof method !== 'function') throw new Error(`Unsupported WebGL function: ${name}`);
     const result = method.apply(this.context, args);
     this.recordAttrib(name, args);
+    this.drainQueue(name, this.callSeq);
     return result;
+  }
+  /** Move whatever WebGL2 queued for the call just made into the emulated desktop queue. */
+  drainQueue(name, seq) {
+    const gl = this.context;
+    if (typeof gl.getError !== 'function') return;
+    for (;;) {
+      const code = gl.getError();
+      if (code === gl.NO_ERROR || code === undefined) return;
+      this.pendingErrors.push({ seq, name, code });
+      if (this.pendingErrors.length > 512) this.pendingErrors.shift();
+    }
+  }
+  /** Errors the emulated queue attributes to one specific call. */
+  errorsFor(seq) { return this.pendingErrors.filter((e) => e.seq === seq); }
+  /**
+   * Error check for calls this bridge makes on its own behalf. glGetError belongs to the game (it
+   * pops the emulated queue), so an internal check must not consume it: it looks at what the queue
+   * attributes to its own call instead.
+   */
+  internalErrors(sinceSeq) {
+    return this.pendingErrors.filter((e) => e.seq >= sinceSeq).map((e) =>
+      `${this.webglConstantName(e.code) ?? e.code} from ${e.name}#${e.seq}`);
+  }
+  checkInternal(sinceSeq, what) {
+    const errs = this.internalErrors(sinceSeq);
+    if (errs.length !== 0) throw new Error(`${what} generated ${errs.join(', ')}`);
   }
   /**
    * Remember the last value of every state entry this bridge can restore, so the desktop
@@ -174,7 +219,25 @@ export class GLBridge {
   clearColor(...args) { this.call('clearColor', ...args); }
   clear(...args) { this.call('clear', ...args); }
   viewport(...args) { this.call('viewport', ...args); }
-  getError() { return this.call('getError'); }
+  /**
+   * Desktop glGetError: pops the oldest queued error and returns it, NO_ERROR when the queue is
+   * empty. The WebGL2 queue was already drained per call (see drainQueue), so nothing is lost and
+   * nothing is reported twice; the drain point also marks the calls that follow it.
+   */
+  getError() {
+    this.callSeq++;
+    this.callLog.push({ seq: this.callSeq, name: 'getError' });
+    if (this.callLog.length > 160) this.callLog.shift();
+    this.calls.getError = (this.calls.getError || 0) + 1;
+    this.lastErrorDrainSeq = this.callSeq;
+    const entry = this.pendingErrors.shift();
+    if (entry === undefined) return this.context.NO_ERROR;
+    const code = entry.code;
+    this.errorDrains.push({ seq: this.callSeq, code: this.webglConstantName(code) ?? String(code),
+      fromSeq: entry.seq, fromCall: entry.name });
+    if (this.errorDrains.length > 32) this.errorDrains.splice(0, this.errorDrains.length - 32);
+    return code;
+  }
   unsupported(jniName) { throw new Error(`Unsupported native: ${jniName}`); }
   /* --- Desktop capability tokens on glEnable/glDisable ---------------------------------
    * WebGL2 only accepts its own capability constants, so a desktop token has to be translated.
@@ -605,7 +668,8 @@ export class GLBridge {
     const ring = this.bufferDataLog || (this.bufferDataLog = []);
     ring.push({ target, size, dataType: data === null ? 'null' : (data?.constructor?.name ?? typeof data),
       dataLength: data?.length ?? null, valueKind: typeof value, valueLen: value?.length ?? value,
-      err: gl.getError(), stored: Number(gl.getBufferParameter(target, gl.BUFFER_SIZE)),
+      err: this.errorsFor(this.callSeq).map((e) => this.webglConstantName(e.code) ?? e.code),
+      stored: Number(gl.getBufferParameter(target, gl.BUFFER_SIZE)),
       bound: target === gl.ARRAY_BUFFER ? this.boundArrays : this.boundElements });
     if (ring.length > 24) ring.splice(0, ring.length - 24);
   }
@@ -721,8 +785,9 @@ export class GLBridge {
       this.call('framebufferTexture2D', gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.context[tname], level);
       if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE)
         throw new Error(`Texture ${this.activeBoundTexture()} level ${level} is not readable`);
+      const readSeq = this.callSeq;
       this.call('readPixels', 0, 0, size.width, size.height, gl.RGBA, gl.UNSIGNED_BYTE, data);
-      if (this.getError() !== gl.NO_ERROR) throw new Error(`glGetTexImage readback failed for texture ${this.activeBoundTexture()}`);
+      this.checkInternal(readSeq + 1, `glGetTexImage readback for texture ${this.activeBoundTexture()} level ${level}`);
     } finally {
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, previousRead);
       gl.deleteFramebuffer(framebuffer);
@@ -790,6 +855,42 @@ export class GLBridge {
     if (entry === undefined)
       throw new Error(`Texture ${handle} does not exist for ${what} (this backend raises where desktop GL would return an error)`);
     return entry;
+  }
+  /** Real WebGL2 state of the texture being uploaded: what the driver sees at upload time. */
+  textureParamSnapshot(entry) {
+    if (this.lost) return null;
+    const gl = this.context;
+    const tex = entry?.texture ?? null;
+    if (tex === null) return null;
+    const previous = gl.getParameter(gl.TEXTURE_BINDING_2D);
+    const out = {};
+    try {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      for (const pname of ['TEXTURE_MIN_FILTER', 'TEXTURE_MAG_FILTER', 'TEXTURE_WRAP_S', 'TEXTURE_WRAP_T',
+        'TEXTURE_MIN_LOD', 'TEXTURE_MAX_LOD', 'TEXTURE_BASE_LEVEL', 'TEXTURE_MAX_LEVEL']) {
+        try { out[pname] = gl.getTexParameter(gl.TEXTURE_2D, gl[pname]); }
+        catch (e) { out[pname] = 'unreadable'; }
+      }
+      // getTexParameter (called raw, outside this.call) can queue INVALID_ENUM. Keep that noise in
+      // the snapshot instead of throwing it away, so the WebGL2 queue stays consistent.
+      out.readErrors = [];
+      if (typeof gl.getError === 'function') {
+        for (;;) { const c = gl.getError(); if (c === gl.NO_ERROR || c === undefined) break;
+          out.readErrors.push(this.webglConstantName(c) ?? c); }
+      }
+      // WebGL2 validates the UNPACK_* state against srcData, so the unpack parameters the context
+      // really holds are part of the failure evidence.
+      for (const pname of ['UNPACK_ALIGNMENT', 'UNPACK_ROW_LENGTH', 'UNPACK_IMAGE_HEIGHT',
+        'UNPACK_SKIP_PIXELS', 'UNPACK_SKIP_ROWS', 'UNPACK_SKIP_IMAGES', 'UNPACK_FLIP_Y_WEBGL',
+        'UNPACK_COLORSPACE_CONVERSION_WEBGL']) {
+        try { out[pname] = gl.getParameter(gl[pname]); } catch (e) { out[pname] = 'unreadable'; }
+      }
+    } finally {
+      gl.bindTexture(gl.TEXTURE_2D, previous);
+    }
+    out.desktopPixelStorei = Object.fromEntries(
+      [...(this.attribRecords?.pixelStorei || new Map()).entries()].map(([k, v]) => [String(k), v[1]]));
+    return out;
   }
   bindTexture(target, handle) {
     const name = this.textureTargetName(target);
@@ -921,17 +1022,32 @@ export class GLBridge {
     if (border !== 0) throw new Error(`WebGL2 texImage2D requires border 0, got ${border}`);
     if (level < 0) throw new Error(`Negative texture level: ${level}`);
     const entry = this.textureEntry(this.activeBoundTexture(), 'glTexImage2D');
+    // The queue is sticky, so remember the drain point *before* this call: getError() below moves
+    // it forward and would otherwise hide the calls that actually belong to this upload.
+    const drainBefore = this.lastErrorDrainSeq;
+    const seqBefore = this.callSeq;
     const glFormat = this.textureFormat(format, 'glTexImage2D');
     const glType = this.textureType(type, 'glTexImage2D');
     const sized = this.sizedInternalFormat(internalformat, type);
     this.call('texImage2D', this.context[tname], level, sized, width, height, 0, glFormat, glType, data ?? null);
-    const err = this.getError();
+    // Only the errors WebGL2 queued for *this* call belong to the upload. Popping the queue here
+    // would steal the error the game reads back through glGetError in checkGLErrorThrowTexture.
+    const uploadErrs = this.errorsFor(seqBefore + 1);
+    const err = uploadErrs.length === 0 ? this.context.NO_ERROR : uploadErrs[0].code;
     if (err !== this.context.NO_ERROR) {
       // The GL error code plus every token is the only way to tell OUT_OF_MEMORY apart from
       // INVALID_OPERATION/INVALID_VALUE; a bare "failed" message cannot be diagnosed.
       const code = this.webglConstantName(err) ?? `0x${err.toString(16)}`;
+      this.uploadFailCount = (this.uploadFailCount || 0) + 1;
+      const sinceDrain = this.callLog.filter((e) => e.seq > drainBefore).map((e) => e.name);
+      this.pendingErrorsForGame = (this.pendingErrorsForGame || 0) + uploadErrs.length;
       this.lastUploadFailure = { op: 'texImage2D', error: code, target: tname, level, width, height,
-        internalformat, format, type, sized, data: data === null ? 'null' : 'view' };
+        internalformat, format, type, sized, data: data === null ? 'null' : 'view',
+        boundTexture: this.activeBoundTexture(), unit: this.activeUnit,
+        sinceDrain: sinceDrain.slice(-40), lastDrainSeq: drainBefore, uploadSeq: seqBefore + 1,
+        errorDrains: this.errorDrains.slice(-6),
+        texParams: this.textureParamSnapshot(entry) };
+      if (this.firstUploadFailure === undefined) this.firstUploadFailure = this.lastUploadFailure;
       throw new Error(`glTexImage2D failed: ${code} for texture ${this.activeBoundTexture()} level ${level} ` +
         `${width}x${height} internalformat 0x${internalformat.toString(16)} format 0x${format.toString(16)} ` +
         `type 0x${type.toString(16)} data=${data === null ? 'null' : 'arena view'}`);
@@ -947,7 +1063,9 @@ export class GLBridge {
       throw new Error(`Texture ${this.activeBoundTexture()} has no level ${level} to update with glTexSubImage2D`);
     this.call('texSubImage2D', this.context[tname], level, xoffset, yoffset, width, height,
       this.textureFormat(format, 'glTexSubImage2D'), this.textureType(type, 'glTexSubImage2D'), data);
-    const err = this.getError();
+    const subSeq = this.callSeq;
+    const subErrs = this.errorsFor(subSeq);
+    const err = subErrs.length === 0 ? this.context.NO_ERROR : subErrs[0].code;
     if (err !== this.context.NO_ERROR) {
       const code = this.webglConstantName(err) ?? `0x${err.toString(16)}`;
       this.lastUploadFailure = { op: 'texSubImage2D', error: code, target: tname, level, width, height, format, type };
@@ -970,8 +1088,9 @@ export class GLBridge {
       this.call('texParameteri', gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       this.call('texParameteri', gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       this.call('texParameteri', gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      const seq = this.callSeq;
       this.call('texImage2D', gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
-      if (this.getError() !== gl.NO_ERROR) throw new Error('Texture upload failed');
+      this.checkInternal(seq + 1, 'Texture upload');
       return { texture, width:bitmap.width, height:bitmap.height };
     } catch (error) { gl.deleteTexture(texture); throw error; }
     finally { gl.bindTexture(gl.TEXTURE_2D, previous); bitmap.close(); }
@@ -986,8 +1105,9 @@ export class GLBridge {
       this.call('framebufferTexture2D', gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
       if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('Texture framebuffer incomplete');
       const pixels = new Uint8Array(width * height * 4);
+      const seq = this.callSeq;
       this.call('readPixels', 0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-      if (this.getError() !== gl.NO_ERROR) throw new Error('Texture readback failed');
+      this.checkInternal(seq + 1, 'Texture readback');
       return pixels;
     } finally {
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, previousRead);
@@ -1639,12 +1759,13 @@ export class GLBridge {
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
     const vao = this.call('createVertexArray');
     this.call('bindVertexArray', vao); this.call('useProgram', program);
+    const probeSeq = this.callSeq;
     this.call('drawArrays', gl.TRIANGLES, 0, 3);
     const pixel = new Uint8Array(4);
     this.call('readPixels', gl.drawingBufferWidth >> 1, gl.drawingBufferHeight >> 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
     this.call('bindVertexArray', null); this.call('useProgram', null);
     gl.deleteVertexArray(vao); gl.deleteProgram(program); gl.deleteShader(vertex); gl.deleteShader(fragment);
-    if (this.getError() !== gl.NO_ERROR) throw new Error('WebGL probe generated an error');
+    this.checkInternal(probeSeq, 'WebGL probe');
     return [...pixel];
   }
 }
