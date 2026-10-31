@@ -43,6 +43,8 @@ public final class GL30 {
     }
     public static boolean glIsFramebuffer(int framebuffer) { return isFramebufferNative(framebuffer) != 0; }
     public static void glBindFramebuffer(int target, int framebuffer) { bindFramebufferNative(target, framebuffer); }
+    /** Round 80: WebGL2 generateMipmap on the texture bound to the active unit. */
+    public static void glGenerateMipmap(int target) { generateMipmapNative(target); }
     public static int glCheckFramebufferStatus(int target) { return checkFramebufferStatusNative(target); }
     public static void glFramebufferTexture2D(int target, int attachment, int textarget, int texture, int level) {
         framebufferTexture2DNative(target, attachment, textarget, texture, level);
@@ -81,6 +83,8 @@ public final class GL30 {
     private static native void deleteFramebuffersNative(Int32Array handles);
     @JSBody(params="framebuffer", script="return globalThis.pzRuntime.gl.isFramebuffer(framebuffer) ? 1 : 0;")
     private static native int isFramebufferNative(int framebuffer);
+    @JSBody(params="target", script="globalThis.pzRuntime.gl.generateMipmap(target);")
+    private static native void generateMipmapNative(int target);
     @JSBody(params={"target","framebuffer"}, script="globalThis.pzRuntime.gl.bindFramebuffer(target,framebuffer);")
     private static native void bindFramebufferNative(int target, int framebuffer);
     @JSBody(params="target", script="return globalThis.pzRuntime.gl.checkFramebufferStatus(target);")

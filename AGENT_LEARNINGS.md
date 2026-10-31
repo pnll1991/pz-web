@@ -711,3 +711,22 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   `IsoWorld.init` lanza "script load errors". Buscar las excepciones de `PostLoadScripts` en el log de arranque.
 - Proceso: con el límite de 1–2 h de las tareas del harness, reiniciar el dev server ANTES de una corrida larga
   (~17 min hasta IngameState) y no a mitad.
+
+## Ronda 80 (Code, 31/10) — Clipper y el siguiente freno
+- Patrón: para una nativa con formatos de `ByteBuffer`, el bytecode de los consumidores da el layout, pero NO la
+  semántica fina (regla de relleno, escala, qué borra `clear()`, orientación). Los símbolos de la `.so` (aquí
+  Clipper2 C++ + earcut sin strip de nombres internos) y `objdump` local la resuelven en minutos: `FillRule=2`
+  (Positive) estaba en un `mov $0x2,%edx` antes de `ExecuteInternal`. No versionar nada de eso.
+- Error evitado: suponer que `clear()` también borra el resultado. La librería sólo limpia las entradas;
+  `generateTriangulatePolygons` depende de leer el árbol anterior.
+- Patrón: Clipper2-java y Clipper2 C++ no comparten el orden del enum `JoinType` (Java: Square, Round, Miter,
+  Bevel; C++/juego: Square, Bevel, Round, Miter). Mapear por nombre, nunca por ordinal.
+- Patrón: nativas de instancia (`private native void newInstance()` que escribe `address` por JNI): el transformer
+  agrega un campo propio a la clase del juego con el motor y reenvía con `invokeVirtual`; sin mapas globales.
+- Proceso: el orden del driver importa; `until X` sólo sirve si X está instrumentado (IngameState/GameLoadingState
+  no lo están). Usar `wait` fijo o `counts GameStateMachine#update`.
+- Proceso: un `shot` durante la carga del mundo puede expirar (hilo principal ocupado); no es un fallo del juego.
+- Freno siguiente (ronda 80): vehículos. `setVehicleParams` ya responde como la librería para un id sin cuerpo
+  (aviso + -1), pero `CarController.<init>` llama `Bullet.addVehicle` y `getVehiclePhysics` devuelve un registro
+  completo por vehículo cada frame (transform Bullet, velocidad, ruedas). No inventar un modelo de "autos quietos"
+  sin derivar antes las conversiones de coordenadas de `addVehicle` y el consumo en `WorldSimulation.update`.

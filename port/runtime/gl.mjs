@@ -36,6 +36,8 @@ const PORT_PROVIDED = new Set([
   // GL30 framebuffer/renderbuffer natives the game reaches through zombie.core.textures and the
   // VBO/Lighting paths: every one of these has a real WebGL2 implementation below.
   'glGenFramebuffers', 'glDeleteFramebuffers', 'glIsFramebuffer', 'glBindFramebuffer', 'glIsVertexArray',
+  // Round 80: GL30 glGenerateMipmap (FBORenderChunk textures) -> WebGL2 generateMipmap.
+  'glGenerateMipmap',
   'glCheckFramebufferStatus', 'glFramebufferTexture2D', 'glFramebufferRenderbuffer',
   'glGenRenderbuffers', 'glDeleteRenderbuffers', 'glIsRenderbuffer', 'glBindRenderbuffer',
   'glRenderbufferStorage',
@@ -83,6 +85,16 @@ const PORT_PROVIDED = new Set([
 ]);
 
 const EAGER_ERROR_CALLS = new Set(['texImage2D', 'texSubImage2D', 'readPixels', 'compressedTexImage2D']);
+
+/** Round 80: column-major copy of `count` row-major size x size matrices (glUniformMatrix transpose). */
+export function transposeMatrices(values, size, count) {
+  const out = new Float32Array(count * size * size);
+  for (let m = 0; m < count; m++) {
+    const base = m * size * size;
+    for (let r = 0; r < size; r++) for (let c = 0; c < size; c++) out[base + c * size + r] = values[base + r * size + c];
+  }
+  return out;
+}
 
 /** WebGL2 context and object handles; unsupported entrypoints must throw. */
 
@@ -1609,11 +1621,14 @@ export class GLBridge {
     this.call(name, this.locationOf(handle, name), values.subarray(0, total));
   }
   uniformMatrix(size, handle, count, transpose, values) {
-    if (transpose) throw new Error(`WebGL2 cannot transpose a uniform matrix (transpose=true, uniformMatrix${size}fv)`);
     const total = count * size * size;
     const name = `uniformMatrix${size}fv`;
     if (total > values.length) throw new Error(`${name}: count ${count} needs ${total} floats, the view has ${values.length}`);
-    this.call(name, this.locationOf(handle, name), false, values.subarray(0, total));
+    let data = values.subarray(0, total);
+    // Round 80: WebGL2 requires transpose=false. Desktop transpose=true means the floats are row-major;
+    // uploading their transpose with false gives the shader the same matrix.
+    if (transpose) data = transposeMatrices(data, size, count);
+    this.call(name, this.locationOf(handle, name), false, data);
   }
   /* --- Vertex attributes -------------------------------------------------------------
    * glEnable/DisableVertexAttribArray track the attribute index; glVertexAttribPointer needs
@@ -1738,6 +1753,12 @@ export class GLBridge {
     }
   }
   isFramebuffer(handle) { return this.framebuffers.has(handle); }
+  /** Round 80: glGenerateMipmap(GL_TEXTURE_2D) on the texture bound to the active unit. */
+  generateMipmap(target) {
+    if (target !== 0x0DE1) throw new Error(`glGenerateMipmap: only GL_TEXTURE_2D is supported, got ${target}`);
+    if (!this.activeBoundTexture()) throw new Error('glGenerateMipmap: no texture bound to the active unit');
+    this.call('generateMipmap', this.context.TEXTURE_2D);
+  }
   bindFramebuffer(target, handle) {
     const glTarget = this.fbTarget(target, 'glBindFramebuffer');
     if (handle === 0) { this.call('bindFramebuffer', glTarget, null); return; }

@@ -97,7 +97,8 @@ GL30_DIRECT = {('nglGenVertexArrays','(IJ)V'), ('nglDeleteVertexArrays','(IJ)V')
     ('glBindFramebuffer','(II)V'), ('glCheckFramebufferStatus','(I)I'),
     ('glFramebufferTexture2D','(IIIII)V'), ('glFramebufferRenderbuffer','(IIII)V'),
     ('nglGenRenderbuffers','(IJ)V'), ('nglDeleteRenderbuffers','(IJ)V'),
-    ('glIsRenderbuffer','(I)Z'), ('glBindRenderbuffer','(II)V'), ('glRenderbufferStorage','(IIII)V')}
+    ('glIsRenderbuffer','(I)Z'), ('glBindRenderbuffer','(II)V'), ('glRenderbufferStorage','(IIII)V'),
+    ('glGenerateMipmap','(I)V')}
 
 # Draw calls the game reaches (VBORenderer, IsoPuddles, IsoWater, WorldMapVBOs, VertexBufferObject,
 # VisibilityPolygon2). port.shim.GL11 forwards them to gl.mjs; offsets into the bound element buffer only.
