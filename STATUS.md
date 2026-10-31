@@ -512,3 +512,12 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
   (`/tmp/r65/exact.py`, escrito sobre `/tmp/r60/out/ModelLoader.java`), que reporta el fallo en los 3
   archivos con `Vertex Count: 0` y valida los 7 restantes sin errores. Ningún `.txt` que trae el
   juego tiene 0 vértices (`media/animsold/*.txt`: 536/525 vértices).
+
+## Ronda 79 (Code, 31/10 01:10–06:45) — menú -> partida
+- Funciona y verificado en Chrome (puerto 8098, capturas en ~/pzshots/r79-*.png): NEW GAME, selección de spawn con el
+  mapa real de Muldraugh, profesión/rasgos, personalización, PLAY -> carga completa del mundo (343 s) -> "Click to Start"
+  -> `IngameState.enter` (jugador creado).
+- No logrado: el mundo no se dibuja (negro) y no hay control WASD. Bloqueo: nativas Clipper/ClipperOffset (ver
+  docs/notes-from-code.md, Ronda 79).
+- Simplificaciones documentadas de nativas: Lighting64 (luz ambiental, sin oclusión), PopMan64 (sin población virtual =
+  sin zombis), BulletWorld (sin cuerpos), MapCollision64 (sin path tasks), pathfinder Java del juego vía debug-options.ini.

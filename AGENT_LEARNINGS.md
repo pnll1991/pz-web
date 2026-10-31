@@ -703,3 +703,11 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   `models_X/` y `anims_X/`.
 - Patrón: `children()` lineal sobre todo el VFS es O(N) por llamada; con 60k rutas es inviable.
   Índice padre->hijos mantenido por subclases de Map/Set (`ChildIndex`).
+- Patrón: en Wasm GC sin `setStrict(true)` un NPE es una trampa que mata la fibra; el juego cuenta con capturar NPE
+  (Kahlua pcall). Con strict, la traza muestra `WasmGCSupport::npe` y el juego sigue como en la JVM.
+- Patrón: firmas de nativas asumidas por nombre de parámetro (PopMan64 `n_init`) estaban mal; verificar SIEMPRE el
+  caller con javap (`ZombiePopulationManager.init` pasa minX,minY,width,height).
+- Patrón: una nativa ausente durante la carga de scripts (RagdollScript.toBullet) no se ve hasta mucho después:
+  `IsoWorld.init` lanza "script load errors". Buscar las excepciones de `PostLoadScripts` en el log de arranque.
+- Proceso: con el límite de 1–2 h de las tareas del harness, reiniciar el dev server ANTES de una corrida larga
+  (~17 min hasta IngameState) y no a mitad.

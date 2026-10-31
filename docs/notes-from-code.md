@@ -758,3 +758,24 @@ Objetivo: Nueva partida -> spawn -> personaje -> mundo con jugador WASD. Puerto 
       es una excepción capturable; se activa `TeaVMTool.setStrict(true)` para el juego.
 - Pendientes vistos: listas de rasgos sin recorte (scissor/stencil), ropa/pelo sin modelo (`models_X` excluido),
   `AnimNode` XML con JAXB `NoSuchMethodException`, `options.ini` no se puede guardar (montado de solo lectura).
+- Continuación (builds k–o, corridas pzd13–pzd17):
+  12. `TeaVMTool.setStrict(true)` para el juego: el NPE de `getActualWeightUnmodded` pasa a ser excepción Java que
+      Lua (forageSystem) atrapa, como en la JVM. +3 MB de wasm.
+  13. MapCollision64: init/meta/chunks aceptados, sin trabajo pendiente; `n_pathTask` sigue lanzando con su nombre JNI.
+  14. SQLite: conexiones al mismo archivo comparten la base (refcount). Queda un "Cannot persist an uncommitted SQLite
+      transaction" no fatal (export mientras otra conexión tiene una transacción abierta).
+  15. PopMan64.n_init: firma real (minX, minY, width, height); el mínimo es negativo (-250).
+  16. `BulletWorld`: mundo físico sin cuerpos (initWorld, chunks, ToBullet contado, stepSimulation, conteos 0) y las
+      definiciones que suben los scripts (ragdoll constraints/anchors/bodyPartInfo/bodyDynamics, mallas). Sin
+      `defineRagdollBodyDynamics` el ScriptManager marcaba error de carga e `IsoWorld.init` rechazaba el mundo.
+- **Resultado pzd17**: `IsoWorld.init` completo, `GameWindow.save()`, "game loading took 343 seconds", "Click to Start",
+  `IngameState.enter` con "1 players found / player 0 is mouse". Pantalla negra después.
+- **Bloqueo actual**: `zombie.vehicles.Clipper.newInstance` (nativa Clipper2, 13 natives + 6 de `ClipperOffset`) en
+  `FBORenderOcclusion.init` aborta `IngameState.enter`. Clipper también lo usan `CollideWithObstaclesPoly` (colisión del
+  jugador), `PolygonalMap2` (pathfinder Java elegido), `VisibilityPolygon2`, `WorldMapGeometry`, `Zone`. Plan: implementar
+  las natives sobre una librería Java de Clipper (licencia Boost, instalada en `.toolchain/m2`), derivando el formato de
+  cada `ByteBuffer` (addPath/getPolygon/triangulate) de sus consumidores con javap, con un test JVM por formato. No
+  improvisar semántica de `addLine`/`generatePolygons(type, delta, join)` sin verificarla en el bytecode.
+- Otros pendientes vistos: `Bullet.setVehicleParams` al aparecer vehículos en chunks (no fatal; vehículos sin física),
+  `ClipperOffset` en zonas, `CopyFrame` NPE (anims faltantes), avatar 3D invisible en la vista previa, listas sin recorte.
+- Tiempos (SwiftShader): menú ~5,5 min; NEW GAME->spawn ~1 min; carga del mundo 343 s (lotheaders por XHR ~160 s).
