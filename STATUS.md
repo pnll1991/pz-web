@@ -545,3 +545,13 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
   `IsoChunk.doLoadGridsquare`) no está implementada.
 - Pasos manuales: para probar la partida, Custom Sandbox (956,540) -> NEXT -> NEXT -> pestaña Vehicles (58,376) ->
   destildar "Vehicles" (938,127). Un solo build de Maven y un solo Chrome a la vez (RAM).
+
+## Ronda 80 — frente L (31/10): jassimp64 sobre caché preconvertido (personaje invisible)
+- Hecho: nativa `jassimp64` (`port.natives.Jassimp64` + `JassimpNativeCompatibility`, commits `b9af297`, `d609401`):
+  `aiImportFile` lee en la ruta `.x` del VFS el caché que `tools/jassimp/JassimpCache.java` genera corriendo la
+  `libjassimp64.so` fijada con los flags de `FileTask_LoadMesh.loadX`. JVM: `JassimpCacheTest` 3/3; ida y vuelta real
+  (`--verify`) idéntica en MaleBody/FemaleBody/Male_Skeleton/Female_Skeleton. boot.wasm con Jassimp64: build de M 19:50.
+- Pack: `tools/pack/stage_jassimp.py` -> `build/real-browser/stage-jassimp`; `overlay.py --add` de `/media/models_X/` y
+  `/media/models_x/` encolado tras el swap (bajo chrome.lock). Respaldo: `build/real-browser/packs/index.json.before-frontL`.
+- Sin verificar en Chrome: que el jugador se vea. Riesgo: clips todavía `.txt` sobre esqueleto jassimp.
+- Faltan: ropa/pelo/otros modelos de `models_X` (sólo 4 .x servidos), FBX/GLB (metadata de nodos no soportada en el caché).
