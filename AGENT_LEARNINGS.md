@@ -853,3 +853,9 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Patrón: para reemplazar una nativa que fabrica objetos con campos privados sin compilar contra el jar, un contrato
   `Object`-tipado con cuerpo JVM por reflexión (sirve para tests y para la verificación ida y vuelta) y un transformer que
   reemplaza cada cuerpo por IR directo; el transformer falla el build si un método del contrato no tiene reescritura.
+
+## Ronda 80 (frente N, 31/10) — stb_image_write
+- Patrón: una nativa LWJGL que aparece en un log puede no ser la que el juego llama: `nstbi_write_png_compression_level`
+  falla en `STBImageWrite.<clinit>`, que mapea las cuatro globales seguidas; implementar sólo la del log deja la clase
+  igual de muerta. Mejor enfoque: `javap -c` del `static {}` de la clase LWJGL y cubrir todas sus nativas/getters, y
+  revisar que cada `MemoryUtil.memXBuffer` que usen tenga mapeo en `NativeMemory` (memPointerBuffer no lo tiene).

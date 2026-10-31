@@ -13,7 +13,8 @@ import org.teavm.model.emit.ValueEmitter;
 
 /**
  * Routes the two STB entry points the boot path really uses (PNG load and the uint8 sRGB
- * resize) to {@code port.shim.BrowserStb}, and makes {@code LibSTB.<clinit>} a no-op: the host
+ * resize) to {@code port.shim.BrowserStb}, the PNG writer of stb_image_write (save thumbnail,
+ * screenshots) to {@code port.shim.BrowserStbWrite}, and makes {@code LibSTB.<clinit>} a no-op: the host
  * {@code lwjgl_stb} dynamic library cannot exist in a tab, and the game's {@code loadIcons}
  * catches the resulting class-initialization failure, which left the icon buffer empty.
  *
@@ -24,6 +25,9 @@ public final class StbCompatibility implements ClassHolderTransformer {
     private static final String BRIDGE = "port.shim.BrowserStb";
     private static final String IMAGE = "org.lwjgl.stb.STBImage";
     private static final String RESIZE = "org.lwjgl.stb.STBImageResize";
+    private static final String WRITE = "org.lwjgl.stb.STBImageWrite";
+    private static final String WRITE_BRIDGE = "port.shim.BrowserStbWrite";
+    private static final String POINTER_BUFFER = "org.lwjgl.PointerBuffer";
     private static final String BYTE_BUFFER = "java.nio.ByteBuffer";
     private static final String CHAR_SEQUENCE = "java.lang.CharSequence";
     private static final ValueType INT_ARRAY = ValueType.arrayOf(ValueType.INTEGER);
@@ -36,6 +40,7 @@ public final class StbCompatibility implements ClassHolderTransformer {
             case "org.lwjgl.stb.LibSTB" -> noOpClinit(cls, context);
             case IMAGE -> rewriteImage(cls, context);
             case RESIZE -> rewriteResize(cls, context);
+            case WRITE -> rewriteWrite(cls, context);
             default -> { }
         }
     }
@@ -63,6 +68,38 @@ public final class StbCompatibility implements ClassHolderTransformer {
         route(cls, context, new MethodDescriptor("stbi_failure_reason", STRING), "failureReason");
         route(cls, context, new MethodDescriptor("stbi_image_free", BUFFER, ValueType.VOID),
             "stbiImageFree", BUFFER);
+    }
+
+    /**
+     * stb_image_write: the PNG writer, the flip flag and the four globals STBImageWrite.<clinit>
+     * maps (it would fail on the first one and leave the whole class unusable). The natives
+     * themselves are forwarded, so both stbi_write_png wrappers (ByteBuffer and CharSequence
+     * filename) reach the encoder. stbi_zlib_compress() is rebuilt as PointerBuffer.create(addr, 1)
+     * because MemoryUtil.memPointerBuffer has no browser mapping. BMP/TGA/JPG/HDR and the *_to_func
+     * callback variants stay fail-fast.
+     */
+    private void rewriteWrite(ClassHolder cls, ClassHolderTransformerContext context) {
+        var I = ValueType.INTEGER;
+        var J = ValueType.LONG;
+        route(cls, context, WRITE_BRIDGE, new MethodDescriptor("nstbi_write_png", J, I, I, I, J, I, I),
+            "writePng", J, I, I, I, J, I);
+        route(cls, context, WRITE_BRIDGE, new MethodDescriptor("nstbi_flip_vertically_on_write", I, ValueType.VOID),
+            "setFlip", I);
+        route(cls, context, WRITE_BRIDGE, new MethodDescriptor("nstbi_write_png_compression_level", J),
+            "compressionLevelAddress");
+        route(cls, context, WRITE_BRIDGE, new MethodDescriptor("nstbi_write_force_png_filter", J),
+            "forcePngFilterAddress");
+        route(cls, context, WRITE_BRIDGE, new MethodDescriptor("nstbi_write_tga_with_rle", J),
+            "tgaWithRleAddress");
+        route(cls, context, WRITE_BRIDGE, new MethodDescriptor("nstbi_zlib_compress", J),
+            "zlibCompressAddress");
+        var pointerType = ValueType.object(POINTER_BUFFER);
+        var getter = cls.getMethod(new MethodDescriptor("stbi_zlib_compress", pointerType));
+        if (getter == null) throw new IllegalStateException("Inventoried STBImageWrite.stbi_zlib_compress() is missing");
+        var e = ProgramEmitter.create(getter, context.getHierarchy());
+        var address = e.invoke(new MethodReference(WRITE_BRIDGE, "zlibCompressAddress", J));
+        e.invoke(new MethodReference(POINTER_BUFFER, "create", J, I, pointerType), address, e.constant(1))
+            .returnValue();
     }
 
     private void rewriteResize(ClassHolder cls, ClassHolderTransformerContext context) {
@@ -98,6 +135,11 @@ public final class StbCompatibility implements ClassHolderTransformer {
     /** Replace one static wrapper's body with a call to the Java bridge (never a @JSBody). */
     private void route(ClassHolder cls, ClassHolderTransformerContext context, MethodDescriptor descriptor,
         String bridgeName, ValueType... parameterTypes) {
+        route(cls, context, BRIDGE, descriptor, bridgeName, parameterTypes);
+    }
+
+    private void route(ClassHolder cls, ClassHolderTransformerContext context, String bridge,
+        MethodDescriptor descriptor, String bridgeName, ValueType... parameterTypes) {
         var method = cls.getMethod(descriptor);
         if (method == null) throw new IllegalStateException("Inventoried " + cls.getName() + "#" + descriptor
             + " is missing");
@@ -112,7 +154,7 @@ public final class StbCompatibility implements ClassHolderTransformer {
         var signature = new ValueType[parameterTypes.length + 1];
         System.arraycopy(parameterTypes, 0, signature, 0, parameterTypes.length);
         signature[parameterTypes.length] = method.getResultType();
-        var target = new MethodReference(BRIDGE, bridgeName, signature);
+        var target = new MethodReference(bridge, bridgeName, signature);
         var result = e.invoke(target, arguments);
         if (method.getResultType() == ValueType.VOID) e.exit(); else result.returnValue();
     }
