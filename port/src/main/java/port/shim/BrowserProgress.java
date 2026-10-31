@@ -29,4 +29,13 @@ public final class BrowserProgress {
       r.push({label:label,time:t}); if(r.length>400)r.splice(0,r.length-400);
     """)
     private static native void pulseNative(int bucket);
+    // Ronda 75: ultimos argumentos de UIManager#updateMouseButtons / UIElement#onMouseDown.
+    public static void traceInts(int a,int b) { traceNative("ints",a,b); }
+    public static void traceDoubles(double a,double b) { traceNative("dbl",a,b); }
+    @JSBody(params={"kind","a","b"},script="""
+      var r=globalThis.pzUiTrace||(globalThis.pzUiTrace=[]);
+      if(kind==="ints"){var l=r.lastInts; if(l&&l[0]===a&&l[1]===b)return; r.lastInts=[a,b];}
+      r.push([kind,a,b,performance.now()|0]); if(r.length>60)r.splice(0,r.length-60);
+    """)
+    private static native void traceNative(String kind,double a,double b);
 }

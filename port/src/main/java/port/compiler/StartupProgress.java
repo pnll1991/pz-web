@@ -331,6 +331,15 @@ public final class StartupProgress implements ClassHolderTransformer {
             if(method.getProgram()==null)continue;
             Program program=method.getProgram();
             Instruction first=program.basicBlockAt(0).getFirstInstruction();
+            // Ronda 75: argumentos del despacho del click (coordenadas que ve el hit-test).
+            if(key.equals("zombie.ui.UIManager#updateMouseButtons(II)I")||key.equals("zombie.ui.UIElement#onMouseDown(DD)Ljava/lang/Boolean;")) {
+                boolean ints=key.startsWith("zombie.ui.UIManager");
+                var call=new InvokeInstruction();call.setType(InvocationType.SPECIAL);
+                ValueType t=ints?ValueType.INTEGER:ValueType.DOUBLE;
+                call.setMethod(new MethodReference("port.shim.BrowserProgress",ints?"traceInts":"traceDoubles",t,t,ValueType.VOID));
+                call.setArguments(program.variableAt(1),program.variableAt(2));
+                first.insertPrevious(call);
+            }
             if(first==null)throw new IllegalStateException("Empty observed entry: "+key);
             record(program,first,key+":entered");
             String flag=PENDING_FLAG.get(key);

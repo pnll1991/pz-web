@@ -679,3 +679,10 @@ llegue a `NativeArena.free`). Sin stubs: los depthmaps se tienen que cargar de v
 - Una espera larga (r74, 1 click, +6 min) tampoco sale del TOS: no es solo lentitud.
 - "error 26" de Paolozky: es casi seguro el contador de errores en pantalla de PZ (unas 27 "Exception thrown" = FileNotFoundException durante el boot, mas fallos de AngelCodeFont con mainfont_0.png). Ocurre antes del TOS; no explica ACCEPT por si solo.
 - Siguiente: registrar x,y y los rects de los hijos en el hit-test de UIElement#onMouseDown (offset/escala vs hover).
+
+## Ronda 75 (30-oct, 23:00 -03)
+- Traza de argumentos (BrowserProgress.traceInts/traceDoubles, inyectada en UIManager#updateMouseButtons y UIElement#onMouseDown; la sonda la vuelca como UITRACE).
+- r75 (click en viewport 610,509): mx,my=560,507 y el panel recibe 220,319. ACCEPT empieza en x=10+anchoTextura+10, y el hit-test de PZ es estricto (x > ui.x), asi que el click caia justo en el borde izquierdo: no habia desfase ni error de escala.
+- r75b (click en 660,515, que da 270,325 en el panel y 50,16 en el boton): el boton recibe onMouseDown, fromLua0 llega a 2 (created + exit), MainScreenState#enter = 1 y la consola muestra "STATE: exit zombie.gameStates.TermsOfServiceState". ACCEPT FUNCIONA.
+- Despues del TOS hay 47 lineas de FileNotFoundException y despues silencio, aunque los frames siguen subiendo; falta ver que dibuja MainScreen.
+- Fuentes: mainfont_0.png y las otras no existen sueltas en PZ_HOME/media; estan dentro de texturepacks/UI.pack. AngelCodeFont llama a Texture.getSharedTexture antes de que el pack este disponible. Hay que confirmar si el juego nativo hace lo mismo.
