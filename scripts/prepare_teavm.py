@@ -1128,6 +1128,56 @@ def patch_default_path():
     print(f"TeaVM {VERSION}: Path.normalize accepts relative paths; source SHA-256 {digest}")
 
 
+def patch_zip_inflater_stream():
+    """ZipFile entry streams must give the raw inflater one dummy byte at end of input.
+
+    Round 79, measured in Chrome (symbolized): ImagePyramid.readInfoFile reads a DEFLATED entry of
+    media/maps/Muldraugh, KY/spawnSelectImagePyramid.zip through TZipFile.getInputStream ->
+    ZipInflaterInputStream and gets EOFException once the entry's compressed bytes are consumed:
+    the nowrap inflater has not reported finished() yet. The JDK's ZipFile does exactly this in
+    ZipFileInflaterInputStream.fill(): when the entry is exhausted it feeds a single 0 byte
+    ("Inflater likes a bit of slack") before declaring EOF.
+    """
+    archive = ROOT / f".toolchain/downloads/teavm-classlib-{VERSION}-sources.jar"
+    digest = "da6f83c1436c87a9ad683b6143aaa9c172b08c3974c9a7d5741a479d0d60092e"
+    if hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
+        raise RuntimeError("TeaVM zip source digest mismatch")
+    path = "org/teavm/classlib/java/util/zip/TZipFile.java"
+    with zipfile.ZipFile(archive) as package:
+        source = package.read(path).decode("utf-8")
+    old = """        public ZipInflaterInputStream(InputStream is, TInflater inf, int bsize, TZipEntry entry) {
+            super(is, inf, bsize);
+            this.entry = entry;
+        }
+"""
+    new = """        public ZipInflaterInputStream(InputStream is, TInflater inf, int bsize, TZipEntry entry) {
+            super(is, inf, bsize);
+            this.entry = entry;
+        }
+
+        private boolean dummyByteSent;
+
+        @Override
+        protected void fill() throws IOException {
+            super.fill();
+            if (len == -1 && !dummyByteSent) {
+                // As java.util.zip.ZipFile: the raw inflater needs one extra byte after the entry.
+                dummyByteSent = true;
+                buf[0] = 0;
+                len = 1;
+                inf.setInput(buf, 0, 1);
+            }
+        }
+"""
+    if source.count(old) != 1:
+        raise RuntimeError("Unexpected TeaVM zip source shape")
+    source = source.replace(old, new)
+    destination = ROOT / "port/target/generated-sources/teavm" / path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("// Local change: dummy trailing byte for zip entry inflation (JDK ZipFile behaviour).\n" + source)
+    print(f"TeaVM {VERSION}: zip entry streams feed the JDK dummy trailing byte; source SHA-256 {digest}")
+
+
 def main():
     archive = ROOT / f".toolchain/downloads/teavm-core-{VERSION}-sources.jar"
     if not archive.exists():
@@ -1161,6 +1211,7 @@ def main():
     patch_console()
     patch_inflater()
     patch_default_path()
+    patch_zip_inflater_stream()
     patch_fiber()
 
 
