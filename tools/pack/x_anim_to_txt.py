@@ -75,8 +75,16 @@ def skeleton(root):
         bones.append((fr.name, parent, mat))
         for c in fr.children:
             if c.kind == 'Frame': walk(c, idx)
-    for c in root.children:
-        if c.kind == 'Frame': walk(c, -1)
+    tops = [c for c in root.children if c.kind == 'Frame']
+    # Round 79: the game's own .txt (media/Bob_Sprint.txt) has ONE root, Dummy01 (index 0); the
+    # other top-level .x frame Translation_Data hangs from it (parent 0), and the mesh frame
+    # (Body / Skeleton / F_Skeleton: a top-level Frame holding the Mesh, no child frames) is not
+    # a bone. Extra roots made AnimationPlayer.updateModelTransformsInternal dereference a null
+    # SkinningBone.parent (wasm trap in the character-creation avatar).
+    def is_mesh_frame(fr):
+        return any(c.kind == 'Mesh' for c in fr.children) and not any(c.kind == 'Frame' for c in fr.children)
+    kept = [c for c in tops if not is_mesh_frame(c)] or tops
+    for i, c in enumerate(kept): walk(c, -1 if i == 0 else 0)
     return bones
 
 def keys(akey):
