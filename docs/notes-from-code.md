@@ -966,3 +966,28 @@ Análisis estático (`javap -c` del jar fijado, volcado en /tmp; `translateShade
 - Diagnóstico nuevo: `pzRuntime.gl.disabledAttribDraws` cuenta, por `"<programa>:<atributo>@<ubicación>"`, los dibujos
   en que un atributo activo del programa actual no tiene su array habilitado (sin cambiar nada). Con la hipótesis de
   arriba debe aparecer `<basicEffect>:boneWeights@2`. Test `tests/node/gl-disabled-attribs.test.mjs`.
+
+## Ronda 80 — frente L (31/10): jassimp64 sobre caché preconvertido
+- Nativas de `jassimp.Jassimp` (inventario): `aiImportFile(String,long,AiIOSystem,AiProgressHandler)`, `getErrorString`,
+  y 8 tamaños (`getVKeysize`… que `loadLibrary()` guarda en `NATIVE_*`; en linux-x86_64: 24, 24, 12, 4, 4, 4, 8, 8). La
+  carga la hace `JAssImpImporter$LibraryLoader` -> `System.loadLibrary("jassimp64")`.
+- Llamadores (`importFile(String,Set)`): `FileTask_LoadMesh.loadX/loadFBX/loadGLTF`, `FileTask_LoadPhysicsShape`,
+  `FileTask_LoadAnimation` (sólo MAKE_LEFT_HANDED + REMOVE_REDUNDANT_MATERIALS), `FileTask_LoadAiScene` (x2). Para `.x`
+  los flags son fijos (sin `postProcess` del script); FBX/GLB suman `handlePostProcessFlags` y escalan 0,01/rotan -90°.
+  `checkExtensionType` prueba `media/models_x/<minúsculas>.{fbx,glb,x}` con `File.exists` antes del `.txt`.
+- La nativa arma: `AiScene()`; por malla `AiMesh()` privado + `m_name`, `m_materialIndex`, `setPrimitiveTypes(raw)`,
+  `allocateBuffers(nv,nf,pura,bytesCaras)`, `allocateDataChannel(tipo,i)` (0 N, 1 T, 2 B, 3 color, 4/5/6 uv 1D/2D/3D) y
+  copia en los ByteBuffer directos; `AiBone` (`m_name`, `m_offsetMatrix = Jassimp.wrapMatrix`) + `AiBoneWeight`;
+  materiales `AiMaterial$Property` (String/Float/Integer/AiColor/ByteBuffer); `AiAnimation(nombre,dur,tps)` +
+  `AiNodeAnim(nombre,nPos,nRot,nEsc,pre,post)` (aloca sus claves); nodos con `Jassimp.wrapSceneNode` (el ctor de AiNode
+  se cuelga del padre). El juego sólo lee materiales/luces/cámaras para vaciarlos (`takeOutTheTrash`).
+- Implementación: `tools/jassimp/JassimpCache.java` (corre la .so real, `--verify` = ida y vuelta por el lector del
+  navegador, idéntica byte a byte), `tools/pack/stage_jassimp.py` (staging con ruta real + minúsculas), `port.natives.
+  Jassimp64` / `JassimpCacheReader` / `JassimpObjects` (en la JVM por reflexión; en TeaVM
+  `JassimpNativeCompatibility` reemplaza cada cuerpo por IR directo). Test `JassimpCacheTest` (escena sintética,
+  rechazos, reescritura sin reflexión). Mallas: MaleBody v617 f916 27 huesos con peso (el `.txt` tenía los mismos 617
+  vértices y 916 caras; sus 35 "huesos" son nodos de la jerarquía), FemaleBody v660 f984, Male_Skeleton v789,
+  Female_Skeleton v792.
+- Riesgo abierto: los clips siguen en `.txt` (x_anim_to_txt, calibrado contra `Bob_Sprint.txt` del juego); el esqueleto
+  ahora viene del camino jassimp (MAKE_LEFT_HANDED). Si el personaje aparece pero deformado/girado, la siguiente pieza es
+  servir también los clips por jassimp (perfil `x-anim` del dumper) en vez de `.txt`.

@@ -841,3 +841,15 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Patrón: ante un modelo deformado/invisible, comparar el `VertexFormat` que arma el cargador real (índice de elemento =
   índice de atributo en `VertexBufferObject.BeginDraw`) con los `layout(location=N)` del shader antes de mirar uniforms;
   el cargador `.txt` (legado) no coincide con los shaders actuales, sólo el de jassimp.
+
+## Ronda 80 (frente L, 31/10) — jassimp64 sobre caché
+- Error: el dumper offline (`java Archivo.java`, lanzador de código fuente) hacía `System.load(libjassimp64.so)` desde su
+  propia clase; la librería quedó ligada al class loader del lanzador y `jassimp.Jassimp.getVKeysize` (cargada por el
+  loader de la app desde el jar) seguía en `UnsatisfiedLinkError`. Patrón a evitar: cargar una JNI desde un loader
+  distinto del de la clase que declara las nativas. Mejor enfoque: usar el loader del propio juego
+  (`JAssImpImporter$LibraryLoader`, `System.loadLibrary`) con `-Djava.library.path`.
+- Error: `AiAnimation.getNumMeshChannels()` lanza "not implemented yet" en esta versión de jassimp. Mejor enfoque: leer
+  los campos reales (`javap -p`) antes de usar getters "obvios" de una librería.
+- Patrón: para reemplazar una nativa que fabrica objetos con campos privados sin compilar contra el jar, un contrato
+  `Object`-tipado con cuerpo JVM por reflexión (sirve para tests y para la verificación ida y vuelta) y un transformer que
+  reemplaza cada cuerpo por IR directo; el transformer falla el build si un método del contrato no tiene reescritura.
