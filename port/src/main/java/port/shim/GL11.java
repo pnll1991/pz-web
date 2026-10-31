@@ -32,6 +32,14 @@ public final class GL11 {
     public static void glDepthFunc(int func) { call1("depthFunc", func); }
     public static void glDepthMask(boolean flag) { depthMask(flag); }
     public static void glLineWidth(float width) { lineWidth(width); }
+    /** Round 79: WebGL2 has no polygon mode and always fills; GL_FILL (0x1B02) is therefore the
+     * current state. Wireframe/point modes have no WebGL2 equivalent and raise. */
+    public static void glPolygonMode(int face, int mode) {
+        if (face != 0x0404 && face != 0x0405 && face != 0x0408)
+            throw new IllegalArgumentException("glPolygonMode: invalid face 0x" + Integer.toHexString(face));
+        if (mode != 0x1B02)
+            throw new UnsupportedOperationException("WebGL2 has no glPolygonMode 0x" + Integer.toHexString(mode) + " (only GL_FILL)");
+    }
     public static void glPixelStorei(int pname, int param) { call2("pixelStorei", pname, param); }
     public static void glScissor(int x, int y, int width, int height) { call4("scissor", x, y, width, height); }
     public static void glClearDepthf(float depth) { clearDepthf(depth); }
@@ -236,12 +244,28 @@ public final class GL11 {
     // memory pointer (no element buffer bound) has no WebGL2 equivalent: gl.mjs raises for it.
     public static void glDrawArrays(int mode, int first, int count) { drawArraysNative(mode, first, count); }
     public static void nglDrawElements(int mode, int count, int type, long indices) {
+        if (!elementBufferBound()) { drawClientNative(mode, -1, -1, count, type, clientIndices(indices, count, type)); return; }
         drawElementsNative(mode, count, type, offset(indices, "org.lwjgl.opengl.GL11C#nglDrawElements(IIIJ)V"));
     }
     public static void nglDrawRangeElements(int mode, int start, int end, int count, int type, long indices) {
+        if (!elementBufferBound()) { drawClientNative(mode, start, end, count, type, clientIndices(indices, count, type)); return; }
         drawRangeElementsNative(mode, start, end, count, type,
             offset(indices, "org.lwjgl.opengl.GL12C#nglDrawRangeElements(IIIIIJ)V"));
     }
+    /** Round 79: with no ELEMENT_ARRAY_BUFFER bound, desktop GL reads `indices` as a client memory
+     * pointer (WorldMapRenderer). WebGL2 has no client arrays, so gl.mjs streams exactly those
+     * count*size index bytes from the arena into its own scratch element buffer for this draw. */
+    private static Uint8Array clientIndices(long address, int count, int type) {
+        int size = type == 0x1405 ? 4 : type == 0x1403 ? 2 : type == 0x1401 ? 1 : -1;
+        if (size < 0) throw new IllegalArgumentException("Index type 0x" + Integer.toHexString(type));
+        if (address == 0L || count < 0) throw new IllegalArgumentException("Client index pointer " + address + " count " + count);
+        return arena(address, count * size);
+    }
+    @JSBody(script="return globalThis.pzRuntime.gl.boundElements !== null;")
+    private static native boolean elementBufferBound();
+    @JSBody(params={"mode","start","end","count","type","data"},
+        script="globalThis.pzRuntime.gl.drawElementsClient(mode,start,end,count,type,data);")
+    private static native void drawClientNative(int mode, int start, int end, int count, int type, Uint8Array data);
     private static int offset(long indices, String identity) {
         if (indices < 0 || indices > Integer.MAX_VALUE)
             throw new UnsupportedOperationException("WebGL2 draws only from a bound ELEMENT_ARRAY_BUFFER offset, got "

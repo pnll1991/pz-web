@@ -74,6 +74,14 @@ try {
     if (!response.ok) throw new Error(`Classpath resource ${name} is unavailable: HTTP ${response.status}`);
     vfs.store(`/${name}`, new Uint8Array(await response.arrayBuffer()));
   }
+  // Round 79: the browser runtime has no PZPathFind64 library. DebugOptions.load() reads
+  // <cacheDir>/debug-options.ini on every boot, and Pathfind.UseNativeCode=false makes
+  // PathfindNative.checkUseNativeCode() keep the game's own Java pathfinder (PolygonalMap2).
+  // Only written when the user has no such file; the game may rewrite it later.
+  if (!vfs.exists('/Zomboid/debug-options.ini')) {
+    vfs.writeFile('/Zomboid/debug-options.ini', new TextEncoder().encode(
+      '# pz-web: no PZPathFind64 native in the browser; use the game\'s Java pathfinder.\nPathfind.UseNativeCode=false\n'));
+  }
   globalThis.pzRuntime = { vfs, normalizePath, gl:new GLBridge(canvas), input:new CanvasInput(canvas) };
   pzRuntime.window = new BrowserWindow(canvas,pzRuntime.gl,pzRuntime.input);
   await pzRuntime.window.prepare();

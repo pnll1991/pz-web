@@ -1896,6 +1896,20 @@ export class GLBridge {
       throw new Error(`Index offset ${indices} is not a multiple of the ${elementBytes}-byte index size`);
     this.call('drawRangeElements', mode, start >>> 0, end >>> 0, count, webglType, indices);
   }
+  /** Round 79: desktop client-memory indices (no ELEMENT_ARRAY_BUFFER bound). The bytes are
+   * streamed into a scratch element buffer for this one draw and the binding is restored. */
+  drawElementsClient(mode, start, end, count, type, data) {
+    if (this.boundElements !== null) throw new Error('drawElementsClient with an ELEMENT_ARRAY_BUFFER bound');
+    const gl = this.context, webglType = GLBridge.indexType(type);
+    const scratch = this.clientIndexBuffer ?? (this.clientIndexBuffer = gl.createBuffer());
+    this.call('bindBuffer', gl.ELEMENT_ARRAY_BUFFER, scratch);
+    try {
+      this.call('bufferData', gl.ELEMENT_ARRAY_BUFFER, data, gl.STREAM_DRAW);
+      if (start >= 0) this.call('drawRangeElements', mode, start >>> 0, end >>> 0, count, webglType, 0);
+      else this.call('drawElements', mode, count, webglType, 0);
+    } finally { this.call('bindBuffer', gl.ELEMENT_ARRAY_BUFFER, null); }
+    this.clientIndexDraws = (this.clientIndexDraws || 0) + 1;
+  }
   drawArrays(mode, first, count) { this.call('drawArrays', mode, first, count); }
   static indexType(type) {
     const map = new Map([[0x1401, 0x1401], [0x1403, 0x1403], [0x1405, 0x1405]]);

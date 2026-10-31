@@ -38,7 +38,8 @@ public final class JdkTask4Support {
     }
     public static boolean canAccess(Field field,Object target){if(Modifier.isStatic(field.getModifiers())?target!=null:target==null||!field.getDeclaringClass().isInstance(target))throw new IllegalArgumentException();return field.isAccessible()||Modifier.isPublic(field.getModifiers())&&Modifier.isPublic(field.getDeclaringClass().getModifiers());}
     public static boolean trySetAccessible(Field field){field.setAccessible(true);return field.isAccessible();}
-    public static java.nio.file.FileSystem newFileSystem(java.nio.file.Path path)throws IOException{throw new java.nio.file.ProviderNotFoundException("No browser filesystem provider for "+path);}
+    // Round 79: zip archives get our read-only ZipFileSystem (ImagePyramid spawn/world map pyramids).
+    public static java.nio.file.FileSystem newFileSystem(java.nio.file.Path path)throws IOException{String name=String.valueOf(path.getFileName()).toLowerCase(java.util.Locale.ROOT);if(name.endsWith(".zip")||name.endsWith(".jar"))return ZipFileSystem.open(path);throw new java.nio.file.ProviderNotFoundException("No browser filesystem provider for "+path);}
     public static java.nio.file.FileSystem newFileSystem(java.nio.file.Path path,Map<String,?> env)throws IOException{Objects.requireNonNull(env);return newFileSystem(path);}
     public static Map<Thread,StackTraceElement[]> getAllStackTraces(){return port.compat.java.lang.ThreadGroup.stackTraces();}
     public static float[] RGBtoHSB(int r,int g,int b,float[] values){if(values==null)values=new float[3];int max=Math.max(r,Math.max(g,b)),min=Math.min(r,Math.min(g,b));float saturation=max==0?0:(float)(max-min)/max;float hue=0;if(saturation!=0){float red=(float)(max-r)/(max-min),green=(float)(max-g)/(max-min),blue=(float)(max-b)/(max-min);hue=r==max?blue-green:g==max?2+red-blue:4+green-red;hue/=6;if(hue<0)hue++;}values[0]=hue;values[1]=saturation;values[2]=max/255f;return values;}

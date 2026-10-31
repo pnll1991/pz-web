@@ -709,3 +709,34 @@ llegue a `NativeArena.free`). Sin stubs: los depthmaps se tienen que cargar de v
 - Fuentes AngelCode (mainfont_0, mainfont2_0, zomboidDialogue.bmfc_0): initFonts() corre antes de LoadTexturePack("UI"), así que texturePackTextures está vacío; no hay PNG suelto en PZ_HOME. Es comportamiento del juego original, no del port; no se falsea.
 - FileNotFoundException restantes: 6 son packs 2x no montados (Overlays2x, JumboTrees2x, ...), esperados; 3 sin ruta (tras LightingFPS, salida de TISLogo, salida de TOS) pendientes.
 - Test real: `playwright.menu.config.mjs` + `tests/browser/menu.spec.mjs` (puerto 8098, packs reales, sin prepare_real.py).
+
+## Ronda 79 (Code, 31/10 madrugada) — del menú hacia la partida
+Objetivo: Nueva partida -> spawn -> personaje -> mundo con jugador WASD. Puerto 8098, driver `tools/diag/drive.mjs`
+(un directorio por corrida, heartbeat cada 30 s) y simbolizador `tools/diag/wasm_addr.mjs` (convierte
+`fakeMethod(Throwable.java:N)` en el símbolo Java usando la sección `name` del `boot.wasm` de ESA corrida).
+- **Media bajo demanda**: `media/maps` son 4,3 GB (12k archivos) y no entran en el preload de 512 MB. El dev server
+  publica `/media-manifest.json` (47k rutas + tamaños, solo metadatos) y `vfs.mjs` registra esas rutas como remotas:
+  `kind/size/children` sin bajar nada, lecturas con XHR síncrono + `Range` en bloques de 1 MiB (caché LRU 384 MiB),
+  `readFile` en trozos de 16 MiB. Los packs mantienen prioridad. Se excluyen `models_X/` y `anims_X/`: con esos
+  `.x/.fbx/.glb` visibles el juego elige jassimp64 (nativa ausente) en vez de los `.txt` de la ronda 60.
+- `children()` era lineal sobre todo el VFS; ahora hay un índice padre->hijos (`ChildIndex`).
+- Canvas fijo en (0,0) en `game.html` (antes empezaba ~50 px a la derecha y NEXT quedaba cortado). `menu.spec.mjs`
+  hace clic en ACCEPT en (610,515).
+- NEW GAME (selección Apocalypse/...) se dibuja y NEXT funciona. Frenos encontrados en orden:
+  1. `SpawnRegions.lua` sin `media/maps` -> resuelto con el manifest.
+  2. `reloadLuaFile(spawnpoints.lua)` -> `IndexOutOfBoundsException` en `TDefaultPath.normalize` de TeaVM: para una
+     ruta relativa copiaba el primer segmento desde `start-1 = -1`. Parche en `scripts/prepare_teavm.py`
+     (`patch_default_path`).
+  3. `ImagePyramid.openZipFile` -> `FileSystems.newFileSystem(zip)` sin provider en TeaVM. Nuevo
+     `port.runtime.ZipFileSystem` (solo lectura, sobre `java.util.zip.ZipFile`; test JVM `ZipFileSystemTest`).
+  4. `WorldMapRenderer`: `glPolygonMode(GL_FILL)` (aceptado: WebGL2 siempre rellena; otros modos lanzan) y
+     `glDrawRangeElements` con índices en memoria cliente (sin ELEMENT_ARRAY_BUFFER): `gl.mjs#drawElementsClient`
+     los sube a un buffer scratch para ese draw.
+- Nativas del mundo (simplificaciones DOCUMENTADAS, no la librería original):
+  - `Lighting64`: las 50 nativas de `LightingJNI`. Luz = cielo de `stateEndFrame` (rmod/gmod/bmod * ambient) + luces
+    puntuales sin oclusión; todo cuadrado dentro de la distancia de visión es SEEN|CAN_SEE|COULD_SEE (no hay línea de
+    visión: las paredes no ocultan). Formato de `getSquareLighting` tomado de cómo lo decodifica
+    `LightingJNI$JNILighting.update()` (javap, no copiado).
+  - `PopMan64`: entradas in-world aceptadas; **sin población virtual** (no se crean zombis desde la densidad del mapa).
+  - Pathfinding: `/Zomboid/debug-options.ini` con `Pathfind.UseNativeCode=false` (lo escribe `game.mjs` si no existe):
+    `IsoWorld.init` usa entonces el pathfinder Java del propio juego (`PolygonalMap2`).
