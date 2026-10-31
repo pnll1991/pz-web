@@ -159,6 +159,9 @@ export class GLBridge {
     // queue otherwise blames whichever call checks first).
     this.pendingErrors = []; // [{seq, name, code}] oldest first
     this.unchecked = null; this.eagerErrors = globalThis.PZ_GL_EAGER_ERRORS === true;
+    // Round 80 (front I): buffer diagnostic rings (sync GPU queries) only on request.
+    this.bufferDiag = globalThis.PZ_GL_BUFFER_DIAG === true
+      || (typeof location !== 'undefined' && new URLSearchParams(location.search ?? '').has('glBufferDiag'));
     this.uploadFailCount = 0;   // failed level uploads (glTexImage2D/glTexSubImage2D)
     this.firstUploadFailure = undefined;
     // Result of the real framebuffer-object probe (see framebufferProbe). Undefined until the
@@ -873,6 +876,31 @@ export class GLBridge {
     else { this.boundElements = buffer; this.boundElementHandle = handle; }
   }
   isBuffer(handle) { return this.buffers.has(handle); }
+  /** Bridge entry of the buffer bound to `target` (follows VAO element bindings), or undefined. */
+  boundBufferEntry(target) {
+    const handle = target === this.context.ARRAY_BUFFER ? this.boundArrayHandle : this.boundElementHandle;
+    return handle === 0 ? undefined : this.buffers.get(handle);
+  }
+  /**
+   * Round 80 (front I): CPU-side view of buffer contents, so glMapBuffer/glGetBufferSubData do not
+   * read the GPU back (getBufferSubData is a synchronous GPU->CPU stall: ~590 per 3 s in-game, one
+   * 64 KB readback after every SpriteRenderer$RingBuffer orphan+map). Per entry:
+   *   size   bytes of the last glBufferData (what GL_BUFFER_SIZE reports),
+   *   zero   contents known to be all zeros (bufferData(NULL): WebGL2 zero-fills new storage, which
+   *          is exactly what the readback used to return),
+   *   shadow authoritative CPU copy, kept only for buffers the game has read back (tracked), so
+   *          memory stays bounded to those buffers; others keep no copy at all.
+   * A buffer whose contents are unknown on the CPU is read back once, for real, and tracked from then on.
+   */
+  static bufferBytes(data) {
+    if (data instanceof Uint8Array) return data;
+    return data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  shadowStore(entry) {
+    let store = entry.store;
+    if (store === undefined || store.length !== entry.size) store = entry.store = new Uint8Array(entry.size);
+    return store;
+  }
   bufferData(target, size, data) {
     const gl = this.context;
     if (target !== gl.ARRAY_BUFFER && target !== gl.ELEMENT_ARRAY_BUFFER)
@@ -880,7 +908,19 @@ export class GLBridge {
     // The desktop usage hint is dropped: WebGL2 has no storage hints.
     const value = data === null ? size : data;
     this.call('bufferData', target, value, gl.DYNAMIC_DRAW);
-    // Round 43 diagnostic ring: what the storage allocation really received and what WebGL2 kept.
+    const entry = this.boundBufferEntry(target);
+    if (entry !== undefined) {
+      entry.size = data === null ? size : data.byteLength;
+      if (data === null) { entry.zero = true; entry.shadow = null; }
+      else {
+        entry.zero = false;
+        if (entry.tracked) { const s = this.shadowStore(entry); s.set(GLBridge.bufferBytes(data)); entry.shadow = s; }
+        else entry.shadow = null;
+      }
+    }
+    // Round 43 diagnostic ring, opt-in (PZ_GL_BUFFER_DIAG / ?glBufferDiag): it queries BUFFER_SIZE and
+    // drains glGetError, both synchronous round trips, so it must stay off the default path.
+    if (!this.bufferDiag) return;
     const ring = this.bufferDataLog || (this.bufferDataLog = []);
     ring.push({ target, size, dataType: data === null ? 'null' : (data?.constructor?.name ?? typeof data),
       dataLength: data?.length ?? null, valueKind: typeof value, valueLen: value?.length ?? value,
@@ -894,23 +934,48 @@ export class GLBridge {
     if (target !== gl.ARRAY_BUFFER && target !== gl.ELEMENT_ARRAY_BUFFER)
       throw new Error(`Unsupported WebGL2 buffer target: 0x${target.toString(16)}`);
     this.call('bufferSubData', target, offset, data);
+    const entry = this.boundBufferEntry(target);
+    if (entry === undefined || entry.size === undefined) return;
+    const bytes = GLBridge.bufferBytes(data);
+    // Out of range: WebGL2 raises INVALID_VALUE and writes nothing (the error reaches glGetError).
+    if (offset < 0 || offset + bytes.length > entry.size) return;
+    if (entry.shadow == null && entry.zero && entry.tracked) { entry.shadow = this.shadowStore(entry); entry.shadow.fill(0); }
+    entry.zero = false;
+    if (entry.shadow != null) entry.shadow.set(bytes, offset);
   }
   getBufferSubData(target, offset, data) {
     const gl = this.context;
     if (target !== gl.ARRAY_BUFFER && target !== gl.ELEMENT_ARRAY_BUFFER)
       throw new Error(`Unsupported WebGL2 buffer target: 0x${target.toString(16)}`);
-    this.call('getBufferSubData', target, offset, data);
+    const entry = this.boundBufferEntry(target);
+    const out = GLBridge.bufferBytes(data);
+    const inRange = entry !== undefined && entry.size !== undefined && offset >= 0 && offset + out.length <= entry.size;
+    if (!inRange) { this.call('getBufferSubData', target, offset, data); return; } // WebGL2 owns the error
+    entry.tracked = true;
+    if (entry.shadow == null && entry.zero) { out.fill(0); return; }
+    if (entry.shadow == null) {
+      // Contents unknown on the CPU (uploaded before the game ever read this buffer): one real readback
+      // of the whole buffer, kept as its shadow from now on.
+      const s = this.shadowStore(entry);
+      this.call('getBufferSubData', target, 0, s);
+      this.bufferReadbacks = (this.bufferReadbacks || 0) + 1;
+      entry.shadow = s;
+    }
+    out.set(entry.shadow.subarray(offset, offset + out.length));
   }
   bufferParameter(target, pname) {
     const gl = this.context;
     if (target !== gl.ARRAY_BUFFER && target !== gl.ELEMENT_ARRAY_BUFFER)
       throw new Error(`Unsupported WebGL2 buffer target: 0x${target.toString(16)}`);
     if (pname === 0x8764) { // BUFFER_SIZE
-      const size = Number(gl.getBufferParameter(target, gl.BUFFER_SIZE));
-      // Round 43 diagnostic: ring of the sizes the mapped-buffer path really saw (no rebuild needed).
-      const ring = this.bufferParamLog || (this.bufferParamLog = []);
-      ring.push({ target, pname, size, bound: target === gl.ARRAY_BUFFER ? this.boundArrays : this.boundElements });
-      if (ring.length > 24) ring.splice(0, ring.length - 24);
+      const known = this.boundBufferEntry(target)?.size;
+      const size = known !== undefined ? known : Number(gl.getBufferParameter(target, gl.BUFFER_SIZE));
+      // Round 43 diagnostic ring of the sizes the mapped-buffer path really saw, opt-in (see bufferData).
+      if (this.bufferDiag) {
+        const ring = this.bufferParamLog || (this.bufferParamLog = []);
+        ring.push({ target, pname, size, bound: target === gl.ARRAY_BUFFER ? this.boundArrays : this.boundElements });
+        if (ring.length > 24) ring.splice(0, ring.length - 24);
+      }
       return [size];
     }
     if (pname === 0x8765) return [0]; // BUFFER_USAGE: WebGL2 exposes no usage query
@@ -2216,7 +2281,7 @@ export class GLBridge {
   quadsFromBoundElements(count, webglType, offset) {
     const bytes = webglType === 0x1405 ? 4 : webglType === 0x1403 ? 2 : 1;
     const raw = new Uint8Array(count * bytes);
-    this.call('getBufferSubData', this.context.ELEMENT_ARRAY_BUFFER, offset, raw);
+    this.getBufferSubData(this.context.ELEMENT_ARRAY_BUFFER, offset, raw); // CPU shadow, no GPU stall
     this.drawQuads(GLBridge.indexArray(webglType, raw.buffer, 0, count), webglType);
   }
   drawElements(mode, count, type, indices) {
