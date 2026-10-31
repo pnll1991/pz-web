@@ -147,6 +147,40 @@ test('glActiveTexture switches texture units and each unit keeps its own bound t
   assert.throws(() => gl.activeTexture(33986), /no texture unit 2/); // fake context exposes TEXTURE0/1
 });
 
+test('glActiveTexture reaches WebGL2, so each glBindTexture lands on the unit the game selected', () => {
+  // Round 80: the unit used to be recorded only, and every binding went to WebGL2 unit 0
+  // (chunkShader's DEPTH on unit 1 overwrote DIFFUSE on unit 0).
+  const context = fakeContext();
+  const gl = bridge(context);
+  const [a, b] = gl.genTextures(2);
+  context.calls.length = 0;
+  gl.bindTexture(3553, a);
+  gl.activeTexture(33985);
+  gl.bindTexture(3553, b);
+  gl.activeTexture(33984);
+  const seq = context.calls.filter(c => c[0] === 'activeTexture' || c[0] === 'bindTexture').map(c => c[0] === 'activeTexture' ? c[1] : 'bind');
+  assert.deepEqual(seq, ['bind', 33985, 'bind', 33984]);
+});
+
+test('glPopAttrib(GL_TEXTURE_BIT) restores the active unit and the per-unit bindings in WebGL2', () => {
+  const context = fakeContext();
+  const gl = bridge(context);
+  const [a, b, c] = gl.genTextures(3);
+  gl.bindTexture(3553, a);
+  gl.activeTexture(33985); gl.bindTexture(3553, b);
+  gl.activeTexture(33984);
+  gl.pushAttrib(0x00040000); // GL_TEXTURE_BIT
+  gl.activeTexture(33985); gl.bindTexture(3553, c);
+  context.calls.length = 0;
+  gl.popAttrib();
+  const tail = context.calls.filter(x => x[0] === 'activeTexture' || x[0] === 'bindTexture');
+  assert.deepEqual(tail.map(x => x[0] === 'activeTexture' ? x[1] : x[2]), [33985, gl.textures.get(b).texture, 33984]);
+  assert.equal(gl.activeUnit, 0);
+  assert.equal(gl.activeBoundTexture(), a);
+  gl.activeTexture(33985);
+  assert.equal(gl.activeBoundTexture(), b);
+});
+
 test('framebuffers and renderbuffers are real WebGL2 objects with validated targets', () => {
   const gl = bridge(fakeContext());
   const fbo = gl.genFramebuffers(2);

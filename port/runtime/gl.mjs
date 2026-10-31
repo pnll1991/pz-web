@@ -561,7 +561,7 @@ export class GLBridge {
       for (const [token, entry] of this.capabilities) this.capability(token, entry.enabled);
       if (this.currentProgram !== null) this.applyAlphaTest(this.currentProgram);
     }
-    if (st.texture) { this.activeUnit = st.texture.activeUnit; this.textureUnits = st.texture.units.slice(); }
+    if (st.texture) this.restoreTextureUnits(st.texture);
     if (st.pixelStorei) { this.attribRecords.pixelStorei = new Map(st.pixelStorei); for (const [, v] of st.pixelStorei) this.call('pixelStorei', v[0], v[1]); }
     if (st.viewport) this.call('viewport', ...st.viewport);
     if (st.scissor) this.call('scissor', ...st.scissor);
@@ -1052,6 +1052,10 @@ export class GLBridge {
     const max = Number(this.context.getParameter(this.context.MAX_COMBINED_TEXTURE_IMAGE_UNITS));
     if (index >= max)
       throw new Error(`glActiveTexture: unit ${index} exceeds MAX_COMBINED_TEXTURE_IMAGE_UNITS=${max}`);
+    // Round 80: the unit must reach WebGL2 too. Before, only activeUnit was recorded and every
+    // glBindTexture landed on unit 0, so multi-texture shaders (chunkShader DIFFUSE+DEPTH, lighting,
+    // floor/wall masks) sampled the wrong or no texture.
+    this.call('activeTexture', this.context.TEXTURE0 + index);
     this.activeUnit = index;
     while (this.textureUnits.length <= index) this.textureUnits.push(null);
   }
@@ -1120,7 +1124,30 @@ export class GLBridge {
     if (handle === 0) { this.call('bindTexture', this.context[name], null); this.textureUnits[this.activeUnit] = null; return; }
     const entry = this.textureEntry(handle, 'glBindTexture');
     this.call('bindTexture', this.context[name], entry.texture);
+    entry.target = name;
     this.textureUnits[this.activeUnit] = handle;
+  }
+  /**
+   * GL_TEXTURE_BIT pop: the active unit and each unit's binding return to the snapshot, in WebGL2 as
+   * well as in this bridge's records (units whose binding did not change are not touched).
+   */
+  restoreTextureUnits({ activeUnit, units }) {
+    const gl = this.context;
+    const count = Math.max(units.length, this.textureUnits.length);
+    for (let i = 0; i < count; i++) {
+      const handle = units[i] ?? null;
+      if ((this.textureUnits[i] ?? null) === handle) continue;
+      this.call('activeTexture', gl.TEXTURE0 + i);
+      if (handle === null) this.call('bindTexture', gl[this.textures.get(this.textureUnits[i])?.target ?? 'TEXTURE_2D'], null);
+      else {
+        const entry = this.textures.get(handle);
+        // A texture deleted since the push is unbound, as desktop GL reverts deleted names to 0.
+        this.call('bindTexture', gl[entry?.target ?? 'TEXTURE_2D'], entry ? entry.texture : null);
+      }
+    }
+    this.call('activeTexture', gl.TEXTURE0 + activeUnit);
+    this.activeUnit = activeUnit;
+    this.textureUnits = units.slice();
   }
   /**
    * Desktop token -> WebGL2 constant. Values verified twice: `javap -constants` over the pinned
