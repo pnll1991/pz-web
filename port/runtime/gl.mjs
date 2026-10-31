@@ -1899,7 +1899,44 @@ export class GLBridge {
     }
     return bound !== null;
   }
+  /** Round 79: GL_QUADS (7) does not exist in WebGL2. Each quad (a,b,c,d) becomes the triangles
+   * (a,b,c)(a,c,d), drawn from a scratch element buffer; the caller's bindings are restored.
+   * QUAD_STRIP/POLYGON and other legacy modes still raise. */
+  static checkMode(mode) {
+    if (mode >= 0 && mode <= 6) return;
+    if (mode === 7) return;
+    throw new Error(`WebGL2 has no primitive mode 0x${mode.toString(16)}`);
+  }
+  drawQuads(quadIndices, webglType) {
+    const gl = this.context;
+    const n = Math.floor(quadIndices.length / 4) * 4;
+    const tris = new (quadIndices.constructor)(n / 4 * 6);
+    for (let q = 0, t = 0; q < n; q += 4) {
+      tris[t++] = quadIndices[q]; tris[t++] = quadIndices[q + 1]; tris[t++] = quadIndices[q + 2];
+      tris[t++] = quadIndices[q]; tris[t++] = quadIndices[q + 2]; tris[t++] = quadIndices[q + 3];
+    }
+    const previous = gl.getParameter(0x8895);
+    const scratch = this.quadIndexBuffer ?? (this.quadIndexBuffer = gl.createBuffer());
+    this.call('bindBuffer', gl.ELEMENT_ARRAY_BUFFER, scratch);
+    try {
+      this.call('bufferData', gl.ELEMENT_ARRAY_BUFFER, tris, gl.STREAM_DRAW);
+      this.call('drawElements', gl.TRIANGLES, tris.length, webglType, 0);
+    } finally { this.call('bindBuffer', gl.ELEMENT_ARRAY_BUFFER, previous); }
+    this.quadDraws = (this.quadDraws || 0) + 1;
+  }
+  static indexArray(webglType, buffer, byteOffset, count) {
+    const C = webglType === 0x1405 ? Uint32Array : webglType === 0x1403 ? Uint16Array : Uint8Array;
+    return new C(buffer, byteOffset, count);
+  }
+  quadsFromBoundElements(count, webglType, offset) {
+    const bytes = webglType === 0x1405 ? 4 : webglType === 0x1403 ? 2 : 1;
+    const raw = new Uint8Array(count * bytes);
+    this.call('getBufferSubData', this.context.ELEMENT_ARRAY_BUFFER, offset, raw);
+    this.drawQuads(GLBridge.indexArray(webglType, raw.buffer, 0, count), webglType);
+  }
   drawElements(mode, count, type, indices) {
+    GLBridge.checkMode(mode);
+    if (mode === 7 && this.hasElementBuffer()) { this.quadsFromBoundElements(count, GLBridge.indexType(type), indices); return; }
     if (!this.hasElementBuffer())
       throw new Error('glDrawElements needs a bound ELEMENT_ARRAY_BUFFER');
     const webglType = GLBridge.indexType(type);
@@ -1910,6 +1947,8 @@ export class GLBridge {
     this.call('drawElements', mode, count, webglType, indices);
   }
   drawRangeElements(mode, start, end, count, type, indices) {
+    GLBridge.checkMode(mode);
+    if (mode === 7 && this.hasElementBuffer()) { this.quadsFromBoundElements(count, GLBridge.indexType(type), indices); return; }
     if (!this.hasElementBuffer())
       throw new Error('glDrawRangeElements needs a bound ELEMENT_ARRAY_BUFFER');
     if (end < start) throw new Error(`glDrawRangeElements end ${end} < start ${start}`);
@@ -1949,13 +1988,29 @@ export class GLBridge {
     const scratch = this.clientIndexBuffer ?? (this.clientIndexBuffer = gl.createBuffer());
     this.call('bindBuffer', gl.ELEMENT_ARRAY_BUFFER, scratch);
     try {
+      if (mode === 7) {
+        const bytes = webglType === 0x1405 ? 4 : webglType === 0x1403 ? 2 : 1;
+        const copy = data.slice(0, count * bytes);
+        this.call('bindBuffer', gl.ELEMENT_ARRAY_BUFFER, null);
+        this.drawQuads(GLBridge.indexArray(webglType, copy.buffer, 0, count), webglType);
+        return;
+      }
       this.call('bufferData', gl.ELEMENT_ARRAY_BUFFER, data, gl.STREAM_DRAW);
       if (start >= 0) this.call('drawRangeElements', mode, start >>> 0, end >>> 0, count, webglType, 0);
       else this.call('drawElements', mode, count, webglType, 0);
     } finally { this.call('bindBuffer', gl.ELEMENT_ARRAY_BUFFER, null); }
     this.clientIndexDraws = (this.clientIndexDraws || 0) + 1;
   }
-  drawArrays(mode, first, count) { this.call('drawArrays', mode, first, count); }
+  drawArrays(mode, first, count) {
+    GLBridge.checkMode(mode);
+    if (mode === 7) {
+      const idx = new Uint32Array(count);
+      for (let i = 0; i < count; i++) idx[i] = first + i;
+      this.drawQuads(idx, 0x1405);
+      return;
+    }
+    this.call('drawArrays', mode, first, count);
+  }
   static indexType(type) {
     const map = new Map([[0x1401, 0x1401], [0x1403, 0x1403], [0x1405, 0x1405]]);
     const value = map.get(type);

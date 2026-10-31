@@ -275,3 +275,20 @@ test('element buffer binding follows the bound vertex array', () => {
   gl.drawElements(4, 6, 0x1403, 156);
   assert.deepEqual(context.calls.at(-1), ['drawElements', 4, 6, 0x1403, 156]);
 });
+
+// Round 79: GL_QUADS is converted to triangles (a,b,c)(a,c,d) in a scratch element buffer.
+test('GL_QUADS draws become indexed triangles and legacy modes raise', () => {
+  const context = fakeContext();
+  let bound = null; const uploads = [];
+  Object.assign(context, { ARRAY_BUFFER: 34962, ELEMENT_ARRAY_BUFFER: 34963, TRIANGLES: 4, STREAM_DRAW: 35040,
+    createBuffer: () => ({ __scratch: 1 }), bindBuffer: (t, b) => { bound = b; },
+    bufferData: (t, data) => uploads.push([...data]),
+    getParameter: (p) => (p === 0x8895 ? bound : 0),
+    drawElements: (...a) => context.calls.push(['drawElements', ...a]) });
+  const gl = bridge(context);
+  gl.drawArrays(7, 4, 8);
+  assert.deepEqual(uploads.at(-1), [4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11]);
+  assert.deepEqual(context.calls.at(-1), ['drawElements', 4, 12, 0x1405, 0]);
+  assert.equal(bound, null, 'previous element binding restored');
+  assert.throws(() => gl.drawArrays(8, 0, 4), /no primitive mode 0x8/);
+});
