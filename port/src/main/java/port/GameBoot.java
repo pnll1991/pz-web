@@ -16,6 +16,9 @@ public final class GameBoot {
         port.natives.PopMan64.install();
         port.natives.Clipper2.install();
         port.natives.PathFind64.install();
+        // jassimp64 (models_X .x meshes): answered from the preconverted cache the packs serve at the
+        // .x path (port/natives/Jassimp64.java, tools/jassimp/JassimpCache.java).
+        port.natives.Jassimp64.install();
         state("starting", "", "");
         try {
             launch(args);
