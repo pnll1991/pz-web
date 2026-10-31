@@ -931,3 +931,38 @@ Commits en `code/menu`: `acf5ac6` (nativas Clipper), `d80bc78` (`Bullet.setVehic
   `vfs.mjs`/`packs.mjs` lo cuentan una vez. Presupuesto: packs 519,9 MB de 536,9 MB (antes 464,8): quedan ~17 MB para
   `/Zomboid` (partidas). Bob completo (1650 clips, 272 MB) no entra en el preload de packs: haría falta servirlo por el
   manifest remoto (hoy excluye `anims_X/`) o subir `maxBytes`; además `loadAnimsFromDir` lo parsearía entero al arrancar.
+
+## Ronda 80 — frente K (31/10): personaje invisible (sólo la sombra)
+Análisis estático (`javap -c` del jar fijado, volcado en /tmp; `translateShader` sobre basicEffect real):
+- **Causa más probable: el layout de vértices de las mallas `.txt` no coincide con las ubicaciones de basicEffect.**
+  `VertexBufferObject.BeginDraw` usa el índice del elemento del `VertexFormat` como índice de atributo
+  (`glVertexAttribPointer(i, ...)`). `ModelLoader.loadTxt` (el camino que usamos: MaleBody.x convertido a `.txt` por
+  `tools/pack/x_anim_to_txt.py`) arma 0 Vertex(12), 1 Normal(12), 2 Tangent(12), 3 TexCoord(8), 4 BlendWeight(16),
+  5 BlendIndex(16), y el caso Tangent de BeginDraw no llama `glVertexAttribPointer` ni habilita el array.
+  `ImportedSkinnedMesh` (camino jassimp de los `.x`, el de escritorio) arma 0 V, 1 N, 2 BlendWeight, 3 BlendIndex,
+  4 TexCoord. `basicEffect.vert` (y animalEffect, door, vehicle*, aim_outline_solid, basicEffect_instanced) declaran
+  `layout(location=2) boneWeights`, `3 boneIndices`, `4 uv`; `ShaderUnit` también los fija con `glBindAttribLocation`
+  cuando reescribe a `#version 120`. Con la malla `.txt`: `boneWeights` lee el valor genérico constante
+  ((0,0,0,1) si nadie lo cambió) -> sólo pesa `.w`; `boneIndices` = uv (vec2 -> (u,v,0,1)) -> todo vértice usa
+  `MatrixPalette[1]`; `uv` = pesos.xy -> la textura se muestrea en (w0,w1) y `texSample.w < 0.01` descarta. La
+  sombra sale por otro camino. No es un error del puente: escritorio haría lo mismo con esa malla. El static
+  (`basicEffect_static.vert`: uv en 2) tampoco coincide con el static `.txt` (Tangent en 2, uv en 3).
+- Arreglo fiel propuesto (Java, no hecho en este frente): reemplazar `jassimp.Jassimp.aiImportFile` (nativa) por una
+  implementación que lea un caché preconvertido de la salida de assimp ("Preconvertir en tu PC y leer el caché",
+  ROADMAP) para que el código del juego (`ImportedSkinnedMesh`) arme su propio VBO. Alternativa descartada: remapear
+  atributos en `gl.mjs` (inventaría un comportamiento; afectaría a cualquier otro programa).
+- Descartado: presupuesto de uniforms. Vértice traducido: ModelViewProjection 4 + MatrixPalette[60] 240 + targetDepth,
+  UVScale, HighResDepthMultiplier, FinalScale (DepthBias no se usa) = 248 vectores como máximo, < 256 (SwiftShader) y
+  4096 (NVIDIA). El puente lee LINK_STATUS e info log tras cada link (`linkProgram`, `shaderTrail`), no falla en silencio.
+- Descartado: transpuesta. `Shader.setMatrixPalette(FloatBuffer)` -> `setMatrixPalette(fb, true)` ->
+  `glUniformMatrix4fv(matrixId, true, fb)` (count = remaining/16 en el wrapper LWJGL); el puente transpone una vez en CPU
+  y sube con false: el shader ve lo mismo que en escritorio.
+- Descartado: tipos de atributos. BlendIndex/BlendWeight se suben con `GL_FLOAT` tamaño 4 (`glVertexAttribPointer`, sin
+  `IPointer`) y el shader los declara `vec4` (`int(boneIndices.x)`): coinciden.
+- Descartado: defaults de uniforms. `applyUniformDefaults` corre justo después de un link exitoso, antes de que
+  `ShaderProgram` avise a `Shader.onProgramCompiled`; antes del link no hay ubicaciones válidas, así que no pisa nada.
+- Descartado: `Alpha`. `Shader.startCharacter` llama `setAlpha(ModelSlotRenderData.alpha)` -> `glUniform1f(alpha)` con
+  la ubicación de "Alpha" (la que lee basicEffect.frag) en cada dibujo.
+- Diagnóstico nuevo: `pzRuntime.gl.disabledAttribDraws` cuenta, por `"<programa>:<atributo>@<ubicación>"`, los dibujos
+  en que un atributo activo del programa actual no tiene su array habilitado (sin cambiar nada). Con la hipótesis de
+  arriba debe aparecer `<basicEffect>:boneWeights@2`. Test `tests/node/gl-disabled-attribs.test.mjs`.

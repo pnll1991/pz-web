@@ -833,3 +833,11 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   (listado anims_X + fallback anims) duplicaban la cuenta y un índice nuevo habría roto el arranque con un packs.mjs
   viejo. Mejor enfoque: cambiar índice de packs y runtime JS juntos (sync_web + overlay bajo chrome.lock) y medir el
   presupuesto con la misma regla que el navegador antes de reescribir index.json.
+
+## Ronda 80 (frente K, 31/10) — personaje invisible
+- Error: nombré `attribGaps` un contador nuevo de `gl.mjs` y ya existía (gaps de `glPushAttrib`, leído por
+  `attribState`). Patrón a evitar: elegir nombres de campos del puente sin buscarlos. Mejor enfoque:
+  `grep -n "this.<nombre>"` antes de agregar estado al `GLBridge`.
+- Patrón: ante un modelo deformado/invisible, comparar el `VertexFormat` que arma el cargador real (índice de elemento =
+  índice de atributo en `VertexBufferObject.BeginDraw`) con los `layout(location=N)` del shader antes de mirar uniforms;
+  el cargador `.txt` (legado) no coincide con los shaders actuales, sólo el de jassimp.

@@ -682,6 +682,37 @@ export class GLBridge {
     this.appliedColor = { location, r, g, b, a };
     this.colorStats.applied++;
   }
+  /**
+   * Round 80 (front K) diagnostics: an active attribute of the current program whose array is
+   * disabled reads the constant generic value ((0,0,0,1) unless glVertexAttrib* set it), as on
+   * desktop, so nothing is changed here; the draw is only counted in `disabledAttribDraws`
+   * ("<program handle>:<name>@<location>"). It exposes VBO layouts that do not match a shader's
+   * attribute locations: the .txt mesh path (ModelLoader.loadTxt: 0 vertex, 1 normal, 2 tangent, 3 uv, 4 weights,
+   * 5 indices, element index = attribute index in VertexBufferObject.BeginDraw, tangent never
+   * enabled) against basicEffect.vert (2 boneWeights, 3 boneIndices, 4 uv) shows up as
+   * `<handle>:boneWeights@2`. pzColor is skipped (applyColor feeds it on purpose).
+   */
+  noteDisabledAttribs() {
+    const entry = this.currentProgram, gl = this.context;
+    if (entry === null || !entry.linked || typeof gl.getActiveAttrib !== 'function') return;
+    if (entry.activeAttribs === undefined) { // reset by linkProgram
+      const list = [];
+      const count = Number(gl.getProgramParameter(entry.program, gl.ACTIVE_ATTRIBUTES)) || 0;
+      for (let i = 0; i < count; i++) {
+        const info = gl.getActiveAttrib(entry.program, i);
+        if (!info || info.name.startsWith('gl_') || info.name === 'pzColor') continue;
+        const location = Number(gl.getAttribLocation(entry.program, info.name));
+        if (location >= 0) list.push({ name: info.name, location });
+      }
+      entry.activeAttribs = list;
+    }
+    for (const { name, location } of entry.activeAttribs) {
+      if (this.attribs.get(location)?.enabled) continue;
+      const draws = this.disabledAttribDraws ?? (this.disabledAttribDraws = {});
+      const key = `${entry.handle}:${name}@${location}`;
+      draws[key] = (draws[key] ?? 0) + 1;
+    }
+  }
   colorState() { return { current: this.currentColor.slice(), applied: this.appliedColor, ...this.colorStats }; }
   /** State the Java/runtime report exposes: applied WebGL2 caps plus recorded desktop-only caps. */
   capabilityState() {
@@ -1699,7 +1730,7 @@ export class GLBridge {
       // Round 80 (front F): gl_Color (pzColor) gets its own fixed location next to it, so GL_COLOR_ARRAY
       // drives it and the linker never places it on an index the game enabled for its own attribute.
       this.call('bindAttribLocation', program.program, GLBridge.COLOR_ARRAY_LOCATION, 'pzColor');
-      program.matrixLocations = undefined; program.matrixSerial = -1; program.immediateLocations = undefined;
+      program.matrixLocations = undefined; program.matrixSerial = -1; program.immediateLocations = undefined; program.activeAttribs = undefined;
       this.call('linkProgram', program.program);
       program.linked = this.call('getProgramParameter', program.program, this.context.LINK_STATUS) ? true : false;
       program.log = String(this.call('getProgramInfoLog', program.program) ?? '');
@@ -2294,7 +2325,7 @@ export class GLBridge {
   }
   drawElements(mode, count, type, indices) {
     GLBridge.checkMode(mode);
-    this.applyColor(); this.applyMatrices();
+    this.applyColor(); this.applyMatrices(); this.noteDisabledAttribs();
     if (mode === 7 && this.hasElementBuffer()) { this.quadsFromBoundElements(count, GLBridge.indexType(type), indices); return; }
     if (!this.hasElementBuffer())
       throw new Error('glDrawElements needs a bound ELEMENT_ARRAY_BUFFER');
@@ -2307,7 +2338,7 @@ export class GLBridge {
   }
   drawRangeElements(mode, start, end, count, type, indices) {
     GLBridge.checkMode(mode);
-    this.applyColor(); this.applyMatrices();
+    this.applyColor(); this.applyMatrices(); this.noteDisabledAttribs();
     if (mode === 7 && this.hasElementBuffer()) { this.quadsFromBoundElements(count, GLBridge.indexType(type), indices); return; }
     if (!this.hasElementBuffer())
       throw new Error('glDrawRangeElements needs a bound ELEMENT_ARRAY_BUFFER');
@@ -2349,7 +2380,7 @@ export class GLBridge {
   drawElementsClient(mode, start, end, count, type, data) {
     if (this.hasElementBuffer()) throw new Error('drawElementsClient with an ELEMENT_ARRAY_BUFFER bound');
     const gl = this.context, webglType = GLBridge.indexType(type);
-    this.applyColor(); this.applyMatrices();
+    this.applyColor(); this.applyMatrices(); this.noteDisabledAttribs();
     const scratch = this.clientIndexBuffer ?? (this.clientIndexBuffer = gl.createBuffer());
     this.call('bindBuffer', gl.ELEMENT_ARRAY_BUFFER, scratch);
     try {
@@ -2368,7 +2399,7 @@ export class GLBridge {
   }
   drawArrays(mode, first, count) {
     GLBridge.checkMode(mode);
-    this.applyColor(); this.applyMatrices();
+    this.applyColor(); this.applyMatrices(); this.noteDisabledAttribs();
     if (mode === 7) {
       const idx = new Uint32Array(count);
       for (let i = 0; i < count; i++) idx[i] = first + i;
@@ -2633,7 +2664,7 @@ export class GLBridge {
   }
   drawArraysInstanced(mode, first, count, primcount) {
     GLBridge.checkInstancedMode(mode, 'glDrawArraysInstanced');
-    this.applyColor(); this.applyMatrices();
+    this.applyColor(); this.applyMatrices(); this.noteDisabledAttribs();
     this.call('drawArraysInstanced', mode, first, count, primcount);
   }
   drawElementsInstanced(mode, count, type, indices, primcount) {
@@ -2643,7 +2674,7 @@ export class GLBridge {
     const elementBytes = webglType === 0x1405 ? 4 : webglType === 0x1403 ? 2 : 1;
     if (indices % elementBytes !== 0)
       throw new Error(`Index offset ${indices} is not a multiple of the ${elementBytes}-byte index size`);
-    this.applyColor(); this.applyMatrices();
+    this.applyColor(); this.applyMatrices(); this.noteDisabledAttribs();
     this.call('drawElementsInstanced', mode, count, webglType, indices, primcount);
   }
   // Desktop starts with GL_DITHER and GL_MULTISAMPLE enabled; every other recorded cap starts disabled.
