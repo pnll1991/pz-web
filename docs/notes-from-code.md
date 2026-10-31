@@ -672,3 +672,10 @@ llegue a `NativeArena.free`). Sin stubs: los depthmaps se tienen que cargar de v
 - Reporte real de Paolozky (Chrome propio, 8097): aviso de fotosensibilidad dibujado en el cuadrante inferior izquierdo y recortado. Causa: su pantalla es HiDPI; window.mjs multiplicaba el drawing buffer por devicePixelRatio mientras PZ/lwjglx dimensionan glViewport y la UI con el tamaño de ventana (Display.getWidth) → dibujo en 1/4 del canvas y coordenadas de cursor x2.
 - Fix (solo JS): buffer == tamaño de ventana (ratio 1) en create/setWindowSize/input.resize, contentScale 1, foco del canvas al crear la ventana (teclado).
 - Probe r73 con `PZ_DPR=2` (nuevo env en menu_pixels; perfil ahora concurrente con los clics): TOS ocupa todo el canvas y centrado. ACCEPT sigue sin dispararse aunque Java lee el botón presionado (trues 1→4→9) → falta traza Java en UIManager/ISButton (requiere rebuild).
+
+## Ronda 74 (30-oct, 22:40 -03)
+- Nuevas sondas en StartupProgress: Mouse#update, UIManager#updateMouseButtons, UIElement#onConsumeMouseButtonDown/Up, onMouseDown/Up, TermsOfServiceState#fromLua0. menu_pixels: PZ_CLICKS y linea COUNTS (pzGameCounts) 8 s despues de cada click.
+- Resultado (r74c, 2 clicks en 610,509, DPR 1): la cadena Java llega hasta UIElement#onMouseDown 1 vez y onMouseUp 2 veces, pero onMouseDown NO recursa a ningun hijo: el ISButton ACCEPT nunca recibe el click. fromLua0 = 1, y esa unica llamada es "created" desde enter(), no "exit". TermsOfServiceState#update siguio devolviendo Remain (557 updates); MainScreenState#enter = 0.
+- Una espera larga (r74, 1 click, +6 min) tampoco sale del TOS: no es solo lentitud.
+- "error 26" de Paolozky: es casi seguro el contador de errores en pantalla de PZ (unas 27 "Exception thrown" = FileNotFoundException durante el boot, mas fallos de AngelCodeFont con mainfont_0.png). Ocurre antes del TOS; no explica ACCEPT por si solo.
+- Siguiente: registrar x,y y los rects de los hijos en el hit-test de UIElement#onMouseDown (offset/escala vs hover).

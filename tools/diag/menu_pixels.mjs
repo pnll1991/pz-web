@@ -82,9 +82,9 @@ while (Date.now() - t0 < MAX) {
   catch (e) { log('SAMPLE_FAIL', String(e)); continue; }
   writeFileSync(OUT.replace('.png', '-console.txt'), cons.join('\n'));
   log('SAMPLE', Math.round((Date.now() - t0) / 1000), JSON.stringify({ frames: res.frames, shots: res.shots, renders: res.renders }), 'LAST', JSON.stringify(cons.slice(-2)));
-  if (CLICK && clicks < 4 && Date.now() - t0 > CLICK_AFTER * 1000) { // real mouse click on the canvas (e.g. TOS ACCEPT)
+  if (CLICK && clicks < Number(process.env.PZ_CLICKS || 4) && Date.now() - t0 > CLICK_AFTER * 1000) { // real mouse click on the canvas (e.g. TOS ACCEPT)
     clicks++; try { await page.mouse.move(CLICK[0], CLICK[1]); await page.waitForTimeout(300); await page.mouse.down(); await page.waitForTimeout(120); await page.mouse.up();
-      log('CLICK', clicks, CLICK.join(','), JSON.stringify(await page.evaluate(() => { const w = globalThis.pzRuntime?.window; return w && { kinds: w.kindStats, polls: w.pollCalls, nulls: w.pollNulls, buttons: [...(w.input?.buttons ?? [])], queries: w.buttonQueries, trues: w.buttonTrue, queue: w.input?.events?.length, cb: [...(w.callbackIds ?? new Map())] }; }).catch(e => String(e)))); await page.waitForTimeout(8000); await page.screenshot({ path: OUT.replace('.png', `-click${clicks}.png`), timeout: 60000 }); } catch (e) { log('CLICK_FAIL', String(e).slice(0, 200)); } }
+      log('CLICK', clicks, CLICK.join(','), JSON.stringify(await page.evaluate(() => { const w = globalThis.pzRuntime?.window; return w && { kinds: w.kindStats, polls: w.pollCalls, nulls: w.pollNulls, buttons: [...(w.input?.buttons ?? [])], queries: w.buttonQueries, trues: w.buttonTrue, queue: w.input?.events?.length, cb: [...(w.callbackIds ?? new Map())] }; }).catch(e => String(e)))); await page.waitForTimeout(8000); log('COUNTS', clicks, JSON.stringify(await page.evaluate(() => Object.fromEntries(Object.entries(globalThis.pzGameCounts ?? {}).filter(([k]) => !k.endsWith('#last') && /Mouse|UIManager|UIElement|TermsOfService|MainScreen/.test(k)))).catch(e => String(e)))); await page.screenshot({ path: OUT.replace('.png', `-click${clicks}.png`), timeout: 60000 }); } catch (e) { log('CLICK_FAIL', String(e).slice(0, 200)); } }
   if (res.out) break;
 }
 if (res?.out) {

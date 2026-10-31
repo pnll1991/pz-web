@@ -171,7 +171,17 @@ public final class StartupProgress implements ClassHolderTransformer {
         "zombie.gameStates.MainScreenState#preloadBackgroundTextures()V",
         "zombie.Lua.LuaManager#init()V",
         "zombie.Lua.LuaManager#LoadDirBase(Ljava/lang/String;)V",
-        "zombie.Lua.LuaManager#initChecksum()V");
+        "zombie.Lua.LuaManager#initChecksum()V",
+        // Ronda 74: ACCEPT del TOS no dispara aunque Java ve el boton 0 abajo. Estos contadores
+        // dicen en que eslabon se corta Mouse#update -> UIManager#updateMouseButtons ->
+        // UIElement#onConsumeMouseButtonDown/Up -> onMouseDown/Up (Lua) -> fromLua0("exit").
+        "zombie.input.Mouse#update()V",
+        "zombie.ui.UIManager#updateMouseButtons(II)I",
+        "zombie.ui.UIElement#onConsumeMouseButtonDown(IDD)Z",
+        "zombie.ui.UIElement#onConsumeMouseButtonUp(IDD)Z",
+        "zombie.ui.UIElement#onMouseDown(DD)Ljava/lang/Boolean;",
+        "zombie.ui.UIElement#onMouseUp(DD)Ljava/lang/Boolean;",
+        "zombie.gameStates.TermsOfServiceState#fromLua0(Ljava/lang/String;)Ljava/lang/Object;");
     // Round 32: java.lang.Thread$SleepHandler and org.teavm.runtime.Fiber$AsyncCallbackImpl are
     // deliberately NOT instrumented: both run inside the suspend/resume machinery, and injected
     // code there corrupts the WasmGC fiber stack (see the removal of java.lang.Thread above).
