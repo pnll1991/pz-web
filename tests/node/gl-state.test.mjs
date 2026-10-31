@@ -292,3 +292,12 @@ test('GL_QUADS draws become indexed triangles and legacy modes raise', () => {
   assert.equal(bound, null, 'previous element binding restored');
   assert.throws(() => gl.drawArrays(8, 0, 4), /no primitive mode 0x8/);
 });
+
+// Round 79: TextureFBO.releaseTexture detaches with texture 0.
+test('glFramebufferTexture2D with texture 0 detaches the attachment', () => {
+  const context = fakeContext();
+  context.framebufferTexture2D = (...a) => context.calls.push(['framebufferTexture2D', ...a]);
+  const gl = bridge(context);
+  gl.framebufferTexture2D(36160, 36064, 3553, 0, 0);
+  assert.deepEqual(context.calls.at(-1), ['framebufferTexture2D', 36160, 36064, 3553, null, 0]);
+});

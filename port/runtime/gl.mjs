@@ -1749,6 +1749,12 @@ export class GLBridge {
   /** Desktop status tokens are identical to WebGL2's, so the WebGL2 answer is returned unchanged. */
   checkFramebufferStatus(target) { return Number(this.call('checkFramebufferStatus', this.fbTarget(target, 'glCheckFramebufferStatus'))); }
   framebufferTexture2D(target, attachment, textarget, texture, level) {
+    // Round 79: texture 0 detaches the attachment (TextureFBO.releaseTexture), as in desktop GL.
+    if (Number(texture) === 0) {
+      this.call('framebufferTexture2D', this.fbTarget(target, 'glFramebufferTexture2D'),
+        this.fbAttachment(attachment, 'glFramebufferTexture2D'), this.context.TEXTURE_2D, null, 0);
+      return;
+    }
     const entry = this.textureEntry(texture, 'glFramebufferTexture2D');
     const tname = this.textureTargetName(textarget);
     // The WebGLTexture object is a required argument: WebGL2 raises
@@ -1760,7 +1766,7 @@ export class GLBridge {
   framebufferRenderbuffer(target, attachment, renderbuffertarget, renderbuffer) {
     if (Number(renderbuffertarget) !== 36161)
       throw new Error(`glFramebufferRenderbuffer needs GL_RENDERBUFFER (36161), got 0x${(renderbuffertarget >>> 0).toString(16)}`);
-    const rb = this.renderbuffers.get(renderbuffer);
+    const rb = Number(renderbuffer) === 0 ? null : this.renderbuffers.get(renderbuffer); // 0 detaches
     if (rb === undefined)
       throw new Error(`Renderbuffer ${renderbuffer} does not exist for glFramebufferRenderbuffer`);
     this.call('framebufferRenderbuffer', this.fbTarget(target, 'glFramebufferRenderbuffer'),
