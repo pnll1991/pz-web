@@ -891,3 +891,34 @@ Commits en `code/menu`: `acf5ac6` (nativas Clipper), `d80bc78` (`Bullet.setVehic
 - Riesgos: `--dev` no corre los JUnit (correr `scripts/build.sh` normal antes de commitear cambios del compilador);
   la caché de exposición no ve cambios de `tools/exposure` fuera de `generate.py`; el swap no es atómico entre los
   tres archivos (una página que carga justo en ese instante podría ver boot.wasm nuevo con pulse-map viejo).
+
+## Ronda 80 — frente H (31/10): JAXB de AnimNode, clips y root motion del jugador
+- **JAXB `onground_breathing.xml`** (único XML de AnimSets que falla, el único con `<m_BlendCurve><Sequence>`): la
+  cadena es `AnimNode.blendCurve` (InterpolatorSlot) -> `@XmlElements({@XmlElement(name="Sequence", type=LerpSequence.class), ...})`.
+  `LerpSequence`/`LerpPolyline` sólo aparecen como valores `Class` de esa anotación (ningún `new` en el jar). En TeaVM
+  0.16.0 `AnnotationGenerationHelper.propagateAnnotationInstance` propaga el valor a un pseudo-campo `$type` que el
+  accesor generado nunca lee (devuelve `ClassInfoUtil.resolve(info.type()).classObject()`), así que el `Class` no llega al
+  nodo de clase de `getDeclaredConstructor`/`getName`: sin constructor ni nombre -> `NoSuchMethodException` y
+  "Cannot instantiate null". En el boot.wasm de pzd88 no existen `LerpSequence::<init>` ni `LerpSequence$LerpSequenceEntry`.
+  Fix: `scripts/prepare_teavm.py` `patch_annotation_class_values` (propaga también al resultado del accesor si el
+  miembro es `Class`/`Class[]`). Test: `CompilerRegressionTest.annotationClassValuesReachReflection` (falla sin el
+  parche, pasa con él).
+- **`afterUnmarshal`**: JAXB llama al callback de clase `afterUnmarshal(Unmarshaller, Object padre)`; `LerpSequence` y
+  `LerpPolyline` (los únicos del jar) arman ahí la tabla (`parse()`). `PortXmlBeans` no lo llamaba: la curva quedaba con
+  0 entradas y `lerp()` devolvía 0 sin error. Ahora se llama tras leer cada bean (padre = bean contenedor, null en la raíz).
+  Nota RI: `LerpSequenceEntry.lerpType` es `@XmlElement(name="out")` pero el XML trae `out` como atributo: el RI lo
+  ignora (queda null) y nosotros también.
+- **Root motion**: `AnimNode` por defecto `m_DeferredBoneName=Translation_Data`, eje Y, `useDeferredMovement=true`;
+  `AnimationPlayer.play` busca ese hueso en el SkinningData del modelo ("Deferred bone not found" si falta: 0 veces en
+  pzd88). `IsoGameCharacter.doDeferredMovement` traslada con `getDeferredMovement` sólo si
+  `isAnimationUpdatingThisFrame()`. `Bob_Walk.txt` convertido conserva la pista T de `Translation_Data` igual al .x
+  (ticks 160/4800 -> 0,0333 s; z -0,047244 por clave; R (w,x,y,z)=(-.5,-.5,.5,.5) -> (.5,-.5,-.5,-.5)). Los clips tienen
+  35 huesos (Translation_Data=34) y `male_skeleton.txt` 45 (=44): `ModelLoader.loadTxt` remapea `Keyframe.bone` por
+  nombre contra el SkinningData destino, como el camino .x. La conversión no es la causa de la falta de traslación.
+- **Clips**: `ModelManager.loadAnimsFromDir` carga TODO lo que lista `media/anims_X/<dir>` al arrancar (el juego real
+  tiene los 2209 clips en memoria). Sólo servimos Bob_Idle/Walk/Run. Faltan p. ej. `Bob_WalkSlow`, limps (2D blend de
+  `defaultWalk`), `Bob_Idle_HeavyBreathing` (2D blend de `Idle`), giros `Bob_IdleTurn90L/R`, `Bob_IdleTurn180L/R`,
+  `Bob_IdleToWalk180L/R`, `Bob_IdleToRun`; `CopyFrame.exec` NPE = `getAnimationClip("Bob_IdleDrinkPopCan")` nulo
+  (scripts/generated/animations.txt). Cierre de `m_AnimName` en AnimSets/player/{idle,movement,run,sprint,turning*}:
+  241 nombres, 239 existen (49 MB de .x, ~35 MB .txt); todo AnimSets/player: 1388 (323 MB .x); todo anims_X: 2209 archivos,
+  513 MB .x (Bob 1650/387 MB -> 272 MB .txt, 77 MB gzip -1, conversión ~62 s medida en la 59b; Zombie 185/46 MB).

@@ -1245,6 +1245,45 @@ def patch_dependency_filter(package):
     print("TeaVM: opt-in memoized DependencyAnalyzer.filterType (pz.teavm.filterCache)")
 
 
+def patch_annotation_class_values(package):
+    """Round 80 (front H): annotation members of type Class/Class[] must carry their class values
+    to the accessor's result in dependency analysis.
+
+    In 0.16.0 AnnotationGenerationHelper.propagateAnnotationInstance propagates each member value into a
+    pseudo-field "$<member>" of the $$_impl class, but the generated accessor never reads that field: it
+    returns ClassInfoUtil.resolve(info.<member>()).classObject(), whose result only receives the type
+    java.lang.Class. So a Class obtained from an annotation (e.g. @XmlElement(type=LerpSequence.class)
+    inside @XmlElements on InterpolatorSlot.interpolator) never reaches the class-value node of
+    getDeclaredConstructor/getName: the reflection listener links no constructor and no name for it,
+    and at runtime getDeclaredConstructor() throws NoSuchMethodException and getName() is null
+    (pzd88: "Cannot instantiate null for unmarshalling" on onground_breathing.xml). The fix propagates
+    the same value into the accessor result as well; nothing else changes.
+    """
+    path = "org/teavm/reflection/AnnotationGenerationHelper.java"
+    source = package.read(path).decode("utf-8")
+    old = """                var field = agent.linkField(new FieldReference(implementor, "$" + methodDecl.getName()));
+                propagateAnnotationValue(agent, value, methodDecl.getResultType(), field.getValue());
+"""
+    new = old + """                var memberType = methodDecl.getResultType();
+                while (memberType instanceof ValueType.Array) {
+                    memberType = ((ValueType.Array) memberType).getItemType();
+                }
+                if (memberType.isObject(Class.class)) {
+                    var accessor = agent.linkMethod(new MethodReference(implementor, methodDecl.getDescriptor()));
+                    propagateAnnotationValue(agent, value, methodDecl.getResultType(), accessor.getResult());
+                }
+"""
+    if source.count(old) != 1:
+        raise RuntimeError("Unexpected TeaVM AnnotationGenerationHelper.propagateAnnotationInstance shape")
+    if "import org.teavm.model.MethodReference;" not in source or "import org.teavm.model.ValueType;" not in source:
+        raise RuntimeError("Unexpected TeaVM AnnotationGenerationHelper imports")
+    destination = ROOT / "port/target/generated-sources/teavm" / path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("// Local change: annotation Class members propagate their values to the accessor result.\n"
+                           + source.replace(old, new), encoding="utf-8")
+    print("TeaVM: annotation Class/Class[] members reach their accessor result (AnnotationGenerationHelper)")
+
+
 def main():
     archive = ROOT / f".toolchain/downloads/teavm-core-{VERSION}-sources.jar"
     if not archive.exists():
@@ -1264,6 +1303,7 @@ def main():
         analyzer = package.read("org/teavm/dependency/DependencyAnalyzer.java").decode("utf-8")
         patch_backend(package)
         patch_dependency_filter(package)
+        patch_annotation_class_values(package)
     if "new DependencyType(valueType, types.size())" not in analyzer:
         raise RuntimeError("TeaVM type-index invariant changed")
     old = "private Set<DependencyType> knownTypes = new HashSet<>();"

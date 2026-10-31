@@ -22,7 +22,7 @@ public final class PortUnmarshaller implements Unmarshaller {
         Element root = node instanceof Element element ? element
                 : node instanceof Document document ? document.getDocumentElement() : null;
         if (root == null) throw new JAXBException("unmarshal source is not an element or document: " + node.getNodeName());
-        return PortXmlBeans.unmarshal(context.resolve(root.getTagName(), null), root);
+        return PortXmlBeans.unmarshal(context.resolve(root.getTagName(), null), root, this);
     }
 
     public Object unmarshal(InputStream input) throws JAXBException {
@@ -31,7 +31,7 @@ public final class PortUnmarshaller implements Unmarshaller {
             byte[] bytes = input.readAllBytes();
             Document document = rootOf(source(bytes, detectCharset(bytes)));
             return PortXmlBeans.unmarshal(context.resolve(document.getDocumentElement().getTagName(), null),
-                    document.getDocumentElement());
+                    document.getDocumentElement(), this);
         } catch (IOException | org.xml.sax.SAXException error) {
             throw new JAXBException("Cannot parse XML for unmarshalling", error);
         }
@@ -44,7 +44,7 @@ public final class PortUnmarshaller implements Unmarshaller {
             char[] buffer = new char[4096];
             int read;
             while ((read = reader.read(buffer)) >= 0) text.append(buffer, 0, read);
-            return PortXmlBeans.unmarshal(context.resolve(tagOf(text.toString()), null), rootOf(text.toString()).getDocumentElement());
+            return PortXmlBeans.unmarshal(context.resolve(tagOf(text.toString()), null), rootOf(text.toString()).getDocumentElement(), this);
         } catch (IOException | org.xml.sax.SAXException error) {
             throw new JAXBException("Cannot parse XML for unmarshalling", error);
         }

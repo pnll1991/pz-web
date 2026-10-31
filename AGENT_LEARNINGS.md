@@ -818,3 +818,14 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   `flock -n` sobre un fd propio, sin envolverlo.
 - Error: `stop` encolaba `quit` detrás de un `until` largo y terminaba en kill forzado. Mejor enfoque: SIGTERM
   directo al node propio (live.mjs cierra el navegador en el handler).
+
+## Ronda 80 (frente H, 31/10) — JAXB de AnimNode y clips del jugador
+- Error de TeaVM (no nuestro): un `Class` que sólo aparece como valor de anotación (`@XmlElement(type=X.class)`) no llega
+  al análisis de reflexión; X queda con `@class` pero sin `::<init>` ni nombre, y `getDeclaredConstructor` lanza
+  `NoSuchMethodException` aunque X esté en `reflection.txt`. Patrón a evitar: suponer que la lista de reflexión basta;
+  el listener de TeaVM es por flujo de datos. Mejor enfoque: buscar en el name section del boot.wasm `X::<init>` y,
+  si falta, ver por qué el Class no fluye; regresión con un probe compilado y `contains("X::<init>")`.
+- Error evitado: con el NoSuchMethod arreglado, la curva seguiría muerta en silencio: JAXB llama a
+  `afterUnmarshal(Unmarshaller,Object)` y nuestro reemplazo no. Mejor enfoque: al reemplazar una librería, buscar en el
+  jar fijado los callbacks/convenciones que la librería invoca por nombre (`command grep -rla afterUnmarshal`).
+- Patrón: confirmar con un control negativo (borrar el parche y ver fallar el test) antes de dar un fix por probado.

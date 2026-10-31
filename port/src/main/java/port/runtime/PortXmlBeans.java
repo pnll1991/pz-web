@@ -3,6 +3,7 @@ package port.runtime;
 import java.lang.reflect.*;
 import java.util.*;
 import port.compat.javax.xml.bind.JAXBException;
+import port.compat.javax.xml.bind.Unmarshaller;
 import port.compat.javax.xml.bind.annotation.*;
 import port.compat.org.w3c.dom.*;
 
@@ -23,10 +24,51 @@ public final class PortXmlBeans {
     }
 
     public static Object unmarshal(Class<?> type, Element root) throws JAXBException {
+        return unmarshal(type, root, null);
+    }
+
+    /** As the RI: after a bean's properties are read, its class-defined afterUnmarshal(Unmarshaller, Object) runs. */
+    public static Object unmarshal(Class<?> type, Element root, Unmarshaller unmarshaller) throws JAXBException {
+        return unmarshal(type, root, unmarshaller, null);
+    }
+
+    private static Object unmarshal(Class<?> type, Element root, Unmarshaller unmarshaller, Object parent) throws JAXBException {
         if (root == null) throw new JAXBException("No root element to unmarshal");
         Object bean = instantiate(type);
-        readBean(bean, root);
+        readBean(bean, root, unmarshaller);
+        afterUnmarshal(bean, unmarshaller, parent);
         return bean;
+    }
+
+    // Ronda 80: JAXB llama al callback de clase `afterUnmarshal(Unmarshaller, Object padre)` de cada bean
+    // (JAXB 2.x, Unmarshaller "Unmarshal Event Callbacks"). LerpSequence/LerpPolyline arman ahí sus tablas
+    // (parse()); sin la llamada quedan con 0 entradas y lerp() devuelve 0 en silencio. Se busca entre los
+    // metodos publicos (los que expone la reflexion) una vez por clase.
+    private static final Map<Class<?>, Optional<Method>> AFTER_UNMARSHAL = new HashMap<>();
+
+    private static void afterUnmarshal(Object bean, Unmarshaller unmarshaller, Object parent) throws JAXBException {
+        Optional<Method> callback = AFTER_UNMARSHAL.get(bean.getClass());
+        if (callback == null) {
+            Method found = null;
+            for (Method method : bean.getClass().getMethods()) {
+                Class<?>[] parameters = method.getParameterTypes();
+                if (method.getName().equals("afterUnmarshal") && !Modifier.isStatic(method.getModifiers())
+                        && parameters.length == 2 && parameters[0] == Unmarshaller.class && parameters[1] == Object.class) {
+                    found = method;
+                    break;
+                }
+            }
+            callback = Optional.ofNullable(found);
+            AFTER_UNMARSHAL.put(bean.getClass(), callback);
+        }
+        if (callback.isEmpty()) return;
+        try {
+            callback.get().invoke(bean, unmarshaller, parent);
+        } catch (InvocationTargetException error) {
+            throw new JAXBException("afterUnmarshal of " + bean.getClass().getName() + " threw", error.getCause());
+        } catch (ReflectiveOperationException error) {
+            throw new JAXBException("Cannot call afterUnmarshal of " + bean.getClass().getName(), error);
+        }
     }
 
 
@@ -82,7 +124,7 @@ public final class PortXmlBeans {
         }
     }
 
-    private static void readBean(Object bean, Element element) throws JAXBException {
+    private static void readBean(Object bean, Element element, Unmarshaller unmarshaller) throws JAXBException {
         for (Field field : fields(bean.getClass())) {
             if (field.isAnnotationPresent(XmlTransient.class)) continue;
             XmlAttribute attribute = field.getAnnotation(XmlAttribute.class);
@@ -107,15 +149,15 @@ public final class PortXmlBeans {
             if (many) {
                 Collection<Object> target = collection(field, bean);
                 for (Element child : found)
-                    target.add(readValue(choiceType(choices, child.getTagName(), elementType(field)), child));
+                    target.add(readValue(choiceType(choices, child.getTagName(), elementType(field)), child, unmarshaller, bean));
             } else {
                 Class<?> type = field.getType().isArray() ? field.getType().getComponentType()
                         : choiceType(choices, found.get(0).getTagName(), field.getType());
-                Object single = readValue(type, found.get(0));
+                Object single = readValue(type, found.get(0), unmarshaller, bean);
                 if (field.getType().isArray()) {
                     Object array = Array.newInstance(field.getType().getComponentType(), found.size());
                     Array.set(array, 0, single);
-                    for (int i = 1; i < found.size(); i++) Array.set(array, i, readValue(type, found.get(i)));
+                    for (int i = 1; i < found.size(); i++) Array.set(array, i, readValue(type, found.get(i), unmarshaller, bean));
                     assignArray(field, bean, array);
                 } else assign(field, bean, single);
             }
@@ -132,7 +174,7 @@ public final class PortXmlBeans {
         }
     }
 
-    private static Object readValue(Class<?> type, Element element) throws JAXBException {
+    private static Object readValue(Class<?> type, Element element, Unmarshaller unmarshaller, Object parent) throws JAXBException {
         if (isLeaf(type)) return convert(type, element.getTextContent());
         // Ronda 64: leer un elemento XML con el tipo de la propia coleccion es un error our, no del
         // juego. Antes, para `public ArrayList<FileGuidPair> files` se pasaba field.getType()
@@ -143,7 +185,7 @@ public final class PortXmlBeans {
         if (Collection.class.isAssignableFrom(type) || Map.class.isAssignableFrom(type))
             throw new JAXBException("Element <" + element.getTagName() + "> has no declared item type for "
                     + type.getName());
-        return unmarshal(type, element);
+        return unmarshal(type, element, unmarshaller, parent);
     }
 
     private static void assign(Field field, Object bean, Object value) throws JAXBException {

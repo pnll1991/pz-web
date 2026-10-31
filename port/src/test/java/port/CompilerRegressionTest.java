@@ -128,6 +128,26 @@ class CompilerRegressionTest {
             assertEquals(forceNullable,((org.teavm.backend.wasm.model.WasmType.Reference)inference.typeStack.get(1)).isNullable(),"block result respects coroutine mode");
         }
     }
+    // Ronda 80 (frente H): un Class que sólo aparece como valor de una anotación anidada (como
+    // @XmlElements({@XmlElement(type=LerpSequence.class)}) en InterpolatorSlot) debe llegar al resultado del
+    // accesor en el análisis de dependencias; si no, TeaVM no enlaza su constructor ni su nombre para reflexión.
+    @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME) public @interface ChoiceProbe{Class<?> type();}
+    @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME) public @interface ChoicesProbe{ChoiceProbe[] value();}
+    public static final class AnnotationOnlyBean{public int touched;public AnnotationOnlyBean(){touched=7;}}
+    public static final class AnnotationClassProbe {
+        @ChoicesProbe({@ChoiceProbe(type=AnnotationOnlyBean.class)}) public Object slot;
+        public static void main(String[] args)throws Exception{
+            var choice=AnnotationClassProbe.class.getField("slot").getAnnotation(ChoicesProbe.class).value()[0];
+            Object bean=choice.type().getDeclaredConstructor().newInstance();
+            complete(choice.type().getName()+":"+((AnnotationOnlyBean)bean).touched);
+        }
+        @org.teavm.jso.JSBody(params="name",script="globalThis.pzAnnotationClassProbe=name;")private static native void complete(String name);
+    }
+    @Test void annotationClassValuesReachReflection()throws Exception{
+        compile(AnnotationClassProbe.class,"annotation-class",List.of(AnnotationClassProbe.class.getName(),AnnotationOnlyBean.class.getName()));
+        String names=new String(Files.readAllBytes(Path.of(System.getProperty("basedir",".")).toAbsolutePath().resolve("target/web/regressions/annotation-class.wasm")),java.nio.charset.StandardCharsets.ISO_8859_1);
+        assertTrue(names.contains(AnnotationOnlyBean.class.getName()+"::<init>"),"constructor of an annotation-only class is linked");
+    }
     @Test void markerHierarchyCompilesToExecutableMetadata()throws Exception{
         compile(RootMetadataProbe.class,"object-metadata",List.of(RootMetadataProbe.class.getName()));
     }
