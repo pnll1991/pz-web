@@ -450,19 +450,20 @@ function renameReservedIdentifiers(ast) {
  * them as extra overloads next to the built-ins. Each such user function (prototype or definition)
  * is renamed to USER_BUILTIN_PREFIX + name, and exactly the calls desktop overload resolution sends
  * to it are renamed too: a user overload is visible from its first declaration onwards (textual
- * order, as in a desktop compile). Resolution follows the desktop version of the source:
- *  - 1.10/1.20: user overloads sit next to the built-ins; a call goes to the user overload whose
- *    parameter types match the argument types exactly, otherwise it keeps the built-in. When a call's
- *    argument types cannot be inferred, or only an implicit int->float conversion would select a user
- *    overload (the built-in being an equal candidate), the translation fails instead of guessing.
- *  - 1.30+ (spec §6.1/§4.2.2 scoping): a visible user declaration hides every built-in of that name,
- *    so a call goes to the exact user match, else to the single user overload reachable by implicit
- *    int->float conversion. A call no user overload can take keeps the built-in: desktop would reject
- *    it if the declaration were visible there, so it only became visible through the per-stage merge
- *    of separately compiled units (gl.mjs buildStages).
+ * order, as in a desktop compile). In every desktop version a visible user declaration hides the
+ * built-ins of that name (1.10/1.20 §6.1: "If a built-in function is redeclared in a shader (i.e. a
+ * prototype is visible) before a call to it, then the linker will only attempt to resolve that call
+ * within the set of shaders that are linked with it"; 1.30+ §4.2.2 scoping), so a call goes to the
+ * exact user match, else to the single user overload reachable by implicit int->float conversion
+ * (1.20 §4.1.10). A call no user overload can take keeps the built-in: desktop would reject it if the
+ * declaration were visible there, so it only became visible through the per-stage merge of separately
+ * compiled units (gl.mjs buildStages). Calls whose argument types cannot be inferred, or that reach
+ * several user overloads, fail instead of guessing.
+ * Round 80: the game rewrites `#version 330` to `#version 120` when Core.getUseOpenGL21() (ShaderUnit
+ * .processShaderSyntax), so screen.frag's `clamp(col, 0, 1)` with util/math's clamp(vec3,float,float)
+ * reaches this rule under 1.20.
  */
 function renameBuiltinOverloads(ast, version) {
-  const hidesBuiltins = version >= 130;
   const top = ast.program.filter(isFunctionNode);
   if (!top.some(node => ES300_BUILTIN_FUNCTIONS.has(prototypeOf(node).header.name.identifier))) return [];
   walk(ast.program, node => {
@@ -487,22 +488,14 @@ function renameBuiltinOverloads(ast, version) {
       const overloads = (visible.get(name) ?? []).map(o => `${name}(${o.params.join(', ')})`).join(', ');
       const exact = candidates.filter(o => o.params.every((p, i) => p === types[i]));
       const reachable = candidates.filter(o => o.params.every((p, i) => !types[i] || convertible(types[i], p)));
-      if (hidesBuiltins) {
-        // No reachable user overload: the desktop unit holding this call cannot have seen the user
-        // declaration (it would not compile), only the per-stage merge made it visible: built-in.
-        if (exact.length === 1) result = exact[0];
-        else if (types.every(Boolean) && reachable.length === 1) result = reachable[0];
-        else if (reachable.length > 0) throw new Error(`Cannot resolve ${signature} among the user overloads ` +
-          `${overloads} that hide the built-in ${name} in GLSL ${version}`);
-      } else if (types.every(Boolean)) {
-        result = exact[0] ?? null;
-        if (!result && reachable.length > 0)
-          throw new Error(`Call ${signature} matches the user overload ${overloads} only by implicit conversion; ` +
-            'desktop overload resolution against the built-in is ambiguous here');
-      } else if (reachable.length > 0) {
-        throw new Error(`Cannot infer the argument types of ${signature} to choose between the built-in and the ` +
-          `user overload ${overloads}`);
-      }
+      // No reachable user overload: the desktop unit holding this call cannot have seen the user
+      // declaration (it would not compile), only the per-stage merge made it visible: built-in.
+      if (exact.length === 1) result = exact[0];
+      else if (types.every(Boolean) && reachable.length === 1) result = reachable[0];
+      else if (reachable.length > 0 && !types.every(Boolean)) throw new Error(`Cannot infer the argument types of ` +
+        `${signature} to choose among the user overloads ${overloads} that hide the built-in ${name} in GLSL ${version}`);
+      else if (reachable.length > 0) throw new Error(`Cannot resolve ${signature} among the user overloads ` +
+        `${overloads} that hide the built-in ${name} in GLSL ${version}`);
     }
     resolved.set(node, result);
     return result;

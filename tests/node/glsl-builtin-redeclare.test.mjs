@@ -112,11 +112,26 @@ test('undecidable calls fail instead of guessing (desktop 1.20)', () => {
     float max(float a, float b) { return a > b ? a : b; }
     void main() { gl_FragColor = vec4(max(u, gl_FragCoord.x * undefinedThing)); }`, 'fragment'),
   /Cannot infer the argument types of max\(float, \?\)/);
-  // Only an int->float conversion reaches the user overload; the built-in competes equally.
+  // Two user overloads reachable only by conversions: no unique choice.
   assert.throws(() => translateShader(`#version 120
-    uniform float u;
-    float max(float a, float b) { return a > b ? a : b; }
-    void main() { gl_FragColor = vec4(max(u, 0)); }`, 'fragment'), /implicit conversion/);
+    uniform int i;
+    float max(float a, int b) { return a; }
+    float max(int a, float b) { return b; }
+    void main() { gl_FragColor = vec4(max(i, 0)); }`, 'fragment'), /Cannot resolve max\(int, int\)/);
+});
+
+test('GLSL 1.10/1.20 user declarations also hide the built-in (§6.1): conversions reach the user overload', () => {
+  // Round 80: the game rewrites #version 330 to 120 (Core.getUseOpenGL21); screen.frag calls
+  // clamp(col, 0, 1) with util/math's vec3 clamp(vec3, float, float) visible.
+  const result = translateShader(`#version 120
+    uniform vec3 v; uniform float u;
+    float max(float a, float b);
+    vec3 clamp(vec3 a, float lo, float hi);
+    void main() { vec3 col = clamp(v, 0, 1); gl_FragColor = vec4(col, max(u, 0)); }`, 'fragment');
+  assertNoBuiltinDeclared(result.source);
+  const out = compact(result.source);
+  assert.ok(out.includes(`col=${USER_BUILTIN_PREFIX}clamp(v,0.0,1.0)`), out);
+  assert.ok(out.includes(`${USER_BUILTIN_PREFIX}max(u,0.0)`), out);
 });
 
 test('GLSL 1.30+ user declarations hide the built-in, so conversions reach the user overload', () => {
