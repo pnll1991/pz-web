@@ -34,7 +34,7 @@ export class CanvasInput {
     on(canvas, 'pointerdown', event => {
       canvas.focus(); canvas.setPointerCapture(event.pointerId);
       const button = [0,2,1][event.button] ?? event.button;
-      this.buttons.add(button); this.emit({ type:'button', button, action:1 });
+      this.buttons.add(button); (this.latched ??= new Set()).add(button); this.emit({ type:'button', button, action:1 });
     });
     on(canvas, 'pointerup', event => {
       const button = [0,2,1][event.button] ?? event.button;

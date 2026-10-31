@@ -654,3 +654,15 @@ llegue a `NativeArena.free`). Sin stubs: los depthmaps se tienen que cargar de v
 - r70 (puerto 8098): getError 15.6 s -> 0.9 s; ~9400 frames a los 424 s (antes ~850). TermsOfServiceState renderiza; hover sobre ACCEPT se resalta pero el clic no se aplica.
 - Causa: window.mjs poll() hacía input.drain() (vacía toda la cola) y despachaba solo events[0]; los clics tras movimientos de cursor se perdían. Fix: shift de un evento por poll.
 - Nuevo hot spot: TileDepthTexture.load 7.7 s + decodePng 4 s + ByteBufferWasmGC.copy 1.4 s + inflate 1.3 s.
+
+## Ronda 71
+
+- Probe r71 (8098) con el fix de `poll()` de r70: 4 clics reales en ACCEPT (610,509); el diálogo TOS sigue, ~21k frames a 608 s, nunca entra MainScreenState. El fix de poll era correcto pero no suficiente.
+
+## Ronda 72
+
+- Instrumentación JS (window.mjs: `kindStats`, `pollCalls/pollNulls`, `buttonQueries`, `buttonTrue`; menu_pixels.mjs las vuelca en cada `CLICK`).
+- Resultado: los eventos de botón se despachan al callback GLFW (handle registrado para kind 1) y la cola no se atasca; PZ consulta `glfwGetMouseButton` ~33 veces/s (zombie.input.MouseState.poll en RenderThread, swap en Mouse.update del game thread).
+- Agregado latch de presión (estilo GLFW_STICKY_MOUSE_BUTTONS) en input.mjs/window.mjs para que un press+release entre dos muestreos no se pierda.
+- r72d: Java recibe el botón 0 en estado presionado (`buttonTrue` 1→4→9 tras los clics), pero ACCEPT (ISTermsOfServiceUI:onButtonAccept → saveOptions → fromLua0("exit")) sigue sin dispararse y no hay errores nuevos en consola. El fallo está del lado Java/Lua (UIManager.updateMouseButtons → ISButton onMouseDown/onMouseUp, o saveOptions), no en el input del navegador.
+- Próximo: traza Java en UIManager.updateMouseButtons / Mouse.isButtonPressed y en el dispatch Lua de onMouseUp (requiere rebuild).

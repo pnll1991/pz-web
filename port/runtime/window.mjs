@@ -130,7 +130,15 @@ export class BrowserWindow {
   }
   button(windowHandle,button) {
     this.requireWindow(windowHandle);
-    return this.input.buttons.has(button) ? 1 : 0;
+    (this.buttonQueries ??= {})[button] = (this.buttonQueries[button] ?? 0) + 1;
+    // PZ samples button state once per game update (zombie.input.MouseState.poll via
+    // glfwGetMouseButton), so a press+release that both land between two samples was lost (r71/r72:
+    // ACCEPT never fired). Latch each press until it has been read once, like GLFW_STICKY_MOUSE_BUTTONS.
+    const latched = this.input.latched?.has(button);
+    if (latched) this.input.latched.delete(button);
+    const down = this.input.buttons.has(button) || latched;
+    if (down) (this.buttonTrue ??= {})[button] = (this.buttonTrue[button] ?? 0) + 1;
+    return down ? 1 : 0;
   }
   // --- GLFW window lifecycle (browser backend) ---
   // The requested size is the CSS size; the drawing buffer multiplies by devicePixelRatio,
@@ -366,6 +374,7 @@ export class BrowserWindow {
     // carries the GLFW key twice: as key and as scancode, because this backend maps DOM keys
     // onto themselves (keyScancode below). A joystick event (kind 11) instead carries
     // kind, slot, connected, because GLFWJoystickCallbackI reads slot 0 as the joystick index.
+    this.pollCalls = (this.pollCalls ?? 0) + 1;
     if (this.initialized) this.refreshGamepads();
     if (this.sizeEvents && this.sizeEvents.length > 0) {
       this.dispatchedEvents++;
@@ -380,10 +389,11 @@ export class BrowserWindow {
     // click that arrived after cursor moves in the same frame was silently dropped (r70: ACCEPT
     // highlighted on hover but never pressed).
     const event = this.input.events.shift();
-    if (event === undefined) return null;
+    if (event === undefined) { this.pollNulls = (this.pollNulls ?? 0) + 1; return null; }
     const kind = {key:0, button:1, cursor:2, scroll:3, text:4}[event.type];
     if (kind === undefined) return this.poll(); // unknown event type: skip without dispatching
     this.dispatchedEvents++;
+    (this.kindStats ??= {})[event.type] = (this.kindStats[event.type] ?? 0) + 1;
     const fields = [kind, 1];
     if (event.type === 'key') fields.push(event.key, event.key, event.action, 0);
     else if (event.type === 'button') fields.push(event.button, event.action, 0);
