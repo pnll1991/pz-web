@@ -181,7 +181,15 @@ public final class StartupProgress implements ClassHolderTransformer {
         "zombie.ui.UIElement#onConsumeMouseButtonUp(IDD)Z",
         "zombie.ui.UIElement#onMouseDown(DD)Ljava/lang/Boolean;",
         "zombie.ui.UIElement#onMouseUp(DD)Ljava/lang/Boolean;",
-        "zombie.gameStates.TermsOfServiceState#fromLua0(Ljava/lang/String;)Ljava/lang/Object;");
+        "zombie.gameStates.TermsOfServiceState#fromLua0(Ljava/lang/String;)Ljava/lang/Object;",
+        // Ronda 76: MainScreenState#enter entra y nunca vuelve, y wasm queda idle (fibra aparcada).
+        "zombie.SoundManager#setMusicState(Ljava/lang/String;)V",
+        "zombie.Lua.LuaEventManager#triggerEvent(Ljava/lang/String;)V",
+        "zombie.core.textures.Texture#getSharedTexture(Ljava/lang/String;)Lzombie/core/textures/Texture;",
+        "zombie.core.textures.Texture#getSharedTexture(Ljava/lang/String;I)Lzombie/core/textures/Texture;",
+        "zombie.core.opengl.RenderThread#invokeOnRenderContext(Ljava/lang/Runnable;)V",
+        "zombie.core.opengl.RenderThread#invokeOnRenderContext(Lzombie/core/opengl/RenderContextQueueItem;)V",
+        "java.lang.management.ManagementFactory#getOperatingSystemMXBean()Ljava/lang/management/OperatingSystemMXBean;");
     // Round 32: java.lang.Thread$SleepHandler and org.teavm.runtime.Fiber$AsyncCallbackImpl are
     // deliberately NOT instrumented: both run inside the suspend/resume machinery, and injected
     // code there corrupts the WasmGC fiber stack (see the removal of java.lang.Thread above).

@@ -123,6 +123,12 @@ MENU_UI_FILES = ('ui/Title.png', 'ui/Title2.png', 'ui/Title3.png', 'ui/Title4.pn
                  'ui/NinePatch1.png', 'ui/NinePatch2.png', 'ui/NinePatch3.png',
                  'ui/NinePatch4.png',
                  'ui/Logos/TheIndieStoneLogo_credits.png')
+# Round 77 (menu-r76c-log.txt): after ACCEPT, MainScreenState.enter -> AnimatedModel.setModelData ->
+# HumanVisual.copyFrom -> getHairModel dereferences null: HairStyles.init() parses
+# media/hairStyles/hairStyles.xml, which was never mounted (FileNotFoundException swallowed in
+# HairStyles.Parse), so HairStyles.instance stays null. The character-model data folders read by the
+# same population code (hair/beard styles, clothing XML, voice styles) are small and mounted whole.
+CHARACTER_DATA_PREFIXES = ('media/hairStyles/', 'media/clothing/', 'media/voiceStyles/')
 MENU_UI_PREFIXES = ('media/ui/playstyleIcons/', 'media/ui/controllerBindingsEditor/')
 
 
@@ -171,6 +177,8 @@ def main():
             raise SystemExit(f'Missing required ui file: media/{relative}')
     if not (media / UI_PROGRESS_PREFIX).is_dir():
         raise SystemExit(f'Missing required ui folder: media/{UI_PROGRESS_PREFIX}')
+    if not (media / 'hairStyles' / 'hairStyles.xml').is_file():
+        raise SystemExit('Missing required file: media/hairStyles/hairStyles.xml')
     if not (media / GUID_TABLE).is_file():
         raise SystemExit(f'Missing required guid table: media/{GUID_TABLE}')
     for relative in MENU_UI_FILES:
@@ -197,6 +205,8 @@ def main():
         if name.startswith('media/shaders/'):
             keep.append(name)
         elif name.startswith('media/scripts/'):
+            keep.append(name)
+        elif name.startswith(CHARACTER_DATA_PREFIXES):
             keep.append(name)
         elif name.startswith(DEPTHMAP_PREFIX):
             keep.append(name)

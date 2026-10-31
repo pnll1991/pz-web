@@ -686,3 +686,18 @@ llegue a `NativeArena.free`). Sin stubs: los depthmaps se tienen que cargar de v
 - r75b (click en 660,515, que da 270,325 en el panel y 50,16 en el boton): el boton recibe onMouseDown, fromLua0 llega a 2 (created + exit), MainScreenState#enter = 1 y la consola muestra "STATE: exit zombie.gameStates.TermsOfServiceState". ACCEPT FUNCIONA.
 - Despues del TOS hay 47 lineas de FileNotFoundException y despues silencio, aunque los frames siguen subiendo; falta ver que dibuja MainScreen.
 - Fuentes: mainfont_0.png y las otras no existen sueltas en PZ_HOME/media; estan dentro de texturepacks/UI.pack. AngelCodeFont llama a Texture.getSharedTexture antes de que el pack este disponible. Hay que confirmar si el juego nativo hace lo mismo.
+
+## Ronda 76–77 (30/10, ~23:40 Mendoza)
+
+- **r76**: con capturas periódicas tras ACCEPT, `MainScreenState#enter` entra y no retorna; perfil wasm 100% idle.
+  Causa en `menu-r76c-log.txt`: `RuntimeError: dereferencing a null pointer` en
+  `HumanVisual::getHairModel ← HumanVisual::copyFrom ← AnimatedModel::setModelData_0`.
+  Claves nuevas en StartupProgress (setMusicState, triggerEvent, getSharedTexture, invokeOnRenderContext,
+  getOperatingSystemMXBean): ninguna entra antes del crash.
+- **r77, causa raíz**: `HairStyles.init()` (GameWindow:208) parsea `media/hairStyles/hairStyles.xml`; no estaba
+  montado (0 entradas en packs/index.json) → `HairStyles.Parse` traga la FileNotFoundException → `instance == null`
+  → getHairModel deref null. Es una de las FileNotFoundException del arranque.
+- **Fix** (sin stubs): `startup_extra.py` monta `media/hairStyles/`, `media/clothing/`, `media/voiceStyles/`
+  (1860 archivos, ~9 MB). Packs regenerados en `build/real-browser/packs-r77`: pack.py + alias_index (fonts/,
+  fonts/EN/1x/) + case_alias (AnimSets/, anims_X/) + boot_options. Verificado: superset exacto del índice anterior
+  (10559 rutas, 0 faltantes, 0 sha distintos) + las nuevas = 12419.

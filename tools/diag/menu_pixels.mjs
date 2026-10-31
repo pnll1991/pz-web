@@ -81,6 +81,14 @@ while (Date.now() - t0 < MAX) {
     renders: Object.entries(globalThis.pzGameCounts || {}).filter(([k]) => /MainScreenState#render/.test(k)) }; }), 90000); }
   catch (e) { log('SAMPLE_FAIL', String(e)); continue; }
   writeFileSync(OUT.replace('.png', '-console.txt'), cons.join('\n'));
+  const EVERY = Number(process.env.PZ_SHOT_EVERY || 0); // Ronda 76: periodic shots after the clicks
+  if (EVERY && CLICK && clicks >= Number(process.env.PZ_CLICKS || 4) && Date.now() - (globalThis.__lastShot || 0) > EVERY * 1000) {
+    globalThis.__lastShot = Date.now(); const sec = Math.round((Date.now() - t0) / 1000);
+    try { await page.screenshot({ path: OUT.replace('.png', `-t${sec}.png`), timeout: 60000 }); } catch (e) { log('SHOT_FAIL', String(e).slice(0, 120)); }
+    log('MSCOUNTS', sec, JSON.stringify(await page.evaluate(() => Object.fromEntries(Object.entries(globalThis.pzGameCounts ?? {}).filter(([k]) => !k.endsWith('#last') && /MainScreen|GameStateMachine#enterState|TermsOfService/.test(k)))).catch(e => String(e))));
+    log('MISSING', sec, JSON.stringify(await page.evaluate(() => globalThis.pzRuntime?.missingPathCounts ?? {}).catch(e => String(e))));
+    log('RING', sec, JSON.stringify(await page.evaluate(() => (globalThis.pzGameTrace ?? []).slice(-15).map(x => x.label)).catch(e => String(e))));
+  }
   log('SAMPLE', Math.round((Date.now() - t0) / 1000), JSON.stringify({ frames: res.frames, shots: res.shots, renders: res.renders }), 'LAST', JSON.stringify(cons.slice(-2)));
   if (CLICK && clicks < Number(process.env.PZ_CLICKS || 4) && Date.now() - t0 > CLICK_AFTER * 1000) { // real mouse click on the canvas (e.g. TOS ACCEPT)
     clicks++; try { await page.mouse.move(CLICK[0], CLICK[1]); await page.waitForTimeout(300); await page.mouse.down(); await page.waitForTimeout(120); await page.mouse.up();
