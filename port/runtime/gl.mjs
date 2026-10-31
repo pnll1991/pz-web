@@ -84,6 +84,12 @@ const PORT_PROVIDED = new Set([
   // the bridge methods below, so every name here has a real implementation over WebGL2.
   'glGenTextures', 'glDeleteTextures', 'glIsTexture', 'glBindTexture', 'glTexParameteri',
   'glTexImage2D', 'glTexSubImage2D', 'glGetTexImage',
+  // Round 80 (front F): fixed-function matrix stacks and immediate mode kept by this bridge (WebGL2
+  // has neither), instancing, glIsEnabled and the framebuffer readback (see the section below).
+  'glMatrixMode', 'glPushMatrix', 'glPopMatrix', 'glLoadIdentity', 'glLoadMatrixf', 'glMultMatrixf',
+  'glOrtho', 'glTranslatef', 'glTranslated', 'glRotatef', 'glRotated', 'glScalef', 'glScaled',
+  'glBegin', 'glEnd', 'glVertex2f', 'glVertex2i', 'glVertex2d', 'glVertex3f', 'glTexCoord2f', 'glNormal3f',
+  'glIsEnabled', 'glReadBuffer', 'glReadPixels',
 ]);
 
 const EAGER_ERROR_CALLS = new Set(['texImage2D', 'texSubImage2D', 'readPixels', 'compressedTexImage2D']);
@@ -176,6 +182,15 @@ export class GLBridge {
     this.currentColor = [1, 1, 1, 1];
     this.appliedColor = null; // {location, r, g, b, a} last constant uploaded by applyColor
     this.colorStats = { sets: 0, applied: 0, arrayEnabled: 0, noAttribute: 0 };
+    // Round 80 (front F): the other GL_CURRENT_BIT values, the fixed-function matrix stacks and the
+    // glBegin/glEnd batch in progress (see "fixed-function matrix stacks and immediate mode").
+    this.currentTexCoord = [0, 0, 0, 1];
+    this.currentNormal = [0, 0, 1];
+    this.matrixModeName = 'MODELVIEW';
+    this.matrixStacks = { MODELVIEW: [GLBridge.identity()], PROJECTION: [GLBridge.identity()], TEXTURE: [[GLBridge.identity()]] };
+    this.matrixSerial = 0; // bumped on every matrix change; programs remember what they received
+    this.matrixStats = { uploads: 0, overflow: 0, underflow: 0 };
+    this.immediate = null; // {mode, data:number[]} between glBegin and glEnd
     // Desktop GL_STACK_OVERFLOW/GL_STACK_UNDERFLOW events on the attribute stacks (diagnostics).
     this.attribStackErrors = { overflow: 0, underflow: 0, clientOverflow: 0, clientUnderflow: 0 };
     // Desktop attribute stack (glPushAttrib/glPopAttrib). WebGL2 has none, so this backend keeps
@@ -467,6 +482,10 @@ export class GLBridge {
     // the other current values it covers (normal, texture coordinates, raster position) have no
     // entrypoint in this backend (their natives raise), so there is no state of theirs to lose.
     ['ENABLE', []], ['PIXEL_MODE', []], ['CURRENT', []],
+    // Round 80 (front F): GL_TRANSFORM_BIT is the matrix mode (bridge state, see matrixMode) plus the
+    // clip planes, whose natives are not mapped (they raise), so there is no state of theirs to lose.
+    // GL_CURRENT_BIT also covers the current texture coordinate and normal (glTexCoord2f/glNormal3f).
+    ['TRANSFORM', []],
     // GL_TEXTURE_BIT covers the desktop texture environment (glTexEnvi, env colour/modes), which
     // WebGL2 has no equivalent for, so it is a counted gap. The unit bindings are still snapshotted
     // below because losing them across a push/pop would mis-bind textures.
@@ -475,7 +494,7 @@ export class GLBridge {
     // matrix stack, hints, eval/list and polygon stipple. Pushing one is counted in
     // attribGaps so the Chrome evidence shows what this backend cannot reproduce.
     ['POLYGON_STIPPLE', null], ['LIGHTING', null], ['FOG', null],
-    ['ACCUM_BUFFER', null], ['TRANSFORM', null], ['HINT', null], ['EVAL', null], ['LIST', null],
+    ['ACCUM_BUFFER', null], ['HINT', null], ['EVAL', null], ['LIST', null],
   ]);
   // Desktop error codes (`javap -constants` on the pinned GL11): GL_STACK_OVERFLOW/UNDERFLOW.
   static GL_STACK_OVERFLOW = 0x0503;
@@ -514,6 +533,8 @@ export class GLBridge {
     if (names.includes('VIEWPORT')) state.viewport = this.viewportBox.slice();
     if (names.includes('SCISSOR')) state.scissor = this.scissorBox.slice();
     if (names.includes('CURRENT')) state.current = this.currentColor.slice();
+    if (names.includes('CURRENT')) state.currentVertex = { texCoord: this.currentTexCoord.slice(), normal: this.currentNormal.slice() };
+    if (names.includes('TRANSFORM')) state.matrixMode = this.matrixModeName;
     this.attribStack.push({ mask: bits, names, state });
   }
   /**
@@ -545,6 +566,8 @@ export class GLBridge {
     if (st.viewport) this.call('viewport', ...st.viewport);
     if (st.scissor) this.call('scissor', ...st.scissor);
     if (st.current) { this.currentColor = st.current.slice(); this.applyColor(); }
+    if (st.currentVertex) { this.currentTexCoord = st.currentVertex.texCoord.slice(); this.currentNormal = st.currentVertex.normal.slice(); }
+    if (st.matrixMode) this.matrixModeName = st.matrixMode;
     return top.names;
   }
   /* --- Desktop client attribute stack (glPushClientAttrib/glPopClientAttrib) -------------
@@ -624,7 +647,7 @@ export class GLBridge {
   color(r, g, b, a = 1) {
     this.currentColor = [Number(r), Number(g), Number(b), Number(a)];
     this.colorStats.sets++;
-    this.applyColor();
+    if (this.immediate === null) this.applyColor(); // inside glBegin/glEnd the colour goes with each vertex
   }
   /** glColor3ub/glColor4ub: unsigned bytes (0..255, already masked by the shim) map to [0,1]. */
   colorUnsignedBytes(r, g, b, a = 255) {
@@ -722,6 +745,15 @@ export class GLBridge {
     [0x8587, 'MAX_VERTEX_OUTPUT_COMPONENTS'], [0x88a4, 'MAX_FRAGMENT_INPUT_COMPONENTS'],
     [0x8a3b, 'MAX_VERTEX_UNIFORM_BLOCKS'], [0x8a3d, 'MAX_FRAGMENT_UNIFORM_BLOCKS'],
     [0x8a3e, 'MAX_COMBINED_UNIFORM_BLOCKS'],
+    // Round 80 (front F): pixel-store, blend and stencil state the game reads back (lwjglx
+    // PixelStoreState, ImGuiImplGl3.backupGlState, ModelSlotRenderData.renderToImposterCard).
+    // WebGL2 answers these from the context itself with the same token numbers.
+    [0x0cf2, 'UNPACK_ROW_LENGTH'], [0x0cf3, 'UNPACK_SKIP_ROWS'], [0x0cf4, 'UNPACK_SKIP_PIXELS'],
+    [0x0cf5, 'UNPACK_ALIGNMENT'], [0x0d02, 'PACK_ROW_LENGTH'], [0x0d03, 'PACK_SKIP_ROWS'],
+    [0x0d04, 'PACK_SKIP_PIXELS'], [0x0d05, 'PACK_ALIGNMENT'],
+    [0x80c8, 'BLEND_DST_RGB'], [0x80c9, 'BLEND_SRC_RGB'], [0x80ca, 'BLEND_DST_ALPHA'],
+    [0x80cb, 'BLEND_SRC_ALPHA'], [0x8009, 'BLEND_EQUATION_RGB'], [0x883d, 'BLEND_EQUATION_ALPHA'],
+    [0x0b92, 'STENCIL_FUNC'],
   ]);
   static BOOL_ANSWERS = new Map([
     [0x0c11, 'SCISSOR_TEST'], [0x0b44, 'CULL_FACE'], [0x0b71, 'DEPTH_TEST'], [0x0b90, 'STENCIL_TEST'],
@@ -731,9 +763,21 @@ export class GLBridge {
   intParameters(pname) {
     const gl = this.context;
     if (pname === 0x0ba2) return this.viewportBox; // GL_VIEWPORT: what this bridge last set
-    if (pname === 0x0c36) return this.scissorBox; // GL_SCISSOR_BOX
-    if (pname === 0x820b) return [3]; // GL_MAJOR_VERSION, from the declared apiVersion()
-    if (pname === 0x820d) return [3]; // GL_MINOR_VERSION, from the declared apiVersion()
+    if (pname === 0x0c10) return this.scissorBox; // GL_SCISSOR_BOX (3088; was 0x0c36 before round 80)
+    if (pname === 0x821b) return [3]; // GL_MAJOR_VERSION (33307), from the declared apiVersion()
+    if (pname === 0x821c) return [3]; // GL_MINOR_VERSION (33308), from the declared apiVersion()
+    // Round 80 (front F): state this bridge holds itself (javap -constants on the pinned GL11/GL13C/GL30C).
+    if (pname === 0x84e0) return [0x84c0 + (this.activeUnit ?? 0)]; // GL_ACTIVE_TEXTURE (34016)
+    if (pname === 0x8ca6) return [this.drawFramebufferHandle ?? 0]; // GL_(DRAW_)FRAMEBUFFER_BINDING (36006)
+    if (pname === 0x8caa) return [this.readFramebufferHandle ?? 0]; // GL_READ_FRAMEBUFFER_BINDING (36010)
+    if (pname === 0x85b5) return [this.currentVao ?? 0]; // GL_VERTEX_ARRAY_BINDING (34229)
+    if (pname === 0x0ba0) return [this.matrixModeToken()]; // GL_MATRIX_MODE (2976)
+    if (pname === 0x0ba3) return [this.matrixStack('MODELVIEW').length]; // GL_MODELVIEW_STACK_DEPTH
+    if (pname === 0x0ba4) return [this.matrixStack('PROJECTION').length]; // GL_PROJECTION_STACK_DEPTH
+    if (pname === 0x0ba5) return [this.matrixStack('TEXTURE').length]; // GL_TEXTURE_STACK_DEPTH
+    if (pname === 0x0d36) return [GLBridge.MATRIX_LIMITS.MODELVIEW]; // GL_MAX_MODELVIEW_STACK_DEPTH
+    if (pname === 0x0d38) return [GLBridge.MATRIX_LIMITS.PROJECTION]; // GL_MAX_PROJECTION_STACK_DEPTH
+    if (pname === 0x0d39) return [GLBridge.MATRIX_LIMITS.TEXTURE]; // GL_MAX_TEXTURE_STACK_DEPTH
     if (pname === 0x821d) return [this.extensions().length]; // GL_NUM_EXTENSIONS
     if (pname === 0x0bb0) return [this.attribStack.length]; // GL_ATTRIB_STACK_DEPTH: our own stack
     if (pname === 0x0bb1) return [this.clientAttribStack.length]; // GL_CLIENT_ATTRIB_STACK_DEPTH
@@ -753,6 +797,10 @@ export class GLBridge {
   }
   floatParameters(pname) {
     if (pname === 0x0b51) return [0, 1]; // GL_DEPTH_RANGE: WebGL2 always uses [0,1]
+    // Round 80 (front F): the bridge's own matrix stacks (column-major, as desktop returns them).
+    if (pname === 0x0ba6) return [...this.matrixTop('MODELVIEW')];  // GL_MODELVIEW_MATRIX (2982)
+    if (pname === 0x0ba7) return [...this.matrixTop('PROJECTION')]; // GL_PROJECTION_MATRIX (2983)
+    if (pname === 0x0ba8) return [...this.matrixTop('TEXTURE')];    // GL_TEXTURE_MATRIX (2984)
     throw new Error(`Unsupported WebGL2 float parameter: 0x${pname.toString(16)}`);
   }
   boolParameters(pname) {
@@ -1084,6 +1132,7 @@ export class GLBridge {
     [0x2803, 'TEXTURE_WRAP_T'], [0x1004, 'TEXTURE_BORDER_COLOR'], [0x813a, 'TEXTURE_MIN_LOD'],
     [0x813b, 'TEXTURE_MAX_LOD'], [0x813c, 'TEXTURE_BASE_LEVEL'], [0x813d, 'TEXTURE_MAX_LEVEL'],
     [0x884d, 'TEXTURE_COMPARE_FUNC'], [0x884c, 'TEXTURE_COMPARE_MODE'],
+    [0x8072, 'TEXTURE_WRAP_R'], // Round 80: GL12 token 32882, same number in WebGL2
   ]);
   texParameteri(target, pname, param) {
     const tname = this.textureTargetName(target);
@@ -1122,7 +1171,7 @@ export class GLBridge {
   /* Parameters whose value is a token. TEXTURE_MIN_LOD/MAX_LOD/BASE_LEVEL/MAX_LEVEL take plain
    * integers, so they are not listed here and the value is passed through unchanged. */
   static TEX_PARAM_TOKENS = new Set(['TEXTURE_MAG_FILTER', 'TEXTURE_MIN_FILTER', 'TEXTURE_WRAP_S',
-    'TEXTURE_WRAP_T', 'TEXTURE_COMPARE_MODE', 'TEXTURE_COMPARE_FUNC']);
+    'TEXTURE_WRAP_T', 'TEXTURE_WRAP_R', 'TEXTURE_COMPARE_MODE', 'TEXTURE_COMPARE_FUNC']);
   /* --- Level uploads and readback ----------------------------------------------------------
    * WebGL2 requires a *sized* internal format, while the desktop call passes the unsized
    * GL_RGBA/GL_RGB/GL_DEPTH_COMPONENT plus a type. The pair below is what the desktop driver
@@ -1550,6 +1599,10 @@ export class GLBridge {
       // Round 79: the desktop conventional vertex array (gl_Vertex, translated to pzVertex by
       // glsl.mjs) gets a fixed generic location so glVertexPointer/GL_VERTEX_ARRAY can feed it.
       this.call('bindAttribLocation', program.program, GLBridge.VERTEX_ARRAY_LOCATION, 'pzVertex');
+      // Round 80 (front F): gl_Color (pzColor) gets its own fixed location next to it, so GL_COLOR_ARRAY
+      // drives it and the linker never places it on an index the game enabled for its own attribute.
+      this.call('bindAttribLocation', program.program, GLBridge.COLOR_ARRAY_LOCATION, 'pzColor');
+      program.matrixLocations = undefined; program.matrixSerial = -1; program.immediateLocations = undefined;
       this.call('linkProgram', program.program);
       program.linked = this.call('getProgramParameter', program.program, this.context.LINK_STATUS) ? true : false;
       program.log = String(this.call('getProgramInfoLog', program.program) ?? '');
@@ -1769,7 +1822,11 @@ export class GLBridge {
     if (this.boundArrays === null)
       throw new Error(`glVertexAttribPointer needs a bound ARRAY_BUFFER (attribute ${index}, offset ${offset})`);
     this.call('vertexAttribPointer', index, size, webglType, !!normalized, stride, offset);
-    this.attribs.set(index, { enabled: true, size, type: webglType, normalized: !!normalized, stride, offset });
+    // Desktop/WebGL2 glVertexAttribPointer does not enable the array; keep the tracked enable bit
+    // (applyColor relies on it) and the divisor (round 80, front F).
+    const previous = this.attribs.get(index);
+    this.attribs.set(index, { enabled: previous?.enabled ?? false, size, type: webglType, normalized: !!normalized, stride, offset,
+      ...(previous?.divisor !== undefined ? { divisor: previous.divisor } : {}) });
   }
   // WebGL2 reuses the desktop tokens for these data types, so the mapping is the identity
   // restricted to the subset WebGL2 actually accepts.
@@ -1801,7 +1858,8 @@ export class GLBridge {
       if (vao === undefined) continue;
       this.vertexArrays.delete(handles[i]);
       this.vaoElements?.delete(handles[i]);
-      if (this.currentVao === handles[i]) { this.currentVao = 0; this.boundElements = this.vaoElements?.get(0)?.buffer ?? null; this.boundElementHandle = this.vaoElements?.get(0)?.handle ?? 0; }
+      this.vaoAttribs?.delete(handles[i]);
+      if (this.currentVao === handles[i]) { this.currentVao = 0; this.attribs = this.vaoAttribs?.get(0) ?? new Map(); this.boundElements = this.vaoElements?.get(0)?.buffer ?? null; this.boundElementHandle = this.vaoElements?.get(0)?.handle ?? 0; }
       this.call('deleteVertexArray', vao);
     }
   }
@@ -1817,6 +1875,11 @@ export class GLBridge {
       if (vao === undefined) throw new Error(`Unknown vertex array handle: ${handle}`);
       this.call('bindVertexArray', vao);
     }
+    // Round 80 (front F): enabled arrays, pointers and divisors are VAO state too, so the tracked map
+    // follows the bound VAO (applyColor reads it to decide whether gl_Color comes from an array).
+    const arrays = this.vaoAttribs ?? (this.vaoAttribs = new Map());
+    arrays.set(this.currentVao ?? 0, this.attribs);
+    this.attribs = arrays.get(handle) ?? new Map();
     this.currentVao = handle;
     const restored = elements.get(handle) ?? { buffer: null, handle: 0 };
     this.boundElements = restored.buffer; this.boundElementHandle = restored.handle;
@@ -1859,6 +1922,9 @@ export class GLBridge {
       if (fbo === undefined) continue;
       this.framebuffers.delete(handles[i]);
       this.call('deleteFramebuffer', fbo);
+      // Deleting a bound framebuffer reverts that binding to 0 (desktop and WebGL2 alike).
+      if (this.drawFramebufferHandle === handles[i]) this.drawFramebufferHandle = 0;
+      if (this.readFramebufferHandle === handles[i]) this.readFramebufferHandle = 0;
     }
   }
   isFramebuffer(handle) { return this.framebuffers.has(handle); }
@@ -1870,11 +1936,13 @@ export class GLBridge {
   }
   bindFramebuffer(target, handle) {
     const glTarget = this.fbTarget(target, 'glBindFramebuffer');
-    if (handle === 0) { this.call('bindFramebuffer', glTarget, null); return; }
-    const fbo = this.framebuffers.get(handle);
+    const fbo = handle === 0 ? null : this.framebuffers.get(handle);
     if (fbo === undefined)
       throw new Error(`Framebuffer ${handle} does not exist for glBindFramebuffer`);
     this.call('bindFramebuffer', glTarget, fbo);
+    // Round 80 (front F): GL_(DRAW|READ)_FRAMEBUFFER_BINDING report the game's handles.
+    if (target !== 36008) this.drawFramebufferHandle = handle;
+    if (target !== 36009) this.readFramebufferHandle = handle;
   }
   /**
    * GL30 glBlitFramebuffer -> WebGL2 blitFramebuffer between the bound READ/DRAW framebuffers.
@@ -2096,7 +2164,7 @@ export class GLBridge {
   }
   drawElements(mode, count, type, indices) {
     GLBridge.checkMode(mode);
-    this.applyColor();
+    this.applyColor(); this.applyMatrices();
     if (mode === 7 && this.hasElementBuffer()) { this.quadsFromBoundElements(count, GLBridge.indexType(type), indices); return; }
     if (!this.hasElementBuffer())
       throw new Error('glDrawElements needs a bound ELEMENT_ARRAY_BUFFER');
@@ -2109,7 +2177,7 @@ export class GLBridge {
   }
   drawRangeElements(mode, start, end, count, type, indices) {
     GLBridge.checkMode(mode);
-    this.applyColor();
+    this.applyColor(); this.applyMatrices();
     if (mode === 7 && this.hasElementBuffer()) { this.quadsFromBoundElements(count, GLBridge.indexType(type), indices); return; }
     if (!this.hasElementBuffer())
       throw new Error('glDrawRangeElements needs a bound ELEMENT_ARRAY_BUFFER');
@@ -2121,6 +2189,7 @@ export class GLBridge {
     this.call('drawRangeElements', mode, start >>> 0, end >>> 0, count, webglType, indices);
   }
   static VERTEX_ARRAY_LOCATION = 15;
+  static COLOR_ARRAY_LOCATION = 14; // Round 80 (front F): pzColor (gl_Color)
   /** Round 79: glEnable/DisableClientState. GL_VERTEX_ARRAY (0x8074) drives the pzVertex attribute
    * (gl_Vertex) at VERTEX_ARRAY_LOCATION; the other conventional arrays are recorded only, and
    * their pointer functions are not mapped (they raise). */
@@ -2129,6 +2198,9 @@ export class GLBridge {
       throw new Error(`gl${on ? 'Enable' : 'Disable'}ClientState: unsupported array 0x${array.toString(16)}`);
     (this.clientArrays ?? (this.clientArrays = {}))[array.toString(16)] = !!on;
     if (array === 0x8074) { if (on) this.enableAttrib(GLBridge.VERTEX_ARRAY_LOCATION); else this.disableAttrib(GLBridge.VERTEX_ARRAY_LOCATION); }
+    // Round 80 (front F): GL_COLOR_ARRAY drives pzColor (gl_Color); disabling it makes gl_Color the
+    // current colour again (applyColor), exactly as desktop GL does.
+    if (array === 0x8076) { if (on) this.enableAttrib(GLBridge.COLOR_ARRAY_LOCATION); else { this.disableAttrib(GLBridge.COLOR_ARRAY_LOCATION); this.applyColor(); } }
   }
   /** Round 79: glVertexPointer(size, type, stride, offset in the bound ARRAY_BUFFER) -> pzVertex. */
   vertexPointer(size, type, stride, offset) {
@@ -2147,7 +2219,7 @@ export class GLBridge {
   drawElementsClient(mode, start, end, count, type, data) {
     if (this.hasElementBuffer()) throw new Error('drawElementsClient with an ELEMENT_ARRAY_BUFFER bound');
     const gl = this.context, webglType = GLBridge.indexType(type);
-    this.applyColor();
+    this.applyColor(); this.applyMatrices();
     const scratch = this.clientIndexBuffer ?? (this.clientIndexBuffer = gl.createBuffer());
     this.call('bindBuffer', gl.ELEMENT_ARRAY_BUFFER, scratch);
     try {
@@ -2166,7 +2238,7 @@ export class GLBridge {
   }
   drawArrays(mode, first, count) {
     GLBridge.checkMode(mode);
-    this.applyColor();
+    this.applyColor(); this.applyMatrices();
     if (mode === 7) {
       const idx = new Uint32Array(count);
       for (let i = 0; i < count; i++) idx[i] = first + i;
@@ -2180,6 +2252,320 @@ export class GLBridge {
     const value = map.get(type);
     if (value === undefined) throw new Error(`Unsupported WebGL2 index type: 0x${type.toString(16)}`);
     return value;
+  }
+  /* --- Round 80 (front F): fixed-function matrix stacks and immediate mode -----------------
+   * WebGL2 has no matrix stack and no glBegin/glEnd. Desktop GL keeps one stack per matrix mode
+   * (MODELVIEW, PROJECTION and one TEXTURE stack per texture unit) and feeds the top matrices to the
+   * gl_ModelViewMatrix family of built-ins. port/runtime/glsl.mjs turns those built-ins into the
+   * pzModelViewMatrix / pzProjectionMatrix / pzModelViewProjectionMatrix / pzNormalMatrix uniforms,
+   * which applyMatrices uploads before every draw of a program that declares them (the game's own
+   * GLSL never does: ModelManager.RenderParticles only pushes/loads/pops around its shaders).
+   * Matrices are column-major (the glLoadMatrixf/glGetFloatv layout). Stack limits are the values
+   * Mesa reports (MAX_MODELVIEW 32, MAX_PROJECTION 32, MAX_TEXTURE 10); an overflow/underflow queues
+   * GL_STACK_OVERFLOW/UNDERFLOW and leaves the stack unchanged, as on desktop (docs/decisions.md).
+   */
+  static MATRIX_MODES = new Map([[0x1700, 'MODELVIEW'], [0x1701, 'PROJECTION'], [0x1702, 'TEXTURE']]);
+  static MATRIX_LIMITS = { MODELVIEW: 32, PROJECTION: 32, TEXTURE: 10 };
+  static identity() { const m = new Float64Array(16); m[0] = m[5] = m[10] = m[15] = 1; return m; }
+  /** a*b for column-major 4x4 matrices (desktop post-multiplies the current matrix). */
+  static multiply(a, b) {
+    const out = new Float64Array(16);
+    for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+      let sum = 0;
+      for (let k = 0; k < 4; k++) sum += a[k * 4 + r] * b[c * 4 + k];
+      out[c * 4 + r] = sum;
+    }
+    return out;
+  }
+  /** gl_NormalMatrix: inverse transpose of the upper-left 3x3 of the modelview (zeros if singular). */
+  static normalMatrix(m) {
+    const a = m[0], b = m[4], c = m[8], d = m[1], e = m[5], f = m[9], g = m[2], h = m[6], i = m[10];
+    const A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+    const det = a * A + b * B + c * C;
+    const out = new Float32Array(9);
+    if (det === 0 || !Number.isFinite(det)) return out;
+    // Inverse transpose = cofactor matrix / det; stored column-major (out[col*3+row]).
+    const cof = [[A, B, C], [-(b * i - c * h), a * i - c * g, -(a * h - b * g)], [b * f - c * e, -(a * f - c * d), a * e - b * d]];
+    for (let r = 0; r < 3; r++) for (let col = 0; col < 3; col++) out[col * 3 + r] = cof[r][col] / det;
+    return out;
+  }
+  matrixStack(name) {
+    if (name !== 'TEXTURE') return this.matrixStacks[name];
+    const unit = this.activeUnit ?? 0, units = this.matrixStacks.TEXTURE;
+    return units[unit] ?? (units[unit] = [GLBridge.identity()]);
+  }
+  matrixTop(name = this.matrixModeName) { const stack = this.matrixStack(name); return stack[stack.length - 1]; }
+  matrixModeToken() {
+    for (const [token, name] of GLBridge.MATRIX_MODES) if (name === this.matrixModeName) return token;
+    return 0x1700;
+  }
+  matrixState() {
+    return { mode: this.matrixModeName, modelview: this.matrixStack('MODELVIEW').length,
+      projection: this.matrixStack('PROJECTION').length, texture: this.matrixStack('TEXTURE').length,
+      serial: this.matrixSerial, ...this.matrixStats, immediateDraws: this.immediateDraws || 0 };
+  }
+  /** Desktop forbids these calls between glBegin and glEnd: GL_INVALID_OPERATION, call ignored. */
+  insideBegin(what) {
+    if (this.immediate === null) return false;
+    this.recordError(what, 0x0502);
+    return true;
+  }
+  /** glMatrixMode. GL_COLOR needs ARB_imaging, which this context does not advertise, so any other
+   * token is GL_INVALID_ENUM exactly as on such a desktop context. */
+  matrixMode(mode) {
+    if (this.insideBegin('glMatrixMode')) return;
+    const name = GLBridge.MATRIX_MODES.get(mode);
+    if (name === undefined) { this.recordError('glMatrixMode', 0x0500); return; }
+    this.matrixModeName = name;
+  }
+  setMatrixTop(m) {
+    const stack = this.matrixStack(this.matrixModeName);
+    stack[stack.length - 1] = m;
+    this.matrixSerial++;
+  }
+  pushMatrix() {
+    if (this.insideBegin('glPushMatrix')) return;
+    const stack = this.matrixStack(this.matrixModeName);
+    if (stack.length >= GLBridge.MATRIX_LIMITS[this.matrixModeName]) {
+      this.matrixStats.overflow++;
+      this.recordError('glPushMatrix', GLBridge.GL_STACK_OVERFLOW);
+      return;
+    }
+    stack.push(Float64Array.from(stack[stack.length - 1]));
+  }
+  popMatrix() {
+    if (this.insideBegin('glPopMatrix')) return;
+    const stack = this.matrixStack(this.matrixModeName);
+    if (stack.length <= 1) {
+      this.matrixStats.underflow++;
+      this.recordError('glPopMatrix', GLBridge.GL_STACK_UNDERFLOW);
+      return;
+    }
+    stack.pop();
+    this.matrixSerial++;
+  }
+  loadIdentity() { if (!this.insideBegin('glLoadIdentity')) this.setMatrixTop(GLBridge.identity()); }
+  /** glLoadMatrixf / glMultMatrixf with 16 column-major values. */
+  loadMatrix(values, multiply = false) {
+    const what = multiply ? 'glMultMatrixf' : 'glLoadMatrixf';
+    if (this.insideBegin(what)) return;
+    if (values.length < 16) throw new Error(`${what} needs 16 floats, got ${values.length}`);
+    const m = new Float64Array(16);
+    for (let k = 0; k < 16; k++) m[k] = Number(values[k]);
+    this.setMatrixTop(multiply ? GLBridge.multiply(this.matrixTop(), m) : m);
+  }
+  multMatrix(values) { this.loadMatrix(values, true); }
+  /** The 16 little-endian floats behind the native pointer of nglLoadMatrixf / nglMultMatrixf. */
+  loadMatrixBytes(bytes, multiply) {
+    if (bytes.length < 64) throw new Error(`glLoadMatrixf/glMultMatrixf need 64 bytes, got ${bytes.length}`);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, 64), values = new Float64Array(16);
+    for (let k = 0; k < 16; k++) values[k] = view.getFloat32(k * 4, true);
+    this.loadMatrix(values, !!multiply);
+  }
+  ortho(l, r, b, t, n, f) {
+    if (this.insideBegin('glOrtho')) return;
+    if (l === r || b === t || n === f) { this.recordError('glOrtho', 0x0501); return; } // GL_INVALID_VALUE
+    const m = GLBridge.identity();
+    m[0] = 2 / (r - l); m[5] = 2 / (t - b); m[10] = -2 / (f - n);
+    m[12] = -(r + l) / (r - l); m[13] = -(t + b) / (t - b); m[14] = -(f + n) / (f - n);
+    this.setMatrixTop(GLBridge.multiply(this.matrixTop(), m));
+  }
+  translate(x, y, z) {
+    if (this.insideBegin('glTranslate')) return;
+    const m = GLBridge.identity(); m[12] = x; m[13] = y; m[14] = z;
+    this.setMatrixTop(GLBridge.multiply(this.matrixTop(), m));
+  }
+  scale(x, y, z) {
+    if (this.insideBegin('glScale')) return;
+    const m = GLBridge.identity(); m[0] = x; m[5] = y; m[10] = z;
+    this.setMatrixTop(GLBridge.multiply(this.matrixTop(), m));
+  }
+  /** glRotate(angle in degrees, axis). The spec leaves a zero axis undefined; like Mesa
+   * (_math_matrix_rotate) the matrix is then left unchanged. */
+  rotate(angle, x, y, z) {
+    if (this.insideBegin('glRotate')) return;
+    const len = Math.hypot(x, y, z);
+    if (len <= 1e-4) return;
+    x /= len; y /= len; z /= len;
+    const rad = angle * Math.PI / 180, c = Math.cos(rad), s = Math.sin(rad), k = 1 - c;
+    const m = GLBridge.identity();
+    m[0] = x * x * k + c;     m[4] = x * y * k - z * s; m[8] = x * z * k + y * s;
+    m[1] = y * x * k + z * s; m[5] = y * y * k + c;     m[9] = y * z * k - x * s;
+    m[2] = x * z * k - y * s; m[6] = y * z * k + x * s; m[10] = z * z * k + c;
+    this.setMatrixTop(GLBridge.multiply(this.matrixTop(), m));
+  }
+  /** Upload the top matrices to the current program's translated built-ins, once per change. */
+  applyMatrices() {
+    const entry = this.currentProgram;
+    if (entry === null || !entry.linked) return;
+    if (entry.matrixLocations === undefined) {
+      const loc = (name) => this.call('getUniformLocation', entry.program, name) ?? null;
+      entry.matrixLocations = { mv: loc('pzModelViewMatrix'), p: loc('pzProjectionMatrix'),
+        mvp: loc('pzModelViewProjectionMatrix'), normal: loc('pzNormalMatrix') };
+      entry.matrixSerial = -1;
+    }
+    const L = entry.matrixLocations;
+    if (L.mv === null && L.p === null && L.mvp === null && L.normal === null) return;
+    if (entry.matrixSerial === this.matrixSerial) return;
+    const mv = this.matrixTop('MODELVIEW'), p = this.matrixTop('PROJECTION');
+    if (L.mv !== null) this.call('uniformMatrix4fv', L.mv, false, new Float32Array(mv));
+    if (L.p !== null) this.call('uniformMatrix4fv', L.p, false, new Float32Array(p));
+    if (L.mvp !== null) this.call('uniformMatrix4fv', L.mvp, false, new Float32Array(GLBridge.multiply(p, mv)));
+    if (L.normal !== null) this.call('uniformMatrix3fv', L.normal, false, GLBridge.normalMatrix(mv));
+    entry.matrixSerial = this.matrixSerial;
+    this.matrixStats.uploads++;
+  }
+  /* Immediate mode. Every glVertex captures the current colour, texture coordinate (unit 0) and
+   * normal, as desktop does; glEnd streams the batch into a scratch VBO/VAO and draws it with the
+   * current program: pzVertex (gl_Vertex; generic attribute 0 when the program has none, which
+   * glVertex aliases in the compatibility profile), pzColor, pzMultiTexCoord0 and pzNormal.
+   * GL_QUADS become triangles (a,b,c)(a,c,d), GL_QUAD_STRIP the identical TRIANGLE_STRIP and
+   * GL_POLYGON a TRIANGLE_FAN. WebGL2 has no fixed-function pipeline, so glEnd with program 0
+   * raises instead of drawing something different from desktop. */
+  static IMMEDIATE_STRIDE = 15; // x y z w | r g b a | s t r q | nx ny nz
+  begin(mode) {
+    if (this.immediate !== null) { this.recordError('glBegin', 0x0502); return; } // GL_INVALID_OPERATION
+    if (!Number.isInteger(mode) || mode < 0 || mode > 9) { this.recordError('glBegin', 0x0500); return; } // GL_INVALID_ENUM
+    this.immediate = { mode, data: [] };
+  }
+  vertex(x, y, z = 0, w = 1) {
+    const batch = this.immediate;
+    if (batch === null) throw new Error('glVertex outside glBegin/glEnd: desktop GL leaves the result undefined, this backend refuses it');
+    batch.data.push(Number(x), Number(y), Number(z), Number(w), ...this.currentColor, ...this.currentTexCoord, ...this.currentNormal);
+  }
+  texCoord(s, t) { this.currentTexCoord = [Number(s), Number(t), 0, 1]; }
+  normal(x, y, z) { this.currentNormal = [Number(x), Number(y), Number(z)]; }
+  immediateLocations(entry) {
+    if (entry.immediateLocations !== undefined) return entry.immediateLocations; // reset by linkProgram
+    const at = (name) => { const v = this.call('getAttribLocation', entry.program, name); return Number.isInteger(v) ? v : -1; };
+    const vertex = at('pzVertex');
+    entry.immediateLocations = { vertex: vertex >= 0 ? vertex : 0, color: this.colorLocation(entry),
+      texCoord: at('pzMultiTexCoord0'), normal: at('pzNormal') };
+    return entry.immediateLocations;
+  }
+  end() {
+    const batch = this.immediate;
+    if (batch === null) { this.recordError('glEnd', 0x0502); return; } // GL_INVALID_OPERATION
+    this.immediate = null;
+    const entry = this.currentProgram;
+    if (entry === null)
+      throw new Error('glEnd: WebGL2 has no fixed-function pipeline; immediate mode needs a current program (glUseProgram is 0)');
+    const S = GLBridge.IMMEDIATE_STRIDE;
+    let data = batch.data, count = data.length / S, mode = batch.mode;
+    if (mode === 7) { // GL_QUADS -> GL_TRIANGLES
+      const quads = Math.floor(count / 4), out = [];
+      for (let q = 0; q < quads; q++) for (const v of [0, 1, 2, 0, 2, 3]) {
+        const base = (q * 4 + v) * S;
+        for (let k = 0; k < S; k++) out.push(data[base + k]);
+      }
+      data = out; count = quads * 6; mode = 4;
+    } else if (mode === 8) { mode = 5; count -= count % 2; } // GL_QUAD_STRIP -> GL_TRIANGLE_STRIP
+    else if (mode === 9) mode = 6; // GL_POLYGON (convex, as desktop requires) -> GL_TRIANGLE_FAN
+    if (count === 0) return; // desktop draws nothing for an incomplete primitive
+    const gl = this.context, L = this.immediateLocations(entry);
+    const vao = this.immediateVao ?? (this.immediateVao = this.call('createVertexArray'));
+    const buffer = this.immediateBuffer ?? (this.immediateBuffer = this.call('createBuffer'));
+    const previousVao = (this.currentVao ?? 0) === 0 ? null : (this.vertexArrays.get(this.currentVao) ?? null);
+    const previousArray = this.boundArrays;
+    this.applyMatrices();
+    this.call('bindVertexArray', vao);
+    try {
+      this.call('bindBuffer', gl.ARRAY_BUFFER, buffer);
+      this.call('bufferData', gl.ARRAY_BUFFER, new Float32Array(data.slice(0, count * S)), gl.STREAM_DRAW);
+      const wanted = new Map();
+      for (const [loc, size, offset] of [[L.vertex, 4, 0], [L.color, 4, 4], [L.texCoord, 4, 8], [L.normal, 3, 12]])
+        if (loc >= 0 && !wanted.has(loc)) wanted.set(loc, [size, offset]);
+      // The scratch VAO keeps arrays from earlier batches: switch off the ones this program does not take.
+      for (const loc of this.immediateEnabled ?? []) if (!wanted.has(loc)) this.call('disableVertexAttribArray', loc);
+      for (const [loc, [size, offset]] of wanted) {
+        this.call('enableVertexAttribArray', loc);
+        this.call('vertexAttribPointer', loc, size, gl.FLOAT, false, S * 4, offset * 4);
+      }
+      this.immediateEnabled = new Set(wanted.keys());
+      this.call('drawArrays', mode, 0, count);
+    } finally {
+      this.call('bindVertexArray', previousVao);
+      this.call('bindBuffer', gl.ARRAY_BUFFER, previousArray);
+    }
+    this.immediateDraws = (this.immediateDraws || 0) + 1;
+  }
+  /* --- Round 80 (front F): instancing (WebGL2 core), glIsEnabled, framebuffer readback ------ */
+  vertexAttribDivisor(index, divisor) {
+    if (index < 0) throw new Error(`Attribute index out of range: ${index}`);
+    this.call('vertexAttribDivisor', index, divisor >>> 0);
+    const entry = this.attribs.get(index) || {};
+    entry.divisor = divisor >>> 0;
+    this.attribs.set(index, entry);
+  }
+  static checkInstancedMode(mode, what) {
+    if (Number.isInteger(mode) && mode >= 0 && mode <= 6) return;
+    throw new Error(`${what}: WebGL2 has no instanced primitive mode 0x${Number(mode).toString(16)}`);
+  }
+  drawArraysInstanced(mode, first, count, primcount) {
+    GLBridge.checkInstancedMode(mode, 'glDrawArraysInstanced');
+    this.applyColor(); this.applyMatrices();
+    this.call('drawArraysInstanced', mode, first, count, primcount);
+  }
+  drawElementsInstanced(mode, count, type, indices, primcount) {
+    GLBridge.checkInstancedMode(mode, 'glDrawElementsInstanced');
+    if (!this.hasElementBuffer()) throw new Error('glDrawElementsInstanced needs a bound ELEMENT_ARRAY_BUFFER');
+    const webglType = GLBridge.indexType(type);
+    const elementBytes = webglType === 0x1405 ? 4 : webglType === 0x1403 ? 2 : 1;
+    if (indices % elementBytes !== 0)
+      throw new Error(`Index offset ${indices} is not a multiple of the ${elementBytes}-byte index size`);
+    this.applyColor(); this.applyMatrices();
+    this.call('drawElementsInstanced', mode, count, webglType, indices, primcount);
+  }
+  // Desktop starts with GL_DITHER and GL_MULTISAMPLE enabled; every other recorded cap starts disabled.
+  static FIXED_FUNCTION_DEFAULTS = new Map([[0x0bd0, true], [0x809d, true]]);
+  /** glIsEnabled: WebGL2 capabilities from the context, desktop-only ones from the recorded state. */
+  isEnabled(cap) {
+    if (GLBridge.FIXED_FUNCTION_CAPS.has(cap))
+      return this.fixedFunctionCaps.get(cap)?.enabled ?? (GLBridge.FIXED_FUNCTION_DEFAULTS.get(cap) ?? false);
+    if ([0x8074, 0x8075, 0x8076, 0x8078].includes(cap)) return !!this.clientArrays?.[cap.toString(16)];
+    const name = GLBridge.CAPS.get(cap);
+    if (name === undefined || this.context[name] === undefined)
+      throw new Error(`WebGL2 has no capability for GL token 0x${Number(cap).toString(16)} (glIsEnabled)`);
+    return !!this.call('isEnabled', this.context[name]);
+  }
+  /** glReadBuffer: WebGL2 takes BACK (default framebuffer), NONE and COLOR_ATTACHMENTi with the
+   * desktop numbers; GL_FRONT, the stereo and aux buffers have no WebGL2 counterpart and raise. */
+  readBuffer(mode) {
+    if (!(mode === 0x0405 || mode === 0 || (mode >= 0x8ce0 && mode <= 0x8cef)))
+      throw new Error(`WebGL2 has no read buffer for GL token 0x${Number(mode).toString(16)} (glReadBuffer)`);
+    this.call('readBuffer', mode);
+  }
+  /** readPixels format/type pairs WebGL2 guarantees (RGBA/UNSIGNED_BYTE) plus the context's own
+   * IMPLEMENTATION_COLOR_READ_FORMAT/TYPE; any other desktop pair raises with both tokens. */
+  readFormat(format, type) {
+    const gl = this.context;
+    const channels = new Map([[0x1908, 4], [0x1907, 3], [0x8227, 2], [0x1903, 1], [0x1906, 1]]).get(format);
+    const element = new Map([[0x1401, 1], [0x1400, 1], [0x1403, 2], [0x1402, 2], [0x1405, 4], [0x1404, 4], [0x1406, 4], [0x140b, 2]]).get(type);
+    const guaranteed = format === 0x1908 && type === 0x1401;
+    const implementation = channels !== undefined && element !== undefined
+      && format === Number(gl.getParameter(0x8b9b)) && type === Number(gl.getParameter(0x8b9a));
+    if (!guaranteed && !implementation)
+      throw new Error(`WebGL2 cannot read pixels as format 0x${Number(format).toString(16)} type 0x${Number(type).toString(16)} (glReadPixels)`);
+    return { channels, element };
+  }
+  /** Bytes desktop glReadPixels writes for this block under the real PACK_* state. */
+  readPixelsBytes(width, height, format, type) {
+    const { channels, element } = this.readFormat(format, type);
+    if (width < 0 || height < 0) throw new Error(`glReadPixels: negative size ${width}x${height}`);
+    if (width === 0 || height === 0) return 0;
+    const gl = this.context, p = (pname) => Number(gl.getParameter(pname) ?? 0);
+    const alignment = p(0x0d05) || 4, rowLength = p(0x0d02) || width; // PACK_ALIGNMENT, PACK_ROW_LENGTH
+    const pixel = channels * element, rowBytes = Math.ceil(rowLength * pixel / alignment) * alignment;
+    return p(0x0d03) * rowBytes + p(0x0d04) * pixel + (height - 1) * rowBytes + width * pixel; // SKIP_ROWS/PIXELS
+  }
+  readPixels(x, y, width, height, format, type, data) {
+    const { element } = this.readFormat(format, type);
+    const Ctor = { 0x1401: Uint8Array, 0x1400: Int8Array, 0x1403: Uint16Array, 0x1402: Int16Array, 0x140b: Uint16Array,
+      0x1405: Uint32Array, 0x1404: Int32Array, 0x1406: Float32Array }[type];
+    if (element > 1 && data.byteOffset % element !== 0)
+      throw new Error(`glReadPixels: destination ${data.byteOffset} is not aligned to ${element} bytes`);
+    const view = element === 1 && Ctor === Uint8Array ? data : new Ctor(data.buffer, data.byteOffset, Math.floor(data.byteLength / element));
+    this.call('readPixels', x, y, width, height, format, type, view);
   }
   drawProbe() {
     const gl = this.context;

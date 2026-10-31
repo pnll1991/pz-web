@@ -46,7 +46,24 @@ SCALAR_DIRECT = {('glClearColor','(FFFF)V'), ('glClear','(I)V'), ('glViewport','
     ('glGetString','(I)Ljava/lang/String;'), ('glGetStringi','(II)Ljava/lang/String;'),
     ('glGetInteger','(I)I'), ('glGetIntegerv','(I[I)V'), ('glGetIntegerv','(ILjava/nio/IntBuffer;)V'),
     ('glGetFloat','(I)F'), ('glGetFloatv','(I[F)V'), ('glGetFloatv','(ILjava/nio/FloatBuffer;)V'),
-    ('glGetBoolean','(I)Z'), ('glGetBooleanv','(ILjava/nio/ByteBuffer;)V')}
+    ('glGetBoolean','(I)Z'), ('glGetBooleanv','(ILjava/nio/ByteBuffer;)V'),
+    # Round 80 (front F): fixed-function matrix stacks. ModelManager.RenderParticles (fire/smoke) and
+    # TextureDraw.run (IndieGL.glLoadIdentity) reach them in game; gl.mjs keeps the stacks and feeds
+    # gl_ModelViewMatrix & co. (pz*Matrix uniforms of port/runtime/glsl.mjs) before each draw.
+    ('glMatrixMode','(I)V'), ('glPushMatrix','()V'), ('glPopMatrix','()V'), ('glLoadIdentity','()V'),
+    ('nglLoadMatrixf','(J)V'), ('nglMultMatrixf','(J)V'), ('glOrtho','(DDDDDD)V'),
+    ('glTranslatef','(FFF)V'), ('glTranslated','(DDD)V'), ('glRotatef','(FFFF)V'), ('glRotated','(DDDD)V'),
+    ('glScalef','(FFF)V'), ('glScaled','(DDD)V'),
+    # Round 80 (front F): immediate mode (DeadBodyAtlas.toBodyAtlas fallback, TextureCombiner,
+    # TileGeometry$Drawer): gl.mjs streams the vertices into a scratch VBO for the current program.
+    ('glBegin','(I)V'), ('glEnd','()V'), ('glVertex2f','(FF)V'), ('glVertex2i','(II)V'),
+    ('glVertex2d','(DD)V'), ('glVertex3f','(FFF)V'), ('glTexCoord2f','(FF)V'), ('glNormal3f','(FFF)V'),
+    # Round 80 (front F): instancing (iso.Particles/ParticlesFire, VertexBufferObject.DrawInstanced),
+    # GL41 glClearDepthf (ModelSlotRenderData.bindAndClearBlend), glIsEnabled and the savefile
+    # thumbnail readback (Core.TakeScreenshot: glReadBuffer(GL_BACK) + glReadPixels RGBA/UNSIGNED_BYTE).
+    ('glVertexAttribDivisor','(II)V'), ('glDrawArraysInstanced','(IIII)V'),
+    ('nglDrawElementsInstanced','(IIIJI)V'), ('glClearDepthf','(F)V'), ('glIsEnabled','(I)Z'),
+    ('glReadBuffer','(I)V'), ('nglReadPixels','(IIIIIIJ)V')}
 # GL11 texture lifecycle: the natives on GL11C that zombie.core.textures.TextureID calls. port.shim.GL11
 # implements each one over WebGL2 (port/runtime/gl.mjs), and the GL11/GL11C wrappers reach them
 # through these mappings. Desktop-only texture natives (compressed formats, glCopyTexImage,

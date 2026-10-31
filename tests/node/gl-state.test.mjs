@@ -229,8 +229,8 @@ test('attribute bits this backend cannot restore are counted, and an empty stack
   const gl = bridge(attribContext());
   gl.pushAttrib(262144); // GL_TEXTURE_BIT: the desktop texture environment does not exist in WebGL2
   assert.deepEqual(gl.attribState().gaps, { GL_TEXTURE_BIT: 1 });
-  gl.pushAttrib(4096);   // GL_TRANSFORM_BIT: WebGL2 has no matrix stack
-  assert.deepEqual(gl.attribState().gaps, { GL_TEXTURE_BIT: 1, GL_TRANSFORM_BIT: 1 });
+  gl.pushAttrib(64);     // GL_LIGHTING_BIT: WebGL2 has no fixed-function lighting
+  assert.deepEqual(gl.attribState().gaps, { GL_TEXTURE_BIT: 1, GL_LIGHTING_BIT: 1 });
   gl.popAttrib();
   gl.popAttrib();
   // Desktop GL never raises here: the pop is ignored and GL_STACK_UNDERFLOW (0x0504) is queued.

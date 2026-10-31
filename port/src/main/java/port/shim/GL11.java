@@ -62,7 +62,9 @@ public final class GL11 {
     }
     public static void glPixelStorei(int pname, int param) { call2("pixelStorei", pname, param); }
     public static void glScissor(int x, int y, int width, int height) { call4("scissor", x, y, width, height); }
-    public static void glClearDepthf(float depth) { clearDepthf(depth); }
+    // Round 80 (front F): GL41C/ARBES2Compatibility glClearDepthf (ModelSlotRenderData.bindAndClearBlend).
+    // WebGL2 names the setter clearDepth, so it goes through the bridge's clearDepth (clamped to [0,1]).
+    public static void glClearDepthf(float depth) { clearDepthNative(depth); }
     public static void glClearDepth(double depth) { clearDepthNative(depth); }
     public static void glDepthRange(double near, double far) { depthRangeNative(near, far); }
     public static void glColorMask(boolean red, boolean green, boolean blue, boolean alpha) {
@@ -92,6 +94,99 @@ public final class GL11 {
     public static void glPopAttrib() { popAttribNative(); }
     public static void glPushClientAttrib(int mask) { pushClientAttribNative(mask); }
     public static void glPopClientAttrib() { popClientAttribNative(); }
+
+    // --- Round 80 (front F): fixed-function matrix stacks and immediate mode -----------------
+    // WebGL2 has neither; port/runtime/gl.mjs keeps desktop-equivalent matrix stacks (fed to the
+    // gl_ModelViewMatrix family of translated shaders) and streams glBegin/glEnd vertices into a
+    // scratch VBO drawn with the current program. Doubles are narrowed in JS exactly once.
+    public static void glMatrixMode(int mode) { matrixModeNative(mode); }
+    public static void glPushMatrix() { pushMatrixNative(); }
+    public static void glPopMatrix() { popMatrixNative(); }
+    public static void glLoadIdentity() { loadIdentityNative(); }
+    public static void nglLoadMatrixf(long m) { loadMatrixNative(arena(m, 64), false); }
+    public static void nglMultMatrixf(long m) { loadMatrixNative(arena(m, 64), true); }
+    public static void glOrtho(double l, double r, double b, double t, double n, double f) { orthoNative(l, r, b, t, n, f); }
+    public static void glTranslatef(float x, float y, float z) { translateNative(x, y, z); }
+    public static void glTranslated(double x, double y, double z) { translateNative(x, y, z); }
+    public static void glRotatef(float angle, float x, float y, float z) { rotateNative(angle, x, y, z); }
+    public static void glRotated(double angle, double x, double y, double z) { rotateNative(angle, x, y, z); }
+    public static void glScalef(float x, float y, float z) { scaleNative(x, y, z); }
+    public static void glScaled(double x, double y, double z) { scaleNative(x, y, z); }
+    public static void glBegin(int mode) { beginNative(mode); }
+    public static void glEnd() { endNative(); }
+    public static void glVertex2f(float x, float y) { vertexNative(x, y, 0, 1); }
+    public static void glVertex2i(int x, int y) { vertexNative(x, y, 0, 1); }
+    public static void glVertex2d(double x, double y) { vertexNative(x, y, 0, 1); }
+    public static void glVertex3f(float x, float y, float z) { vertexNative(x, y, z, 1); }
+    public static void glTexCoord2f(float s, float t) { texCoordNative(s, t); }
+    public static void glNormal3f(float x, float y, float z) { normalNative(x, y, z); }
+    // --- Round 80 (front F): instancing, glClearDepthf (GL41), glIsEnabled, framebuffer readback ---
+    public static void glVertexAttribDivisor(int index, int divisor) { vertexAttribDivisorNative(index, divisor); }
+    public static void glDrawArraysInstanced(int mode, int first, int count, int primcount) {
+        drawArraysInstancedNative(mode, first, count, primcount);
+    }
+    public static void nglDrawElementsInstanced(int mode, int count, int type, long indices, int primcount) {
+        if (!elementBufferBound())
+            throw new UnsupportedOperationException("WebGL2 draws instanced elements only from a bound ELEMENT_ARRAY_BUFFER: "
+                + "org.lwjgl.opengl.GL31C#nglDrawElementsInstanced(IIIJI)V");
+        drawElementsInstancedNative(mode, count, type,
+            offset(indices, "org.lwjgl.opengl.GL31C#nglDrawElementsInstanced(IIIJI)V"), primcount);
+    }
+    public static boolean glIsEnabled(int cap) { return isEnabledNative(cap) != 0; }
+    public static void glReadBuffer(int mode) { readBufferNative(mode); }
+    /** Desktop glReadPixels into client memory: gl.mjs sizes the block from the real PACK_* state. */
+    public static void nglReadPixels(int x, int y, int width, int height, int format, int type, long pixels) {
+        int bytes = readPixelsBytesNative(width, height, format, type);
+        if (pixels == 0L) throw new IllegalArgumentException("glReadPixels with a null pointer and no PIXEL_PACK_BUFFER");
+        readPixelsNative(x, y, width, height, format, type, arena(pixels, bytes));
+    }
+
+    @JSBody(params="mode", script="globalThis.pzRuntime.gl.matrixMode(mode);")
+    private static native void matrixModeNative(int mode);
+    @JSBody(script="globalThis.pzRuntime.gl.pushMatrix();")
+    private static native void pushMatrixNative();
+    @JSBody(script="globalThis.pzRuntime.gl.popMatrix();")
+    private static native void popMatrixNative();
+    @JSBody(script="globalThis.pzRuntime.gl.loadIdentity();")
+    private static native void loadIdentityNative();
+    @JSBody(params={"bytes","multiply"}, script="globalThis.pzRuntime.gl.loadMatrixBytes(bytes,multiply);")
+    private static native void loadMatrixNative(Uint8Array bytes, boolean multiply);
+    @JSBody(params={"l","r","b","t","n","f"}, script="globalThis.pzRuntime.gl.ortho(l,r,b,t,n,f);")
+    private static native void orthoNative(double l, double r, double b, double t, double n, double f);
+    @JSBody(params={"x","y","z"}, script="globalThis.pzRuntime.gl.translate(x,y,z);")
+    private static native void translateNative(double x, double y, double z);
+    @JSBody(params={"a","x","y","z"}, script="globalThis.pzRuntime.gl.rotate(a,x,y,z);")
+    private static native void rotateNative(double angle, double x, double y, double z);
+    @JSBody(params={"x","y","z"}, script="globalThis.pzRuntime.gl.scale(x,y,z);")
+    private static native void scaleNative(double x, double y, double z);
+    @JSBody(params="mode", script="globalThis.pzRuntime.gl.begin(mode);")
+    private static native void beginNative(int mode);
+    @JSBody(script="globalThis.pzRuntime.gl.end();")
+    private static native void endNative();
+    @JSBody(params={"x","y","z","w"}, script="globalThis.pzRuntime.gl.vertex(x,y,z,w);")
+    private static native void vertexNative(double x, double y, double z, double w);
+    @JSBody(params={"s","t"}, script="globalThis.pzRuntime.gl.texCoord(s,t);")
+    private static native void texCoordNative(float s, float t);
+    @JSBody(params={"x","y","z"}, script="globalThis.pzRuntime.gl.normal(x,y,z);")
+    private static native void normalNative(float x, float y, float z);
+    @JSBody(params={"index","divisor"}, script="globalThis.pzRuntime.gl.vertexAttribDivisor(index,divisor);")
+    private static native void vertexAttribDivisorNative(int index, int divisor);
+    @JSBody(params={"mode","first","count","primcount"},
+        script="globalThis.pzRuntime.gl.drawArraysInstanced(mode,first,count,primcount);")
+    private static native void drawArraysInstancedNative(int mode, int first, int count, int primcount);
+    @JSBody(params={"mode","count","type","indices","primcount"},
+        script="globalThis.pzRuntime.gl.drawElementsInstanced(mode,count,type,indices,primcount);")
+    private static native void drawElementsInstancedNative(int mode, int count, int type, int indices, int primcount);
+    @JSBody(params="cap", script="return globalThis.pzRuntime.gl.isEnabled(cap) ? 1 : 0;")
+    private static native int isEnabledNative(int cap);
+    @JSBody(params="mode", script="globalThis.pzRuntime.gl.readBuffer(mode);")
+    private static native void readBufferNative(int mode);
+    @JSBody(params={"width","height","format","type"},
+        script="return globalThis.pzRuntime.gl.readPixelsBytes(width,height,format,type);")
+    private static native int readPixelsBytesNative(int width, int height, int format, int type);
+    @JSBody(params={"x","y","width","height","format","type","data"},
+        script="globalThis.pzRuntime.gl.readPixels(x,y,width,height,format,type,data);")
+    private static native void readPixelsNative(int x, int y, int width, int height, int format, int type, Uint8Array data);
 
     // --- Queries the game reads during Core.init (GL tokens answered by port/runtime/gl.mjs) ---
     public static String glGetString(int pname) { return stringNative(pname); }
@@ -148,8 +243,6 @@ public final class GL11 {
     private static native void depthMask(boolean flag);
     @JSBody(params="width", script="globalThis.pzRuntime.gl.call('lineWidth',width);")
     private static native void lineWidth(float width);
-    @JSBody(params="depth", script="globalThis.pzRuntime.gl.call('clearDepthf',depth);")
-    private static native void clearDepthf(float depth);
     @JSBody(params="depth", script="globalThis.pzRuntime.gl.clearDepth(depth);")
     private static native void clearDepthNative(double depth);
     @JSBody(params="mask", script="globalThis.pzRuntime.gl.pushAttrib(mask);")
