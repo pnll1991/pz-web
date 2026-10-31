@@ -1,4 +1,4 @@
-import { translateShader } from './glsl.mjs';
+import { translateShader, webglIdentifier, desktopIdentifier } from './glsl.mjs';
 
 /** Function names that a desktop GLSL unit only prototypes (`void f(void);`) without defining. */
 function declaredOnlyFunctions(raw) {
@@ -1630,7 +1630,8 @@ export class GLBridge {
     let longest = 0;
     for (let i = 0; i < count; i++) {
       const info = kind === 'uniform' ? gl.getActiveUniform(entry.program, i) : gl.getActiveAttrib(entry.program, i);
-      if (info && info.name.length > longest) longest = info.name.length;
+      // Desktop names: glsl.mjs renames ES-reserved identifiers (texture -> pz_id_texture).
+      if (info && desktopIdentifier(info.name).length > longest) longest = desktopIdentifier(info.name).length;
     }
     return longest === 0 ? 0 : longest + 1;
   }
@@ -1648,7 +1649,7 @@ export class GLBridge {
   bindAttribLocation(programHandle, index, name) {
     const program = this.programEntry(programHandle, 'bindAttribLocation');
     if (program.linked) program.linked = false; // desktop: binding after linking is ignored
-    this.call('bindAttribLocation', program.program, index, name);
+    this.call('bindAttribLocation', program.program, index, webglIdentifier(name));
   }
   /** glGetAttachedShaders: the desktop units the game attached (WebGL2 only sees the per-stage
    * shaders built at link, see buildStages), in attach order. */
@@ -1662,7 +1663,7 @@ export class GLBridge {
     const info = kind ? this.call('getActiveUniform', program.program, index)
       : this.call('getActiveAttrib', program.program, index);
     if (info === null) throw new Error(`No active ${kind ? 'uniform' : 'attribute'} ${index} in program ${programHandle}`);
-    return String(info.name);
+    return desktopIdentifier(String(info.name));
   }
   /** [size, GL type] of an active uniform/attribute; WebGL2's type tokens are the GL ones. */
   activeSizeType(programHandle, index, kind) {
@@ -1684,7 +1685,8 @@ export class GLBridge {
    */
   uniformLocation(programHandle, name) {
     const program = this.programEntry(programHandle, 'getUniformLocation');
-    const location = this.call('getUniformLocation', program.program, name);
+    // Round 81: desktop names that GLSL ES reserves are renamed by glsl.mjs (texture -> pz_id_texture).
+    const location = this.call('getUniformLocation', program.program, webglIdentifier(name));
     // Round 80 diagnostics: which names the game asks for and how many resolve.
     const seen = this.uniformNames || (this.uniformNames = {});
     const key = `${name}:${location === null ? 'missing' : 'found'}`;
@@ -1701,7 +1703,7 @@ export class GLBridge {
   }
   attribLocation(programHandle, name) {
     const program = this.programEntry(programHandle, 'getAttribLocation');
-    const index = this.call('getAttribLocation', program.program, name);
+    const index = this.call('getAttribLocation', program.program, webglIdentifier(name));
     return index === null || index === undefined ? -1 : Number(index);
   }
   /**

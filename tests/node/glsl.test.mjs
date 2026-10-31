@@ -38,7 +38,7 @@ test('desktop uniform initializers move to an explicit host initialization list'
 
 test('scalar integer promotion respects variable scopes and array indices', () => {
   const result = translateShader('uniform float x; void main(){float y=x*2-1; int data[2]; int i=1; {int x=3;data[i]=x*2;} gl_FragColor=vec4(y);}','fragment');
-  assert.ok(result.source.includes('x*float(2)-float(1)'));
+  assert.ok(result.source.includes('x*2.0-1.0'));
   assert.ok(result.source.includes('int data[2]'));
   assert.ok(result.source.includes('data[i]=x*2'));
 });

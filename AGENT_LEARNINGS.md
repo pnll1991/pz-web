@@ -730,3 +730,12 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   (aviso + -1), pero `CarController.<init>` llama `Bullet.addVehicle` y `getVehiclePhysics` devuelve un registro
   completo por vehículo cada frame (transform Bullet, velocidad, ruedas). No inventar un modelo de "autos quietos"
   sin derivar antes las conversiones de coordenadas de `addVehicle` y el consumo en `WorldSimulation.update`.
+
+## Ronda 80 (b) (Code, 31/10) — conversiones implícitas y nombres reservados en GLSL
+- Error: suponer que `binding.declaration` del parser shaderfrog siempre es el identificador. Para el segundo
+  declarador de `vec3 r,u;` es el nodo `declaration` (y para parámetros, `parameter_declaration`); el tipo de `u`
+  quedaba sin inferir. Mejor enfoque: registrar el tipo bajo los tres nodos y renombrar vía `.identifier`.
+- Patrón: las llamadas a funciones de usuario llegan como `type_specifier`/`type_name` (no `identifier`); los
+  built-ins y los `pz_user_*` renombrados como `identifier`. Distinguir constructores de struct por la tabla de structs.
+- Patrón: los prototipos no crean bindings de parámetros; renombrarlos aparte con la misma regla determinista.
+- Proceso: un barrido completo de los shaders del juego con el arnés tarda >2 min; lanzarlo en segundo plano.

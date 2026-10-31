@@ -128,8 +128,9 @@ test('GLSL 1.30+ user declarations hide the built-in, so conversions reach the u
     void main() { o = vec4(clamp(v, 0, 1), max(u, 0)); }`, 'fragment');
   assertNoBuiltinDeclared(result.source);
   const out = compact(result.source);
-  assert.ok(out.includes(`${USER_BUILTIN_PREFIX}clamp(v,0,1)`));
-  assert.ok(out.includes(`${USER_BUILTIN_PREFIX}max(u,0)`));
+  // Round 81: the int arguments get the explicit conversion ES 3.00 needs (convertCallArguments).
+  assert.ok(out.includes(`${USER_BUILTIN_PREFIX}clamp(v,0.0,1.0)`));
+  assert.ok(out.includes(`${USER_BUILTIN_PREFIX}max(u,0.0)`));
 });
 
 test('identifiers already using the reserved prefix are rejected', () => {

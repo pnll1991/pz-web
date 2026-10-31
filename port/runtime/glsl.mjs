@@ -53,66 +53,6 @@ function constant(node) {
   throw new Error(`Unsupported uniform initializer AST: ${node.type}`);
 }
 
-// Desktop GLSL allows scalar int-to-float promotion in arithmetic. ES requires
-// it to be explicit. Resolve identifier nodes through parser scopes, not names.
-function promoteIntegers(ast) {
-  const declared = new Map(), references = new Map();
-  walk(ast.program, node => {
-    if (node.type === 'declarator_list') for (const entry of node.declarations)
-      declared.set(entry.identifier,node.specified_type.specifier.specifier.token);
-    if (node.type === 'parameter_declaration' && node.identifier)
-      declared.set(node.identifier,node.specifier?.specifier?.token ?? node.specifier?.token);
-  });
-  for (const scope of ast.scopes) for (const binding of Object.values(scope.bindings)) {
-    const type = declared.get(binding.declaration);
-    if (type) for (const reference of binding.references) references.set(reference,type);
-  }
-  const floatType = type => ['float','vec2','vec3','vec4','mat2','mat3','mat4'].includes(type);
-  const scalarInt = type => type === 'int' || type === 'uint';
-  function typeOf(node) {
-    if (!node) return undefined;
-    if (node.type === 'float_constant') return 'float';
-    if (node.type === 'int_constant') return 'int';
-    if (node.type === 'identifier') return references.get(node);
-    if (node.type === 'group') return typeOf(node.expression);
-    if (node.type === 'unary') return typeOf(node.expression);
-    if (node.type === 'postfix') {
-      const type = typeOf(node.expression), field = node.postfix?.selection?.identifier;
-      if (field && floatType(type)) return field.length === 1 ? 'float' : `vec${field.length}`;
-      return type;
-    }
-    if (node.type === 'binary') {
-      if (['==','!=','<','<=','>','>=','&&','||','^^'].includes(node.operator.literal)) return 'bool';
-      const left = typeOf(node.left), right = typeOf(node.right);
-      return floatType(left) ? left : floatType(right) ? right : left === right ? left : undefined;
-    }
-    if (node.type === 'function_call') {
-      const name = node.identifier.specifier?.token ?? node.identifier.identifier;
-      if (floatType(name) || scalarInt(name)) return name;
-      if (['texture','texture2D','textureCube','texture3D'].includes(name)) return 'vec4';
-      if (['dot','length','distance'].includes(name)) return 'float';
-      if (['sin','cos','tan','abs','sqrt','floor','ceil','fract','mod','min','max','clamp','mix','pow','normalize'].includes(name)) return typeOf(node.args[0]);
-      const overloads = ast.scopes[0]?.functions?.[name];
-      if (overloads) {
-        const types = new Set(Object.values(overloads).map(x=>x.returnType));
-        if (types.size === 1) return [...types][0];
-      }
-    }
-  }
-  const cast = expression => ({type:'function_call',identifier:{type:'type_specifier',specifier:{type:'keyword',token:'float'},quantifier:null},
-    lp:{type:'literal',literal:'('},args:[expression],rp:{type:'literal',literal:')'}});
-  walk(ast.program, node => {
-    if (node.type === 'binary' && ['+','-','*','/','<','>','<=','>=','==','!='].includes(node.operator.literal)) {
-      const left = typeOf(node.left), right = typeOf(node.right);
-      if (floatType(left) && scalarInt(right)) node.right = cast(node.right);
-      if (floatType(right) && scalarInt(left)) node.left = cast(node.left);
-    }
-    if (node.type === 'declarator_list') for (const entry of node.declarations) {
-      if (node.specified_type.specifier.specifier.token === 'float' && scalarInt(typeOf(entry.initializer))) entry.initializer = cast(entry.initializer);
-    }
-  });
-}
-
 /**
  * Every built-in function name of GLSL ES 3.00 (spec §8). ES 3.00 §6.1 forbids redeclaring or
  * overloading any of them, while desktop GLSL 1.10/1.20 lets a shader add its own overloads
@@ -206,38 +146,32 @@ function builtinReturnType(name, types) {
   return undefined;
 }
 
+const isFunctionNode = node => node.type === 'function' ||
+  (node.type === 'declaration_statement' && node.declaration?.type === 'function_prototype');
+const prototypeOf = node => node.type === 'function' ? node.prototype : node.declaration;
+const parameterTypes = proto => (proto.parameters ?? []).map(p => typeName(p.specifier, p.quantifier)).filter(t => t !== 'void');
+/** Name of the function a call invokes (built-in or user), undefined for constructors and .length(). */
+function calleeName(node, structs) {
+  if (node.identifier?.type === 'identifier') return node.identifier.identifier;
+  const inner = node.identifier?.type === 'type_specifier' ? node.identifier.specifier : undefined;
+  if (inner?.type === 'type_name' && !node.identifier.quantifier?.length && !structs.has(inner.identifier)) return inner.identifier;
+  return undefined;
+}
+
 /**
- * GLSL ES 3.00 rejects user functions named like a built-in (spec §6.1); desktop 1.10/1.20 accepts
- * them as extra overloads next to the built-ins. Each such user function (prototype or definition)
- * is renamed to USER_BUILTIN_PREFIX + name, and exactly the calls desktop overload resolution sends
- * to it are renamed too: a user overload is visible from its first declaration onwards (textual
- * order, as in a desktop compile). Resolution follows the desktop version of the source:
- *  - 1.10/1.20: user overloads sit next to the built-ins; a call goes to the user overload whose
- *    parameter types match the argument types exactly, otherwise it keeps the built-in. When a call's
- *    argument types cannot be inferred, or only an implicit int->float conversion would select a user
- *    overload (the built-in being an equal candidate), the translation fails instead of guessing.
- *  - 1.30+ (spec §6.1/§4.2.2 scoping): a visible user declaration hides every built-in of that name,
- *    so a call goes to the exact user match, else to the single user overload reachable by implicit
- *    int->float conversion. A call no user overload can take keeps the built-in: desktop would reject
- *    it if the declaration were visible there, so it only became visible through the per-stage merge
- *    of separately compiled units (gl.mjs buildStages).
+ * Static types of expressions, from the parser's scopes (identifier references are resolved by
+ * scope, not by name). User functions are read from the top-level declarations under their
+ * current names, so a fresh instance after renameBuiltinOverloads sees the pz_user_* overloads.
+ * `callType(node)` may answer a call first (undefined falls through to the generic rules).
  */
-function renameBuiltinOverloads(ast, version) {
-  const hidesBuiltins = version >= 130;
-  const isFunctionNode = node => node.type === 'function' ||
-    (node.type === 'declaration_statement' && node.declaration?.type === 'function_prototype');
-  const prototypeOf = node => node.type === 'function' ? node.prototype : node.declaration;
-  const top = ast.program.filter(isFunctionNode);
-  if (!top.some(node => ES300_BUILTIN_FUNCTIONS.has(prototypeOf(node).header.name.identifier))) return [];
-  walk(ast.program, node => {
-    if (node.type === 'identifier' && node.identifier.startsWith(USER_BUILTIN_PREFIX))
-      throw new Error(`Shader identifier collides with the built-in overload prefix: ${node.identifier}`);
-  });
-  // Variable types through the parser's scopes (references are resolved by scope, not by name).
+function createTypeInference(ast, { callType } = {}) {
   const declared = new Map(), references = new Map(), structs = new Map();
   walk(ast.program, node => {
-    if (node.type === 'declarator_list') for (const entry of node.declarations ?? [])
-      declared.set(entry.identifier, typeName(node.specified_type.specifier, entry.quantifier));
+    if (node.type === 'declarator_list') for (const entry of node.declarations ?? []) {
+      // Bindings point at the identifier, or at the whole declaration for later declarators (`vec3 r,u;`).
+      const type = typeName(node.specified_type.specifier, entry.quantifier);
+      declared.set(entry.identifier, type); declared.set(entry, type);
+    }
     if (node.type === 'parameter_declaration' && node.identifier) {
       // Parser bindings point at the parameter_declaration node itself, at the identifier for variables.
       const type = typeName(node.specifier, node.quantifier);
@@ -254,17 +188,14 @@ function renameBuiltinOverloads(ast, version) {
     const type = declared.get(binding.declaration);
     if (type) for (const reference of binding.references) references.set(reference, type);
   }
-  // User functions by name, in source order, for return types of calls to them.
-  const userReturn = new Map();
-  for (const node of top) {
-    const header = prototypeOf(node).header, name = header.name.identifier;
-    const params = (prototypeOf(node).parameters ?? []).map(p => typeName(p.specifier, p.quantifier)).filter(t => t !== 'void');
-    const list = userReturn.get(name) ?? [];
-    if (!list.some(o => o.params.join() === params.join())) list.push({ params, returnType: typeName(header.returnType.specifier) });
-    userReturn.set(name, list);
+  // User functions by (current) name, in source order: [{params, returnType}].
+  const userFunctions = new Map();
+  for (const node of ast.program.filter(isFunctionNode)) {
+    const proto = prototypeOf(node), name = proto.header.name.identifier, params = parameterTypes(proto);
+    const list = userFunctions.get(name) ?? [];
+    if (!list.some(o => o.params.join() === params.join())) list.push({ params, returnType: typeName(proto.header.returnType.specifier) });
+    userFunctions.set(name, list);
   }
-  const visible = new Map(); // builtin name -> [{params, returnType}] declared so far
-  const resolved = new Map(); // call node -> overload or null (built-in)
   function select(type, selector) {
     if (!type) return undefined;
     if (selector.type === 'quantifier') {
@@ -282,6 +213,13 @@ function renameBuiltinOverloads(ast, version) {
     }
     if (selector.type === 'literal' && ['++','--'].includes(selector.literal)) return type;
     return undefined;
+  }
+  function userCallType(name, node) {
+    const list = userFunctions.get(name), types = callArgs(node).map(typeOf);
+    const match = list.find(o => o.params.length === types.length && o.params.every((p, i) => p === types[i]));
+    if (match) return match.returnType;
+    const returns = new Set(list.map(o => o.returnType));
+    return returns.size === 1 ? [...returns][0] : undefined;
   }
   function typeOf(node) {
     if (!node) return undefined;
@@ -314,31 +252,230 @@ function renameBuiltinOverloads(ast, version) {
         if (op === '*' && ml && mr) return matrixOf(mr.columns, ml.rows);
         if (op === '*' && ml && vectorSize(right) > 1) return vectorOf('float', ml.rows);
         if (op === '*' && mr && vectorSize(left) > 1) return vectorOf('float', mr.columns);
-        if (vectorSize(left) === 1) return right;
-        if (vectorSize(right) === 1) return left;
+        // Desktop implicit int->float: an int side combined with a float side yields the float type.
+        if (vectorSize(left) === vectorSize(right) && isFloating(left) !== isFloating(right))
+          return isFloating(left) ? left : right;
+        if (vectorSize(left) === 1) return vectorSize(right) > 1 && isFloating(left) && !isFloating(right) ? vectorOf('float', vectorSize(right)) : right;
+        if (vectorSize(right) === 1) return vectorSize(left) > 1 && isFloating(right) && !isFloating(left) ? vectorOf('float', vectorSize(left)) : left;
         return undefined;
       }
       case 'function_call': {
-        if (node.identifier.type === 'type_specifier') return typeName(node.identifier);
         if (node.identifier.type === 'postfix') return 'int'; // array.length()
-        const name = callName(node);
-        if (ES300_BUILTIN_FUNCTIONS.has(name) && visible.has(name)) {
-          const overload = resolve(node);
-          if (overload) return overload.returnType;
-        }
-        const types = callArgs(node).map(typeOf);
-        if (userReturn.has(name) && !ES300_BUILTIN_FUNCTIONS.has(name)) {
-          const list = userReturn.get(name);
-          const match = list.find(o => o.params.length === types.length && o.params.every((p, i) => p === types[i]));
-          if (match) return match.returnType;
-          const returns = new Set(list.map(o => o.returnType));
-          return returns.size === 1 ? [...returns][0] : undefined;
-        }
-        return builtinReturnType(name, types);
+        const name = calleeName(node, structs);
+        if (name === undefined) return typeName(node.identifier); // constructor
+        const answered = callType?.(node);
+        if (answered !== undefined) return answered;
+        if (userFunctions.has(name) && !ES300_BUILTIN_FUNCTIONS.has(name)) return userCallType(name, node);
+        if (node.identifier.type !== 'identifier') return undefined; // undeclared user function
+        return builtinReturnType(name, callArgs(node).map(typeOf));
       }
       default: return undefined;
     }
   }
+  return { typeOf, userFunctions, structs };
+}
+
+/** float, vecN and matrices (desktop conversions target these). */
+const isFloating = type => !!type && (matrixShape(type) !== null || (vectorSize(type) > 0 && scalarOf(type) === 'float'));
+/** int, uint and their vectors (the sources of desktop implicit conversions). */
+const isInteger = type => vectorSize(type) > 0 && ['int','uint'].includes(scalarOf(type));
+function intLiteralValue(token) {
+  const t = token.replace(/[uU]$/, '');
+  if (/^0[xX]/.test(t)) return parseInt(t.slice(2), 16);
+  if (/^0[0-7]+$/.test(t)) return parseInt(t, 8);
+  return Number(t);
+}
+/**
+ * The explicit form of a desktop implicit int->float conversion of `expression` (static type
+ * `type`): an int literal becomes the equal float literal (also under unary +/-), anything else is
+ * wrapped in the float constructor of the same size (float(x), vec2(v), ...).
+ */
+function toFloating(expression, type) {
+  if (expression.type === 'int_constant') {
+    const value = intLiteralValue(expression.token);
+    const text = String(value);
+    return { ...expression, type: 'float_constant', token: /[.eE]/.test(text) ? text : `${text}.0` };
+  }
+  if (expression.type === 'unary' && ['-','+'].includes(expression.operator.literal) && expression.expression.type === 'int_constant')
+    return { ...expression, expression: toFloating(expression.expression, type) };
+  const whitespace = expression.whitespace;
+  return { type: 'function_call',
+    identifier: { type: 'type_specifier', specifier: { type: 'keyword', token: vectorOf('float', vectorSize(type)) }, quantifier: null },
+    lp: { type: 'literal', literal: '(' }, args: [expression], rp: { type: 'literal', literal: ')', whitespace } };
+}
+
+/**
+ * Desktop GLSL 1.20+ converts int/uint (scalars and vectors) to the float type of the same size
+ * implicitly (spec 1.20 §4.1.10); GLSL ES 3.00 has no implicit conversions. Made explicit here for
+ * binary arithmetic/comparison operands (the int side of an int/float pair), initializers and
+ * assignments of float-typed variables. Calls are handled by convertCallArguments.
+ */
+function promoteIntegers(ast) {
+  const { typeOf } = createTypeInference(ast);
+  const sameShape = (from, to) => vectorSize(from) === vectorSize(to) && !matrixShape(to);
+  walk(ast.program, node => {
+    if (node.type === 'binary' && ['+','-','*','/','<','>','<=','>=','==','!='].includes(node.operator.literal)) {
+      const left = typeOf(node.left), right = typeOf(node.right);
+      if (isFloating(left) && isInteger(right)) node.right = toFloating(node.right, right);
+      else if (isFloating(right) && isInteger(left)) node.left = toFloating(node.left, left);
+    }
+    if (node.type === 'assignment' && ['=','+=','-=','*=','/='].includes(node.operator.literal)) {
+      const left = typeOf(node.left), right = typeOf(node.right);
+      if (isFloating(left) && isInteger(right) && (sameShape(right, left) || (node.operator.literal !== '=' && vectorSize(right) === 1)))
+        node.right = toFloating(node.right, right);
+    }
+    if (node.type === 'declarator_list') {
+      for (const entry of node.declarations ?? []) {
+        const target = typeName(node.specified_type.specifier, entry.quantifier), source = typeOf(entry.initializer);
+        if (entry.initializer && isFloating(target) && isInteger(source) && sameShape(source, target))
+          entry.initializer = toFloating(entry.initializer, source);
+      }
+    }
+  });
+}
+
+/** ES 3.00 built-ins whose every parameter is float-typed (genType/float): no int overloads exist. */
+const FLOAT_ONLY_BUILTINS = new Set(['radians','degrees','sin','cos','tan','asin','acos','atan','sinh','cosh','tanh',
+  'asinh','acosh','atanh','pow','exp','log','exp2','log2','sqrt','inversesqrt','floor','trunc','round','roundEven',
+  'ceil','fract','mod','step','smoothstep','mix','length','distance','dot','cross','normalize','faceforward',
+  'reflect','refract','dFdx','dFdy','fwidth']);
+/** ES 3.00 built-ins with genIType/genUType overloads next to the float ones. */
+const INT_CAPABLE_BUILTINS = new Set(['abs','sign','min','max','clamp']);
+/** Lookups whose argument 2 is the float bias/lod (desktop names: this pass runs before texture2D -> texture). */
+const FLOAT_BIAS_LOOKUPS = new Set(['texture','textureProj','textureLod','texture2D','texture2DProj','texture2DLod',
+  'textureCube','textureCubeLod','texture3D','texture2DLodEXT']);
+
+/**
+ * Desktop 1.20+ overload resolution converts int/uint arguments implicitly to float parameters
+ * (pow(x, 2), clamp(v, 0, 1), smoothstep(0, 1, x), user f(float) called as f(0)); ES 3.00 finds
+ * no matching overload. Each such argument gets the explicit conversion of the overload desktop
+ * picks:
+ *  - float-only built-ins: every int argument (desktop has no int overload either);
+ *  - abs/sign/min/max/clamp: only when some argument is float-typed; an all-int call keeps the
+ *    ES 3.00 int overload (the one desktop 1.30+ picks too);
+ *  - texture/textureProj/textureLod (and the desktop texture2D... names): an int bias/lod;
+ *  - user functions (including renamed pz_user_* overloads): when no overload matches exactly and
+ *    exactly one is reachable by int->float conversions. Unknown argument types are left alone.
+ */
+function convertCallArguments(ast) {
+  const { typeOf, userFunctions, structs } = createTypeInference(ast);
+  const affected = [];
+  walk(ast.program, node => {
+    if (node.type !== 'function_call') return;
+    const name = calleeName(node, structs);
+    if (name === undefined) return;
+    const args = callArgs(node), types = args.map(typeOf);
+    let targets; // index -> float type to convert to
+    if (userFunctions.has(name)) {
+      if (!types.every(Boolean)) return;
+      const candidates = userFunctions.get(name).filter(o => o.params.length === types.length);
+      if (candidates.some(o => o.params.every((p, i) => p === types[i]))) return;
+      const reachable = candidates.filter(o => o.params.every((p, i) => convertible(types[i], p)));
+      if (reachable.length !== 1) return;
+      targets = types.map((t, i) => t !== reachable[0].params[i] ? reachable[0].params[i] : undefined);
+    } else if (FLOAT_ONLY_BUILTINS.has(name) || (INT_CAPABLE_BUILTINS.has(name) && types.some(isFloating))) {
+      if (name === 'mix' && types.some(t => scalarOf(t) === 'bool' && vectorSize(t) > 0)) return;
+      targets = types.map(t => isInteger(t) ? vectorOf('float', vectorSize(t)) : undefined);
+    } else if (FLOAT_BIAS_LOOKUPS.has(name) && args.length === 3 && types[2] && isInteger(types[2])) {
+      targets = [undefined, undefined, 'float'];
+    } else return;
+    if (!targets.some(Boolean)) return;
+    // Rebuild the argument list keeping the comma literals in place.
+    let index = 0;
+    node.args = node.args.map(arg => {
+      if (arg.type === 'literal' && arg.literal === ',') return arg;
+      const i = index++;
+      return targets[i] ? toFloating(arg, types[i]) : arg;
+    });
+    affected.push(name);
+  });
+  return [...new Set(affected)].sort();
+}
+
+/** GLSL ES 3.00 reserved words (spec §3.8) the parser accepts as identifiers, plus built-in names. */
+const ES300_RESERVED_IDENTIFIERS = new Set(['input','output','filter','common','partition','active','superp',
+  'resource','asm','class','union','enum','typedef','template','this','goto','inline','noinline','public',
+  'static','extern','external','interface','long','short','half','fixed','unsigned','hvec2','hvec3','hvec4',
+  'fvec2','fvec3','fvec4','sampler3DRect','sizeof','cast','namespace','using']);
+/** Prefix for user variables/parameters whose name GLSL ES 3.00 reserves or uses for a built-in. */
+export const RENAMED_IDENTIFIER_PREFIX = 'pz_id_';
+const renamedIdentifier = name => ES300_BUILTIN_FUNCTIONS.has(name) || ES300_RESERVED_IDENTIFIERS.has(name);
+/**
+ * WebGL2 name of a desktop uniform/attribute/varying name (`texture` -> `pz_id_texture`), applied to
+ * the base identifier of `name[0]`/`name.field`. Deterministic, so gl.mjs maps names without
+ * per-program state.
+ */
+export function webglIdentifier(name) {
+  const m = /^([A-Za-z_]\w*)(.*)$/s.exec(name);
+  return m && renamedIdentifier(m[1]) ? RENAMED_IDENTIFIER_PREFIX + m[1] + m[2] : name;
+}
+/** Desktop name for a WebGL2 introspection name (inverse of webglIdentifier). */
+export function desktopIdentifier(name) {
+  if (!name.startsWith(RENAMED_IDENTIFIER_PREFIX)) return name;
+  const rest = name.slice(RENAMED_IDENTIFIER_PREFIX.length), base = /^[A-Za-z_]\w*/.exec(rest)?.[0];
+  return base && renamedIdentifier(base) ? rest : name;
+}
+/**
+ * Desktop 1.10/1.20 lets a variable/uniform/parameter be named `texture` (the lookup there is
+ * texture2D) or like another ES 3.00 built-in/reserved word; once texture2D becomes texture the
+ * name shadows the function ("'texture' : function name expected"). Every such binding and all its
+ * references are renamed to RENAMED_IDENTIFIER_PREFIX + name, through the parser's scopes.
+ */
+function renameReservedIdentifiers(ast) {
+  walk(ast.program, node => {
+    if (node.type === 'identifier' && node.identifier.startsWith(RENAMED_IDENTIFIER_PREFIX))
+      throw new Error(`Shader identifier collides with the renamed-identifier prefix: ${node.identifier}`);
+  });
+  const renamed = new Set();
+  for (const scope of ast.scopes) for (const [name, binding] of Object.entries(scope.bindings)) {
+    if (!renamedIdentifier(name)) continue;
+    for (const reference of new Set([binding.declaration, ...binding.references])) {
+      const target = ['parameter_declaration','declaration'].includes(reference?.type) ? reference.identifier : reference;
+      if (target?.type === 'identifier' && target.identifier === name) target.identifier = RENAMED_IDENTIFIER_PREFIX + name;
+    }
+    renamed.add(name);
+  }
+  // Parameters of prototypes have no scope binding; rename them by the same deterministic rule.
+  walk(ast.program, node => {
+    const id = node.type === 'parameter_declaration' ? node.identifier : undefined;
+    if (id?.type === 'identifier' && renamedIdentifier(id.identifier)) {
+      renamed.add(id.identifier); id.identifier = RENAMED_IDENTIFIER_PREFIX + id.identifier;
+    }
+  });
+  return [...renamed].sort();
+}
+
+/**
+ * GLSL ES 3.00 rejects user functions named like a built-in (spec §6.1); desktop 1.10/1.20 accepts
+ * them as extra overloads next to the built-ins. Each such user function (prototype or definition)
+ * is renamed to USER_BUILTIN_PREFIX + name, and exactly the calls desktop overload resolution sends
+ * to it are renamed too: a user overload is visible from its first declaration onwards (textual
+ * order, as in a desktop compile). Resolution follows the desktop version of the source:
+ *  - 1.10/1.20: user overloads sit next to the built-ins; a call goes to the user overload whose
+ *    parameter types match the argument types exactly, otherwise it keeps the built-in. When a call's
+ *    argument types cannot be inferred, or only an implicit int->float conversion would select a user
+ *    overload (the built-in being an equal candidate), the translation fails instead of guessing.
+ *  - 1.30+ (spec §6.1/§4.2.2 scoping): a visible user declaration hides every built-in of that name,
+ *    so a call goes to the exact user match, else to the single user overload reachable by implicit
+ *    int->float conversion. A call no user overload can take keeps the built-in: desktop would reject
+ *    it if the declaration were visible there, so it only became visible through the per-stage merge
+ *    of separately compiled units (gl.mjs buildStages).
+ */
+function renameBuiltinOverloads(ast, version) {
+  const hidesBuiltins = version >= 130;
+  const top = ast.program.filter(isFunctionNode);
+  if (!top.some(node => ES300_BUILTIN_FUNCTIONS.has(prototypeOf(node).header.name.identifier))) return [];
+  walk(ast.program, node => {
+    if (node.type === 'identifier' && node.identifier.startsWith(USER_BUILTIN_PREFIX))
+      throw new Error(`Shader identifier collides with the built-in overload prefix: ${node.identifier}`);
+  });
+  const visible = new Map(); // builtin name -> [{params, returnType}] declared so far
+  const resolved = new Map(); // call node -> overload or null (built-in)
+  // Calls to a built-in name with visible user overloads take the resolved overload's return type.
+  const { typeOf } = createTypeInference(ast, { callType(node) {
+    const name = callName(node);
+    if (ES300_BUILTIN_FUNCTIONS.has(name) && visible.has(name)) return resolve(node)?.returnType;
+  } });
   function resolve(node) {
     if (resolved.has(node)) return resolved.get(node);
     const name = callName(node), args = callArgs(node);
@@ -425,11 +562,14 @@ export function translateShader(source, stage, { defines = {} } = {}) {
   const prepared = preprocess(source, { defines, preserveComments:true, stopOnError:true,
     preserve:{version:()=>true,extension:()=>true} });
   const ast = parse(prepared, { stage, quiet:true });
+  const renamedIdentifiers = renameReservedIdentifiers(ast);
   promoteIntegers(ast);
   // Desktop version of this source (no directive means 1.10); it decides how user overloads of
   // built-in names resolve, see renameBuiltinOverloads.
   const versionNode = ast.program.find(node => node.type === 'preprocessor' && /^\s*#\s*version\b/.test(node.line));
   const builtinOverloads = renameBuiltinOverloads(ast, Number(versionNode?.line.trim().split(/\s+/)[1] ?? 110));
+  // After the renames, so calls to pz_user_* overloads resolve against their own parameters.
+  const convertedCalls = convertCallArguments(ast);
   const declarations = new Set();
   const replacements = new Set();
   const uniformDefaults = [];
@@ -556,5 +696,5 @@ export function translateShader(source, stage, { defines = {} } = {}) {
   const output = generate(ast);
   // Parse the generated output as well; WebGL compile/link remains authoritative.
   parse(output, {quiet:true,stage});
-  return {source:output,replacements:[...replacements].sort(),declarations:[...declarations],uniformDefaults,alphaTestEmulated:injectedAlphaTest,hasMain,globalInits:hasMain?[]:globalInits,builtinOverloads};
+  return {source:output,replacements:[...replacements].sort(),declarations:[...declarations],uniformDefaults,alphaTestEmulated:injectedAlphaTest,hasMain,globalInits:hasMain?[]:globalInits,builtinOverloads,renamedIdentifiers,convertedCalls};
 }

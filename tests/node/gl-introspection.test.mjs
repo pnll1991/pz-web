@@ -137,3 +137,25 @@ test('uniformLocation answers -1 for missing uniforms like desktop glGetUniformL
   assert.throws(() => gl.locationOf(-1, 'uniform1i'), /Unknown uniform location -1/);
   assert.throws(() => gl.locationOf(999, 'uniform1i'), /Unknown uniform location 999/);
 });
+
+/**
+ * Round 81: glsl.mjs renames desktop identifiers that GLSL ES 3.00 reserves (a `uniform sampler2D
+ * texture;` collides with the texture() lookup) to pz_id_*. The game keeps using the desktop name,
+ * so the bridge maps it on the way in (locations, bindAttribLocation) and back (active names).
+ */
+test('uniform/attribute names renamed by the translator keep their desktop names', () => {
+  const context = fakeContext();
+  context.getUniformLocation = (program, name) => (name === 'pz_id_texture' ? { __loc: name } : null);
+  context.getAttribLocation = (program, name) => (name === 'pz_id_input' ? 2 : -1);
+  context.getActiveUniform = (_p, i) => (i === 0 ? { name: 'pz_id_texture', size: 1, type: CONST.FLOAT }
+    : { name: 'DIFFUSE', size: 1, type: CONST.FLOAT });
+  const gl = bridge(context);
+  const program = gl.createProgram();
+  assert.ok(gl.uniformLocation(program, 'texture') > 0);
+  assert.equal(gl.attribLocation(program, 'input'), 2);
+  gl.bindAttribLocation(program, 4, 'input');
+  assert.deepEqual(context.calls.find(([n]) => n === 'bindAttribLocation'), ['bindAttribLocation', 4, 'pz_id_input']);
+  assert.equal(gl.activeName(program, 0, 1), 'texture');
+  assert.equal(gl.activeName(program, 1, 1), 'DIFFUSE');
+  assert.deepEqual(gl.programParameter(program, 0x8b87), ['DIFFUSE'.length + 1]);
+});
