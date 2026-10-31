@@ -34,6 +34,17 @@ public final class BulletWorld {
         steps++; simulatedSeconds += Math.max(0, dt);
     }
     public static int getVehicleCount() { return 0; }
+    /** Round 80: libPZBullet64's answer for a vehicle id that has no body in the world (PZBullet.cpp, seen
+     * with objdump): it logs this warning and returns -1. In this body-less world no vehicle is ever
+     * found, so every call gets that answer; BaseVehicle.updateBulletStats ignores the result. */
+    public static int setVehicleParams(int vehicleId, float[] params) {
+        requireWorld("setVehicleParams");
+        vehicleNotFound++;
+        if (vehicleNotFound <= 8)
+            System.out.println("WARN : PZBullet     PZBullet::setVehicleParams> Vehicle not found. VehicleId:" + vehicleId);
+        return -1;
+    }
+    private static int vehicleNotFound;
     /** No vehicles exist, so no vehicle record is written. */
     public static int getVehiclePhysics(int index, float[] out) { return 0; }
     /** No physics objects exist, so no object record is written. */

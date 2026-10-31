@@ -52,7 +52,9 @@ public final class BulletNativeCompatibility implements ClassHolderTransformer {
         "stepSimulation(FIF)V", "getVehicleCount()I", "getVehiclePhysics(I[F)I", "getObjectPhysics([F)I",
         "defineRagdollConstraints([FZ)Z", "defineRagdollAnchors([FZ)Z", "defineRagdollBodyPartInfo([FZ)Z",
         "defineRagdollBodyDynamics([FZ)Z", "definePhysicsMesh(IZ[F)V", "defineVehiclePhysicsMesh(Ljava/lang/String;I[F)V",
-        "clearPhysicsMeshes()V");
+        "clearPhysicsMeshes()V",
+        // Round 80: BaseVehicle.updateBulletStats calls it for every vehicle once the world exists.
+        "setVehicleParams(I[F)I");
 
     @Override public void transformClass(ClassHolder cls, ClassHolderTransformerContext context) {
         if (!cls.getName().equals(CLASS)) return;
