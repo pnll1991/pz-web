@@ -74,6 +74,14 @@ try {
     if (!response.ok) throw new Error(`Classpath resource ${name} is unavailable: HTTP ${response.status}`);
     vfs.store(`/${name}`, new Uint8Array(await response.arrayBuffer()));
   }
+  // Round 80: everything the game writes under /Zomboid (Saves/, Sandbox Presets/, latestSave.ini,
+  // ...) is persisted to IndexedDB once the VFS is quiet, so a game created here survives a reload
+  // and the game's own main-menu "Continue"/"Load" works. Opt-in with '?persist=1' (round 80, while
+  // other test runs share this page); without it only SQLite/FileChannel.force() flush, as before.
+  if (new URLSearchParams(location.search).get('persist') === '1') {
+    const stopAutoFlush = vfs.autoFlush();
+    addEventListener('pagehide', stopAutoFlush, { once:true });
+  }
   // Round 79: the browser runtime has no PZPathFind64 library. DebugOptions.load() reads
   // <cacheDir>/debug-options.ini on every boot, and Pathfind.UseNativeCode=false makes
   // PathfindNative.checkUseNativeCode() keep the game's own Java pathfinder (PolygonalMap2).

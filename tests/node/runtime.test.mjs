@@ -120,3 +120,37 @@ test('a pack view is read-only, shares the blob bytes and counts once', () => {
   const small = new VirtualFileSystem({maxBytes:4});
   assert.throws(() => small.mountView('/media/big.bin', blob, 0, 8), /budget/);
 });
+
+test('autoFlush persists /Zomboid changes incrementally once the VFS is quiet', async () => {
+  const vfs = new VirtualFileSystem();
+  vfs.mountReadOnly('/Zomboid/options.ini', new TextEncoder().encode('version=8\n'));
+  const ops = [];
+  vfs.database = { transaction: () => {
+    const listeners = {};
+    const store = name => ({ put: (value, key) => ops.push(['put', name, key, value]), delete: key => ops.push(['delete', name, key]) });
+    const transaction = { objectStore: store,
+      set oncomplete(h) { listeners.complete = h; }, set onabort(h) { listeners.abort = h; }, set onerror(h) {} };
+    setTimeout(() => listeners.complete?.({ target: transaction }), 0);
+    return transaction;
+  } };
+  const stop = vfs.autoFlush({ quietMs: 20, maxDelayMs: 1000 });
+  vfs.writeFile('/Zomboid/Saves/Sandbox/w1/map_ver.bin', new Uint8Array([1, 2]));
+  vfs.writeFile('/Zomboid/latestSave.ini', new TextEncoder().encode('w1\nSandbox\n'));
+  vfs.writeFile('/Zomboid/tmp.bin', new Uint8Array([9]));
+  vfs.remove('/Zomboid/tmp.bin');
+  assert.equal(ops.length, 0, 'nothing is written while the game keeps changing files');
+  await new Promise(resolve => setTimeout(resolve, 80));
+  await vfs.pending;
+  const puts = ops.filter(([op, name]) => op === 'put' && name === 'files').map(([, , key]) => key).sort();
+  assert.deepEqual(puts, ['/Zomboid/Saves/Sandbox/w1/map_ver.bin', '/Zomboid/latestSave.ini']);
+  assert.ok(ops.some(([op, name, key]) => op === 'put' && name === 'metadata' && key === '/Zomboid/Saves/Sandbox/w1'), 'new directories are persisted');
+  assert.ok(ops.some(([op, name, key]) => op === 'delete' && name === 'files' && key === '/Zomboid/tmp.bin'), 'removed files are deleted');
+  assert.ok(!ops.some(([, , key]) => key === '/Zomboid/options.ini'), 'the read-only pack file is never persisted');
+  assert.equal(vfs.autoFlushStats.batches, 1);
+  // Stopping flushes what is still pending (pagehide).
+  ops.length = 0;
+  vfs.writeFile('/Zomboid/latestSave.ini', new TextEncoder().encode('w2\nSandbox\n'));
+  stop();
+  await new Promise(resolve => setTimeout(resolve, 10)); await vfs.pending;
+  assert.deepEqual(ops.filter(([op, name]) => op === 'put' && name === 'files').map(([, , key]) => key), ['/Zomboid/latestSave.ini']);
+});

@@ -405,5 +405,51 @@ export class VirtualFileSystem {
     this.pending = operation;
     return operation;
   }
+  /** Round 80: incremental persistence of the given /Zomboid paths in one IndexedDB transaction.
+   * The state of every path is captured synchronously (a file's bytes, a directory, or its absence)
+   * and queued behind any full flush(), so the database always reflects some real VFS state. */
+  flushChanges(paths) {
+    if (!this.database) return Promise.reject(new Error('VFS must be opened before flush'));
+    const entries = [];
+    for (const key of new Set(paths)) {
+      if (!writable(key) || this.readOnlyMounted.has(key)) continue;
+      const bytes = this.files.get(key), meta = this.metadata.get(key);
+      entries.push([key, bytes ? bytes.slice() : null, (bytes || this.directories.has(key)) && meta ? { ...meta } : null]);
+    }
+    if (!entries.length) return this.pending;
+    const operation = this.pending.catch(() => {}).then(async () => {
+      const transaction = this.database.transaction(['files', 'metadata'], 'readwrite', { durability:'strict' });
+      const done = transactionDone(transaction);
+      const store = transaction.objectStore('files'), meta = transaction.objectStore('metadata');
+      for (const [key, bytes, value] of entries) {
+        if (bytes) store.put(bytes, key); else store.delete(key);
+        if (value) meta.put(value, key); else meta.delete(key);
+      }
+      await done;
+    });
+    this.pending = operation;
+    return operation;
+  }
+  /** Round 80: the game's java.io writes (saves, presets, latestSave.ini) only reached IndexedDB when
+   * SQLite or FileChannel.force() happened to call flush(). Persist every /Zomboid change once the VFS
+   * has been quiet for `quietMs` (at most `maxDelayMs` after the first pending change). */
+  autoFlush({ quietMs = 2000, maxDelayMs = 15000 } = {}) {
+    const stats = this.autoFlushStats = { batches:0, paths:0, errors:0, lastError:null, lastMs:0 };
+    let dirty = new Set(), timer = null, first = 0;
+    const run = () => {
+      const paths = [...dirty]; dirty = new Set(); timer = null; first = 0;
+      const t0 = performance.now();
+      this.flushChanges(paths).then(() => { stats.batches++; stats.paths += paths.length; stats.lastMs = performance.now() - t0; },
+        error => { stats.errors++; stats.lastError = String(error); for (const p of paths) dirty.add(p); console.warn('VFS autoFlush:', error); });
+    };
+    const stop = this.onChange(path => {
+      if (!writable(path) || this.readOnlyMounted.has(path)) return;
+      dirty.add(path);
+      const now = Date.now(); if (!first) first = now;
+      clearTimeout(timer);
+      timer = setTimeout(run, Math.max(0, Math.min(quietMs, first + maxDelayMs - now)));
+    });
+    return () => { stop(); clearTimeout(timer); if (dirty.size) run(); };
+  }
   async close() { await this.pending; this.database?.close(); this.database = null; }
 }
