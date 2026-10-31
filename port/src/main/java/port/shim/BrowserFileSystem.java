@@ -78,10 +78,21 @@ public final class BrowserFileSystem implements VirtualFileSystem {
         @Override public int read(byte[] bytes, int offset, int length) throws IOException {
             check(); Objects.checkFromIndexSize(offset, length, bytes.length);
             if (!readable) throw new IOException("File is not open for reading: " + path);
-            ByteBuffer buffer = ByteBuffer.allocateDirect(Math.min(length, 65536));
+            // Round 80: a regular file read on the JVM (FileInputStream.readBytes -> one read(2)) returns
+            // every requested byte up to EOF, and the game relies on it: DictionaryData.load() does a
+            // single read(byte[File.length()]) of WorldDictionary.bin (121 KB) and parses it. Returning
+            // at most 64 KB truncated the buffer -> BufferUnderflowException -> "Cannot load world".
+            // Fill the request in chunks until EOF, as the desktop read does.
+            if (length == 0) return 0;
+            int total = 0;
             try {
-                int count = readBytes(path, position, Uint8Array.fromJavaBuffer(buffer));
-                buffer.get(bytes, offset, count); position += count; return count;
+                while (total < length) {
+                    ByteBuffer buffer = ByteBuffer.allocateDirect(Math.min(length - total, 1 << 20));
+                    int count = readBytes(path, position, Uint8Array.fromJavaBuffer(buffer));
+                    if (count <= 0) break;
+                    buffer.get(bytes, offset + total, count); position += count; total += count;
+                }
+                return total;
             } catch (RuntimeException error) { throw new IOException("Read failed: " + path, error); }
         }
         @Override public void write(byte[] bytes, int offset, int length) throws IOException {
