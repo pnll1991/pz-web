@@ -49,7 +49,10 @@ public final class BulletNativeCompatibility implements ClassHolderTransformer {
     private static final java.util.Set<String> WORLD = java.util.Set.of(
         "ToBullet(Ljava/nio/ByteBuffer;)V", "isWorldInit()Z", "initWorld(IIIIIIZ)V", "destroyWorld()V",
         "activateChunkMap(IIII)V", "deactivateChunkMap(I)V", "scrollChunkMap(II)V", "setChunkMinMaxLevel(IIII)V",
-        "stepSimulation(FIF)V", "getVehicleCount()I", "getVehiclePhysics(I[F)I", "getObjectPhysics([F)I");
+        "stepSimulation(FIF)V", "getVehicleCount()I", "getVehiclePhysics(I[F)I", "getObjectPhysics([F)I",
+        "defineRagdollConstraints([FZ)Z", "defineRagdollAnchors([FZ)Z", "defineRagdollBodyPartInfo([FZ)Z",
+        "defineRagdollBodyDynamics([FZ)Z", "definePhysicsMesh(IZ[F)V", "defineVehiclePhysicsMesh(Ljava/lang/String;I[F)V",
+        "clearPhysicsMeshes()V");
 
     @Override public void transformClass(ClassHolder cls, ClassHolderTransformerContext context) {
         if (!cls.getName().equals(CLASS)) return;
