@@ -1178,6 +1178,73 @@ def patch_zip_inflater_stream():
     print(f"TeaVM {VERSION}: zip entry streams feed the JDK dummy trailing byte; source SHA-256 {digest}")
 
 
+def patch_dependency_filter(package):
+    """Round 80 (build speed only): memoize DependencyAnalyzer.filterType per DependencyType.
+
+    JFR of a --with-game build (build-round80g-dev1): dependency analysis is 364 s of 403 s and
+    DependencyAnalyzer.filterType -- classFilters.stream().allMatch(...) on EVERY type propagation --
+    is ~38% of the samples (stream machinery + JSOPlugin's filter -> JSTypeHelper.isJavaScriptClass).
+    The only ClassFilter in 0.16.0 is JSOPlugin$1: a pure function of the class name over the
+    unprocessed class source, so its answer for a DependencyType (interned, unique index) never
+    changes. Opt-in with -Dpz.teavm.filterCache=true (scripts/build.sh --dev); without it the
+    original stream path runs unchanged. addClassFilter clears the cache.
+    """
+    analyzer_path = "org/teavm/dependency/DependencyAnalyzer.java"
+    node_path = "org/teavm/dependency/DependencyNode.java"
+    # Maven's TeaVM binaries relocate HPPC and ASM; the source archive keeps the upstream packages.
+    relocate = lambda text: text.replace("com.carrotsearch.hppc.", "org.teavm.hppc.").replace("org.objectweb.asm.", "org.teavm.asm.")
+    analyzer = relocate(package.read(analyzer_path).decode("utf-8"))
+    node = relocate(package.read(node_path).decode("utf-8"))
+    old = """    boolean filterType(ValueType type) {
+        return classFilters.stream().allMatch(filter -> filter.accept(filterContext, type));
+    }"""
+    new = """    boolean filterType(ValueType type) {
+        return classFilters.stream().allMatch(filter -> filter.accept(filterContext, type));
+    }
+
+    private static final boolean FILTER_CACHE = Boolean.getBoolean("pz.teavm.filterCache");
+    private byte[] filterCache = new byte[0];
+
+    boolean filterType(DependencyType type) {
+        if (!FILTER_CACHE) {
+            return filterType(type.getValueType());
+        }
+        int index = type.index;
+        if (index < filterCache.length && filterCache[index] != 0) {
+            return filterCache[index] > 0;
+        }
+        boolean result = true;
+        for (ClassFilter filter : classFilters) {
+            if (!filter.accept(filterContext, type.getValueType())) {
+                result = false;
+                break;
+            }
+        }
+        if (index >= filterCache.length) {
+            filterCache = Arrays.copyOf(filterCache, Math.max(index + 1, filterCache.length * 2 + 64));
+        }
+        filterCache[index] = result ? (byte) 1 : (byte) -1;
+        return result;
+    }"""
+    if analyzer.count(old) != 1 or analyzer.count("filterType(type.getValueType())") != 4:
+        raise RuntimeError("Unexpected TeaVM DependencyAnalyzer.filterType shape")
+    analyzer = analyzer.replace(old, new).replace("filterType(type.getValueType())", "filterType(type)")
+    # The overload delegating with FILTER_CACHE off must still call the ValueType version.
+    analyzer = analyzer.replace("        if (!FILTER_CACHE) {\n            return filterType(type);", "        if (!FILTER_CACHE) {\n            return filterType(type.getValueType());")
+    old = "        classFilters.add(filter);"
+    if analyzer.count(old) != 1:
+        raise RuntimeError("Unexpected TeaVM addClassFilter shape")
+    analyzer = analyzer.replace(old, old + "\n        filterCache = new byte[0];")
+    if node.count("dependencyAnalyzer.filterType(type.getValueType())") != 2:
+        raise RuntimeError("Unexpected TeaVM DependencyNode.filterType callers")
+    node = node.replace("dependencyAnalyzer.filterType(type.getValueType())", "dependencyAnalyzer.filterType(type)")
+    for path, source in [(analyzer_path, analyzer), (node_path, node)]:
+        destination = ROOT / "port/target/generated-sources/teavm" / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("// Local change: opt-in memoized class filter (pz.teavm.filterCache); semantics unchanged.\n" + source, encoding="utf-8")
+    print("TeaVM: opt-in memoized DependencyAnalyzer.filterType (pz.teavm.filterCache)")
+
+
 def main():
     archive = ROOT / f".toolchain/downloads/teavm-core-{VERSION}-sources.jar"
     if not archive.exists():
@@ -1196,6 +1263,7 @@ def main():
         # index per analysis. Each consumer/set belongs to that same analysis.
         analyzer = package.read("org/teavm/dependency/DependencyAnalyzer.java").decode("utf-8")
         patch_backend(package)
+        patch_dependency_filter(package)
     if "new DependencyType(valueType, types.size())" not in analyzer:
         raise RuntimeError("TeaVM type-index invariant changed")
     old = "private Set<DependencyType> knownTypes = new HashSet<>();"

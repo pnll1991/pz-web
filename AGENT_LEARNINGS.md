@@ -763,3 +763,16 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   `javap -constants` sobre GL11/GL30C del jar fijado y un test que lo consulte.
 - Error evitado: `glClearDepthf` del shim llamaba `clearDepthf` de WebGL2, que no existe (WebGL2 sólo tiene
   `clearDepth`); se veía recién al mapear GL41C. Mejor enfoque: pasar por el método del puente, no por `call(nombre)`.
+
+## Ronda 80 (c) (Code, 31/10) — iteración del build
+- Error de proceso: lancé un build sólo con `build.lock`; `prepare_build.py` borró el `boot.wasm` servido y rompió
+  corridas de Chrome de otros frentes. Mejor enfoque: `scripts/build.sh --with-game --dev` compila en
+  `port/target/web-staging` y publica con rename atómico (`PZ_SWAP_LOCK=<chrome.lock>`); el build normal sigue
+  necesitando chrome.lock + build.lock. Si pasa, restaurar `boot.wasm` desde `/tmp/boot-<ronda>.wasm` en seguida.
+- Error: recompilar una clase de teavm-core desde el sources jar sin declarar sus dependencias reubicadas.
+  El jar binario usa `org.teavm.asm`/`org.teavm.hppc`; hay que reescribir los imports Y tener esos jars en el
+  classpath de COMPILACIÓN (el `dependency-classpath.txt` es runtime y engaña: un javac manual con él compila).
+- Patrón: el 90 % del build es DEPENDENCY_ANALYSIS de TeaVM; medir con JFR antes de tocar flags de JVM/GC
+  (GC = 2 %). `filterType` con streams en el camino caliente costaba ~40 % del análisis.
+- Patrón: TeaVM no es determinista entre builds (orden de clases `$$_impl`); comparar salidas por conjunto de nombres
+  de funciones del name section, no por hash.

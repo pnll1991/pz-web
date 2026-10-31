@@ -845,3 +845,46 @@ Commits en `code/menu`: `acf5ac6` (nativas Clipper), `d80bc78` (`Bullet.setVehic
   - Errores de shaders restantes en esa corrida: `pow/clamp` con argumentos int, identificador `texture` reservado,
     `ivec2*float`. Corregidos en `421a22d` (conversiones implícitas int->float y renombre de identificadores
     reservados), sin probar en el juego al momento de esa corrida.
+
+## Ronda 80 — iteración (frente C, 31/10)
+- JS sólo (`port/web/*`, `port/runtime/*.mjs`): `bash scripts/sync_web.sh` (~0,2 s). Es exactamente la parte web de
+  `scripts/build.sh` (que ahora la llama): copia los archivos cuyo contenido cambió (los demás conservan mtime -> mismo
+  ETag -> 304), `copy_web_vendor.py`, `prepare_sqlite.py`. No toca `boot.wasm`, `boot.wasm-runtime.js`, `pulse-map.json`
+  ni `build-state.json` (salen de Java/TeaVM). El dev server lee cada archivo por petición (`Cache-Control: no-cache`,
+  ETag débil tamaño+mtime), así que basta recargar la página; sólo hay que reiniciarlo si cambia `dev-server/*.mjs`
+  o el manifest de media. Cambios JS que agregan imports Wasm nuevos sí necesitan el build Java.
+- Medición del build `--with-game` por defecto (logs `build-round79*/80*-game.log`): 6:17–9:05 min, mediana ~6:55.
+  TeaVM (`compile_ms`) es 366–527 s, ~97 %; el resto: exposición Lua 10 s (javap + escaneo del jar), glgen 0,3 s,
+  `prepare_teavm` + JdkContracts ~1 s, javac 302 fuentes + tests JUnit (~6 s, CompilerRegressionTest 5 s) + jar ~12 s,
+  gates 3 s, `PolymorphicCalls.scan` 1,7 s. Con marcas de tiempo nuevas en `BuildCompiler` (build-round80g-dev1):
+  DEPENDENCY_ANALYSIS 364 s, COMPILING+emisión 39 s.
+- JFR del build (`-XX:StartFlightRecording`): GC 8,4 s de pausa en total (2 %; cambiar de GC no vale la pena).
+  `DependencyAnalyzer.filterType` = `classFilters.stream().allMatch(...)` en CADA propagación de tipo: ~38 % de las
+  muestras (maquinaria de streams + `JSOPlugin$1.accept` -> `JSTypeHelper.isJavaScriptClass`). El único `ClassFilter`
+  de 0.16.0 es el de JSOPlugin, función pura del nombre de clase sobre el class source sin procesar; el
+  `DependencyType` está internado con índice único. `prepare_teavm.py` `patch_dependency_filter` agrega un memo por
+  índice (byte[]), opt-in con `-Dpz.teavm.filterCache=true`; sin la propiedad corre el stream original.
+- `scripts/build.sh --with-game --dev` (por defecto sin cambios): mismas opciones de TeaVM (SIMPLE, strict, mismos
+  transformers y gates) +: memo de filterType; exposición Lua cacheada por hash de entradas
+  (`port/target/cache/exposure/<sha>`: inventory.json, que fija los jars por SHA-256, generadores y `$JAVA_HOME/release`);
+  fuentes generadas idénticas conservan su mtime (javac no recompila por eso); `mvn -o`; sin tests JUnit
+  (`-Dmaven.test.skip`) ni jar (fase `prepare-package`). Compila en `port/target/web-staging/game` y, con los gates
+  aprobados, `scripts/swap_staged.sh` reemplaza boot.wasm/pulse-map.json/build-state.json servidos por rename atómico
+  y corre sync_web: el `boot.wasm` servido nunca desaparece. `PZ_SWAP_LOCK=/tmp/pz80-locks/chrome.lock` hace el swap
+  bajo ese lock (el build sigue reteniendo build.lock mientras espera); `PZ_NO_SWAP=1` deja el resultado en staging.
+- Resultado medido (mismas fuentes salvo 28fed96): dev1 (sin memo, con JFR) TeaVM 403 s / maven 411 s;
+  dev2 (con memo) DEPENDENCY_ANALYSIS 203 s, TeaVM 238 s, maven 246 s, prepare 1 s (antes 11–12 s). Total
+  ~4:10 contra ~7:00. Clases alcanzables iguales (10319); la diferencia de funciones del name section entre dev1 y
+  dev2 es exactamente lo agregado por 28fed96 (19 `port.shim.GL11::*` nuevas, 7 `GL*C` que dejaron de alcanzarse).
+- Descartado: optimización por debajo de SIMPLE (no existe; ya es la mínima); `setIncremental` (cachea programas por
+  fecha de clase, no ve las entradas de nuestros transformers —natives.tsv, gl-overrides, reflection.txt— y no
+  cachea el análisis de dependencias, que es el 90 %); `setFastDependencyAnalysis` (menos preciso: más métodos
+  alcanzables y más corrutinas, arriesga el gate de Thread.currentThread). TeaVM no es determinista entre builds
+  (orden de `$$_impl` de anotaciones en pulse-map), así que no se puede comparar boot.wasm por hash.
+- Cambios que también afectan al build por defecto: `DependencyAnalyzer`/`DependencyNode` se recompilan desde las
+  fuentes 0.16.0 (javap: mismos miembros salvo numeración de lambdas; sin la propiedad ejecutan el camino original),
+  `port/pom.xml` declara `teavm-relocated-libs-asm(-tree)` (ya estaban en el classpath de ejecución), sync_web copia
+  sólo lo que cambió y BuildCompiler imprime tiempos por fase.
+- Riesgos: `--dev` no corre los JUnit (correr `scripts/build.sh` normal antes de commitear cambios del compilador);
+  la caché de exposición no ve cambios de `tools/exposure` fuera de `generate.py`; el swap no es atómico entre los
+  tres archivos (una página que carga justo en ese instante podría ver boot.wasm nuevo con pulse-map viejo).

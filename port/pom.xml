@@ -9,6 +9,10 @@
   </properties>
   <dependencies>
     <dependency><groupId>org.teavm</groupId><artifactId>teavm-relocated-libs-hppc</artifactId><version>${teavm.version}</version></dependency>
+    <!-- Round 80: scripts/prepare_teavm.py patch_dependency_filter recompiles DependencyAnalyzer, which imports the relocated ASM
+         (already on the runtime classpath transitively; declared so javac sees it). -->
+    <dependency><groupId>org.teavm</groupId><artifactId>teavm-relocated-libs-asm</artifactId><version>${teavm.version}</version></dependency>
+    <dependency><groupId>org.teavm</groupId><artifactId>teavm-relocated-libs-asm-tree</artifactId><version>${teavm.version}</version></dependency>
     <dependency><groupId>org.teavm</groupId><artifactId>teavm-classlib</artifactId><version>${teavm.version}</version></dependency>
     <dependency><groupId>org.teavm</groupId><artifactId>teavm-jso-apis</artifactId><version>${teavm.version}</version></dependency>
     <dependency><groupId>org.teavm</groupId><artifactId>teavm-extension-spi</artifactId><version>${teavm.version}</version></dependency>

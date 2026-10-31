@@ -25,7 +25,9 @@ public final class BuildCompiler {
         boolean game = "game-main".equals(mode);
         long heapLimit = Runtime.getRuntime().maxMemory();
         String gameMain = entrypoint.getProperty("main", "");
-        Path output = port.resolve(game ? "target/web/game" : "target/web");
+        // build.sh --dev: staging directory, swapped into target/web only after the gates pass.
+        String outputOverride = entrypoint.getProperty("output", "");
+        Path output = outputOverride.isEmpty() ? port.resolve(game ? "target/web/game" : "target/web") : Path.of(outputOverride);
         Path reports = port.resolve("target/reports/" + mode + "-" + entrypoint.getProperty("reflection"));
         Files.createDirectories(reports);
         // Derived diagnostics must never survive a failed/restarted analysis.
@@ -47,7 +49,9 @@ public final class BuildCompiler {
             }
         }
         int externalCount = classPath.size() - 1;
+        long scanStarted = System.nanoTime();
         PolymorphicCalls.scan(classPath);
+        System.out.println("PolymorphicCalls.scan: " + (System.nanoTime() - scanStarted) / 1_000_000 + " ms");
         for (String entry : Files.readString(port.resolve("target/dependency-classpath.txt")).strip().split(File.pathSeparator)) {
             classPath.add(Path.of(entry).toFile());
         }
@@ -80,8 +84,8 @@ public final class BuildCompiler {
             tool.setLog(new ConsoleTeaVMToolLog(true));
             tool.setProgressListener(new org.teavm.vm.TeaVMProgressListener(){
                 private long last;
-                public org.teavm.vm.TeaVMProgressFeedback phaseStarted(org.teavm.vm.TeaVMPhase phase,int count){System.out.println("TeaVM phase "+phase+", work units="+count);last=System.nanoTime();return org.teavm.vm.TeaVMProgressFeedback.CONTINUE;}
-                public org.teavm.vm.TeaVMProgressFeedback progressReached(int progress){long now=System.nanoTime();if(now-last>30_000_000_000L){System.out.println("TeaVM progress="+progress);last=now;}return org.teavm.vm.TeaVMProgressFeedback.CONTINUE;}
+                public org.teavm.vm.TeaVMProgressFeedback phaseStarted(org.teavm.vm.TeaVMPhase phase,int count){System.out.println("TeaVM phase "+phase+", work units="+count+", t="+(System.nanoTime()-started)/1_000_000_000L+" s");last=System.nanoTime();return org.teavm.vm.TeaVMProgressFeedback.CONTINUE;}
+                public org.teavm.vm.TeaVMProgressFeedback progressReached(int progress){long now=System.nanoTime();if(now-last>30_000_000_000L){System.out.println("TeaVM progress="+progress+", t="+(now-started)/1_000_000_000L+" s");last=now;}return org.teavm.vm.TeaVMProgressFeedback.CONTINUE;}
             });
             tool.getTransformers().add(CompatReferences.class.getName());
             tool.getTransformers().add(FailFastNatives.class.getName());
@@ -113,6 +117,7 @@ public final class BuildCompiler {
             try {
                 verifyCompilerPatch();
                 tool.generate();
+                System.out.println("TeaVM generate done, t=" + (System.nanoTime() - started) / 1_000_000_000L + " s");
             } catch (Throwable error) {
                 Files.deleteIfExists(output.resolve("boot.wasm"));
                 write(port, reports, "teavm-diagnostics.txt", error.toString());
