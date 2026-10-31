@@ -1019,3 +1019,28 @@ Análisis estático (`javap -c` del jar fijado, volcado en /tmp; `translateShade
   -4 `models/skinned/*.txt` (1 015 617 B), inalcanzables con el `.x` presente (`checkExtensionType` devuelve X antes que
   Txt y `loadX` no reintenta con `.txt`). Packs 520 168 208 B (quedan 16,70 MB de 536 870 912), archivos montados
   516 786 274 B (quedan 20,08 MB). Volver atrás: `index.json.before-frontL`.
+
+## Ronda 80 — frente O (31/10): cuelgue tras Esc -> QUIT
+- Síntoma (/tmp/pz80v): guarda (worldgen params, GlobalModData), "STATE: exit zombie.gameStates.IngameState" es la última
+  línea; el hilo principal del renderer queda al 100 %, evaluate/screenshot no responden y a los ~23 min "Target crashed".
+- `GameStateMachine.update` imprime "STATE: exit X" y llama `X.exit()`: el cuelgue está dentro de `IngameState.exit()` (no
+  hay "STATE: enter" del estado siguiente). `DebugType.ExitDebug` no está activo, por eso no se ven "IngameState.exit N".
+- Orden de `IngameState.exit()` (javap): fundido `ScreenFader` (350 ms, `Thread.sleep(33)` por vuelta: cede), espera
+  `WorldStreamer.isBusy()` con sleep y tope de 6 s (cede), luego **`WorldStreamer.stop()`**: `finished=true; while
+  (worldStreamer.isAlive()) MainThread.busyWait();` y `busyWait` sólo vacía `invokeOnMainQueue`: nunca suspende. Con
+  corrutinas TeaVM el hilo "World Streamer" está dormido en `Thread.sleep` dentro de `threadLoop` y sólo puede ver
+  `finished` si la fibra del juego cede: espera infinita = 100 % CPU, ningún timer (autoFlush de la VFS, rAF) corre.
+- Después vienen dos esperas iguales: `LightingThread.stop()` (`while (lightingThread.isAlive());` si
+  `PerformanceSettings.lightingThread`) e `IsoRegionWorker.stop()` (desde `IsoRegions.reset()`, `while (thread.isAlive());`).
+  Barrido de las 45 clases del jar que nombran `isAlive`: el resto de las esperas sobre `Thread.isAlive` duermen
+  (`MapCollisionData.stop/save`, `PolygonalMap2.stop`, `PathfindNativeThread.stopThread`, `WorldGenerate`, `ZipBackup`...).
+- Arreglo (necesita el próximo build dev): `port.compiler.SpinWaitCompatibility` reescribe el `Thread.isAlive()` de esos tres
+  `stop()` a `JdkSupport.aliveYielding` (mismo valor + cesión de `onSpinWait`). Test: `TransformerPatchTest`
+  (`spinWaitsOnThreadIsAliveYield` sobre el jar fijado, control `PolygonalMap2.stop` intacto, objetivo vacío falla).
+- Nativas del resto de `exit()` revisadas: `LightingJNI.stop` -> `destroy` (implementada), `ZombiePopulationManager.n_stop`
+  (PopMan64.stop), `MapCollisionData.n_stop` (MapCollision64.stop), `Bullet.destroyWorld` (BulletWorld), `PathfindNative.stop`
+  sólo si la opción de debug `pathfindUseNativeCode` (si no, `PolygonalMap2.stop`, que duerme). `AnimalPopulationManager.n_stop`
+  es Java, no nativa.
+- Secundario (no cuelga, cuesta memoria): cada sentencia SQLite en autocommit llama `BrowserConnection.persist()` ->
+  `Sqlite.export` + `vfs.flush()` completo, que copia (`slice`) todos los archivos de /Zomboid y reescribe IndexedDB entero;
+  durante el guardado eso es O(tamaño de la partida) por sentencia. Candidato: `flushChanges` con los paths sucios.

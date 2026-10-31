@@ -116,6 +116,8 @@ public final class BuildCompiler {
                 tool.getTransformers().add(StartupProgress.class.getName());
                 // Ronda 80 (frente M): sonda opt-in del jugador (?probe=1 / PZ_PLAYER_PROBE).
                 tool.getTransformers().add(PlayerProbeCompatibility.class.getName());
+                // Ronda 80 (frente O): esperas activas sobre Thread.isAlive() que colgaban Esc->QUIT.
+                tool.getTransformers().add(SpinWaitCompatibility.class.getName());
             }
             try {
                 verifyCompilerPatch();

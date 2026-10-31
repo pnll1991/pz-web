@@ -89,6 +89,19 @@ public final class JdkSupport {
 
     public static void onSpinWait() { JdkSupport.yield(); }
 
+    /**
+     * Ronda 80 (frente O): {@code Thread.isAlive()} de una espera activa del juego. En escritorio
+     * {@code while (t.isAlive()) {}} termina porque t corre en otro núcleo; con corrutinas t sólo
+     * avanza si la fibra que espera cede. Cede como {@link #onSpinWait()} (misma cuota) mientras t
+     * siga viva; el valor devuelto es siempre el de {@code isAlive()}.
+     * {@code port.compiler.SpinWaitCompatibility} lo inyecta sólo en las esperas sin sleep.
+     */
+    public static boolean aliveYielding(Thread thread) {
+        boolean alive = thread.isAlive();
+        if (alive) JdkSupport.yield();
+        return alive;
+    }
+
     public static int read(InputStream stream) throws IOException {
         byte[] one = new byte[1];
         return stream.read(one, 0, 1) < 0 ? -1 : one[0] & 255;

@@ -877,3 +877,10 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   tope por evaluate (Promise.race) para que la cola sobreviva a un cuelgue.
 - Patrón: a ~3 fps una tecla de 120 ms puede no verse (el juego consulta el estado por frame): Escape necesitó 800 ms;
   el primer click en "Click to Start" tampoco tomó.
+
+## Ronda 80 (frente O, 31/10) — cuelgue de Esc->QUIT
+- Patrón: con corrutinas TeaVM una espera activa del juego (`while (t.isAlive()) {}` o con un cuerpo que no suspende,
+  como `MainThread.busyWait`) cuelga para siempre al 100 % de CPU: el hilo esperado nunca corre. Ante un cuelgue con CPU
+  al 100 % sin excepción, buscar con `javap -c` los bucles cuyo único trabajo es leer un estado de otro hilo y verificar que
+  cada vuelta llegue a `Thread.sleep`/`wait`/`yield`. Mejor enfoque: barrer el jar (`grep -la isAlive` sobre las clases)
+  y reescribir sólo las esperas sin cesión, con un transformer que falle si el objetivo cambia.

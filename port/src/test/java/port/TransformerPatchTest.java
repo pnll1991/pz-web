@@ -198,4 +198,45 @@ class TransformerPatchTest {
             "0 null-varargs sites must not look like a successful patch");
     }
 
+
+    /** Ronda 80 (frente O): las tres esperas activas de IngameState.exit ceden mientras esperan. */
+    @Test void spinWaitsOnThreadIsAliveYield() {
+        var source = source(gameJar());
+        var hierarchy = new org.teavm.model.ClassHierarchy(source);
+        for (var target : java.util.List.of("zombie.iso.WorldStreamer", "zombie.iso.LightingThread",
+                "zombie.iso.areas.isoregion.IsoRegionWorker")) {
+            ClassHolder cls = source.get(target);
+            assertNotNull(cls, target);
+            var stop = cls.getMethod(new MethodDescriptor("stop", org.teavm.model.ValueType.VOID));
+            assertNotNull(stop, target + ".stop()");
+            assertTrue(countInvokes(stop, "java.lang.Thread", "isAlive") > 0, target + " must poll Thread.isAlive before the patch");
+            new port.compiler.SpinWaitCompatibility().transformClass(cls, new TestContext(hierarchy));
+            assertEquals(0, countInvokes(stop, "java.lang.Thread", "isAlive"), target + " still spins on Thread.isAlive");
+            assertTrue(countInvokes(stop, "port.runtime.JdkSupport", "aliveYielding") > 0, target + " not rewritten");
+        }
+        // Control: an isAlive wait that already sleeps is left alone.
+        ClassHolder pm = source.get("zombie.pathfind.PolygonalMap2");
+        int before = countInvokes(pm.getMethod(new MethodDescriptor("stop", org.teavm.model.ValueType.VOID)), "port.runtime.JdkSupport", "aliveYielding");
+        new port.compiler.SpinWaitCompatibility().transformClass(pm, new TestContext(hierarchy));
+        assertEquals(before, countInvokes(pm.getMethod(new MethodDescriptor("stop", org.teavm.model.ValueType.VOID)), "port.runtime.JdkSupport", "aliveYielding"));
+        // A target without the expected call fails the build instead of compiling a silent no-op.
+        var empty = new ClassHolder("zombie.iso.LightingThread"); empty.setParent("java.lang.Object");
+        assertThrows(IllegalStateException.class, () -> new port.compiler.SpinWaitCompatibility().transformClass(empty, new TestContext(hierarchy)));
+    }
+
+    @Test void aliveYieldingKeepsIsAliveValue() throws Exception {
+        var thread = new Thread(() -> { });
+        assertFalse(port.runtime.JdkSupport.aliveYielding(thread));
+        thread.start(); thread.join();
+        assertFalse(port.runtime.JdkSupport.aliveYielding(thread));
+    }
+
+    private static int countInvokes(org.teavm.model.MethodHolder method, String owner, String name) {
+        int count = 0;
+        for (var block : method.getProgram().getBasicBlocks())
+            for (var instruction : block)
+                if (instruction instanceof org.teavm.model.instructions.InvokeInstruction invoke
+                        && invoke.getMethod().getClassName().equals(owner) && invoke.getMethod().getName().equals(name)) count++;
+        return count;
+    }
 }
