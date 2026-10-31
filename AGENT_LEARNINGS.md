@@ -800,3 +800,12 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   para validar un fix antes de commitear. El eval del driver trunca a 6000 caracteres: volcar en trozos con `slice`.
 - Proceso: `until ! pgrep -af "drive.mjs" | grep -q X` dentro de un comando cuyo texto contiene X se encuentra a sí
   mismo y no termina. Mejor enfoque: esperar el PID del driver o el fin de la tarea en segundo plano.
+
+## Ronda 80 (frente I, 31/10) — readback de buffers
+- Patrón: `getBufferSubData` de WebGL2 es un stall GPU->CPU. El shim `GL15.nglMapBuffer` llena el bloque mapeado desde
+  el buffer; con orphan+map por frame eso eran ~590 readbacks de 64 KB cada 3 s. Mejor enfoque: el puente responde
+  desde una vista CPU (tamaño, "todo ceros" tras `bufferData(NULL)`, copia sólo de buffers que el juego lee) y los
+  anillos de diagnóstico que consultan la GPU quedan opt-in (`PZ_GL_BUFFER_DIAG` / `?glBufferDiag`).
+- Error de proceso: `git commit -- <archivo nuevo>` falla con "pathspec did not match" si el archivo no está
+  agregado; el board quedó con el hash anterior. Mejor enfoque: `git add` del archivo nuevo dentro del mismo flock y
+  anotar el hash recién después de verificar `git log -1`.
