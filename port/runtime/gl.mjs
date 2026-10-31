@@ -745,7 +745,7 @@ export class GLBridge {
     if (pname === 0x8894) return [this.boundArrayHandle];   // GL_ARRAY_BUFFER_BINDING (34964)
     if (pname === 0x8895) return [this.boundElementHandle]; // GL_ELEMENT_ARRAY_BUFFER_BINDING (34965)
     if (pname === 0x8069) return [this.textureUnits[this.activeUnit] ?? 0]; // GL_TEXTURE_BINDING_2D (32873)
-    if (pname === 0x8bad) return [this.currentProgram ? this.currentProgram.handle : 0]; // GL_CURRENT_PROGRAM (35725)
+    if (pname === 0x8b8d) return [this.currentProgram ? this.currentProgram.handle : 0]; // GL_CURRENT_PROGRAM (35725)
     const constant = GLBridge.INT_ANSWERS.get(pname);
     if (constant === undefined || gl[constant] === undefined)
       throw new Error(`Unsupported WebGL2 integer parameter: 0x${pname.toString(16)}`);

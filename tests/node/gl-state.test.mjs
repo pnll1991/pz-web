@@ -91,6 +91,11 @@ test('glAlphaFunc validates the function and drives the program uniforms', () =>
   assert.deepEqual(gl.capabilityState().alphaTest, { enabled: true, func: 519, ref: 1, gaps: 0, uniformGaps: 0 });
   gl.disable(0x0bc0);
   assert.deepEqual(gl.capabilityState().alphaTest, { enabled: false, func: 519, ref: 1, gaps: 0, uniformGaps: 0 });
+  // Round 80: glGetInteger(GL_CURRENT_PROGRAM = 0x8B8D) answers the handle the game bound
+  // (WeatherParticleDrawer.render saves and restores it every frame).
+  assert.deepEqual(gl.intParameters(0x8b8d), [program]);
+  gl.useProgram(0);
+  assert.deepEqual(gl.intParameters(0x8b8d), [0]);
 });
 
 test('a program without the injection is counted as a gap, never silently dropped', () => {
