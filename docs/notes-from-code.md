@@ -1015,3 +1015,7 @@ Análisis estático (`javap -c` del jar fijado, volcado en /tmp; `translateShade
 - Lectura esperada: tecla sin `forwardDown` -> binding/GameKeyboard; `forwardDown` sin `isPlayerMoving` -> entrada del
   jugador (estado/acción/UI/pausa); `isPlayerMoving` sin `deferredLen>0` -> root motion (clip/hueso Translation_Data);
   `deferredLen>0` con `animUpdatingThisFrame=false` -> `doDeferredMovement` no aplica (ver frente H).
+- Presupuesto (simulado sobre una copia del índice): +4 cachés (317 291 B; ruta real y minúsculas comparten un rango) y
+  -4 `models/skinned/*.txt` (1 015 617 B), inalcanzables con el `.x` presente (`checkExtensionType` devuelve X antes que
+  Txt y `loadX` no reintenta con `.txt`). Packs 520 168 208 B (quedan 16,70 MB de 536 870 912), archivos montados
+  516 786 274 B (quedan 20,08 MB). Volver atrás: `index.json.before-frontL`.
