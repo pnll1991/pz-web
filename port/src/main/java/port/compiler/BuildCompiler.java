@@ -88,6 +88,7 @@ public final class BuildCompiler {
             tool.getTransformers().add(BulletNativeCompatibility.class.getName());
             tool.getTransformers().add(LightingNativeCompatibility.class.getName());
             tool.getTransformers().add(NativeModuleCompatibility.class.getName());
+            tool.getTransformers().add(ClipperNativeCompatibility.class.getName());
             tool.getTransformers().add(MapCollisionStateCompatibility.class.getName());
             tool.getTransformers().add(SqliteCompatibility.class.getName());
             tool.getTransformers().add(LwjglPlatformCompatibility.class.getName());
