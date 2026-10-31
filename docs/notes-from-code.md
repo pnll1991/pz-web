@@ -922,3 +922,12 @@ Commits en `code/menu`: `acf5ac6` (nativas Clipper), `d80bc78` (`Bullet.setVehic
   (scripts/generated/animations.txt). Cierre de `m_AnimName` en AnimSets/player/{idle,movement,run,sprint,turning*}:
   241 nombres, 239 existen (49 MB de .x, ~35 MB .txt); todo AnimSets/player: 1388 (323 MB .x); todo anims_X: 2209 archivos,
   513 MB .x (Bob 1650/387 MB -> 272 MB .txt, 77 MB gzip -1, conversión ~62 s medida en la 59b; Zombie 185/46 MB).
+- **Clips servidos (aprobado por coord.)**: `stage_txt.py --bob-anims locomotion` -> 240 clips (cierre de 239 + 
+  `Bob_IdleDrinkPopCan`; faltan en el juego `AnAnim` y `Bob_SprintToStop_2h_Heavy`), 14 s, 55 MB por copia.
+  Se montan dos paths por clip: `media/anims_X/Bob/<Nombre>.txt` (lo que lista `loadHumanAnimations`: `animsXFile`
+  con mayúsculas reales y `isAnimationsMeshDirectory` = `ArrayList.contains("Bob")`, sensible a mayúsculas) y
+  `media/anims/bob/<minúsculas>.txt` (lo que lee `checkExtensionType`). El alias `anims_x/bob/*.txt` no hace falta
+  (`checkExtensionType` sólo busca `.fbx/.glb/.x` ahí). `overlay.py --add` pone ambos sobre el mismo rango y
+  `vfs.mjs`/`packs.mjs` lo cuentan una vez. Presupuesto: packs 519,9 MB de 536,9 MB (antes 464,8): quedan ~17 MB para
+  `/Zomboid` (partidas). Bob completo (1650 clips, 272 MB) no entra en el preload de packs: haría falta servirlo por el
+  manifest remoto (hoy excluye `anims_X/`) o subir `maxBytes`; además `loadAnimsFromDir` lo parsearía entero al arrancar.

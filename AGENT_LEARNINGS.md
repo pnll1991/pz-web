@@ -829,3 +829,7 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   `afterUnmarshal(Unmarshaller,Object)` y nuestro reemplazo no. Mejor enfoque: al reemplazar una librería, buscar en el
   jar fijado los callbacks/convenciones que la librería invoca por nombre (`command grep -rla afterUnmarshal`).
 - Patrón: confirmar con un control negativo (borrar el parche y ver fallar el test) antes de dar un fix por probado.
+- Patrón (frente H): el presupuesto del VFS sumaba cada path aunque fuera vista del mismo rango del pack; los alias
+  (listado anims_X + fallback anims) duplicaban la cuenta y un índice nuevo habría roto el arranque con un packs.mjs
+  viejo. Mejor enfoque: cambiar índice de packs y runtime JS juntos (sync_web + overlay bajo chrome.lock) y medir el
+  presupuesto con la misma regla que el navegador antes de reescribir index.json.
