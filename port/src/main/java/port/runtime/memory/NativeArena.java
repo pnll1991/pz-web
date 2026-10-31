@@ -14,7 +14,11 @@ public final class NativeArena {
     // same block millions of times; the TreeMap floor lookup per byte dominated the CPU profile
     // (menu-r65-prof-profile.txt). Same bounds check, cleared when that block is freed.
     private static Block last;
-    private record Block(long address, ByteBuffer bytes, ByteBuffer backing) { }
+    // owned: views registered on this block, so free() drops them without scanning every live view (r69 profile).
+    private record Block(long address, ByteBuffer bytes, ByteBuffer backing, ArrayList<Buffer> owned) {
+        Block(long address, ByteBuffer bytes, ByteBuffer backing) { this(address, bytes, backing, new ArrayList<>()); } }
+    private static void track(Buffer buffer, View view) { View old = views.put(buffer, view); if (old == null || old.block != view.block) view.block.owned.add(buffer); }
+    private static final int RETIRED_CAP = 4096;
     // Reuse pool for freed large blocks. TeaVM Wasm GC only returns direct-buffer memory to its Heap from a
     // JS FinalizationRegistry callback, i.e. long after free() and only between tasks. During boot the
     // 1024x11008 depthmaps (~45 MB each) piled up until linear memory hit its 2 GiB cap; TeaVM 0.16's
@@ -50,7 +54,7 @@ public final class NativeArena {
             bytes = ByteBuffer.allocateDirect((int) size).order(ByteOrder.LITTLE_ENDIAN);
             backing = size >= POOL_MIN ? bytes : null;
         }
-        var block = new Block(address, bytes, backing); blocks.put(address, block); views.put(bytes, new View(block, 0, 1));
+        var block = new Block(address, bytes, backing); blocks.put(address, block); track(bytes, new View(block, 0, 1));
         return address;
     }
     public static synchronized void free(long address) {
@@ -62,7 +66,10 @@ public final class NativeArena {
             pool.computeIfAbsent(block.backing.capacity(), k -> new ArrayDeque<>()).push(block.backing);
             pooledBytes += block.backing.capacity();
         }
-        views.entrySet().removeIf(e -> {if(e.getValue().block != block)return false;retired.add(new java.lang.ref.WeakReference<>(e.getKey()));return true;});
+        for (Buffer b : block.owned) { View v = views.get(b); if (v != null && v.block == block) { views.remove(b); retired.add(new java.lang.ref.WeakReference<>(b)); } }
+        block.owned.clear();
+        // Bounded use-after-free tracking: address() scans this list, so keep only the newest entries.
+        if (retired.size() > RETIRED_CAP) { retired.removeIf(r -> r.get() == null); if (retired.size() > RETIRED_CAP) retired.subList(0, retired.size() - RETIRED_CAP).clear(); }
     }
     public static synchronized boolean live(long address, long size) {
         if (size < 0) return false;
@@ -79,11 +86,11 @@ public final class NativeArena {
         var block = block(address, size); int offset = Math.toIntExact(address - block.address);
         var bytes = block.bytes.duplicate().order(ByteOrder.LITTLE_ENDIAN);
         bytes.position(offset).limit(offset + size);
-        var view = bytes.slice().order(ByteOrder.LITTLE_ENDIAN); views.put(view,new View(block,offset,1)); return view;
+        var view = bytes.slice().order(ByteOrder.LITTLE_ENDIAN); track(view, new View(block,offset,1)); return view;
     }
     public static synchronized <T extends Buffer> T registerView(long address, T buffer, int stride) {
         var block = block(address, (long) buffer.capacity() * stride);
-        views.put(buffer,new View(block,Math.toIntExact(address-block.address),stride)); return buffer;
+        track(buffer, new View(block,Math.toIntExact(address-block.address),stride)); return buffer;
     }
     public static synchronized long address(Buffer buffer, int position) {
         Objects.requireNonNull(buffer);
@@ -96,7 +103,7 @@ public final class NativeArena {
             long address = Math.addExact(next, 15) & -16L; next = Math.addExact(address, Math.max(1, bytes.capacity()) + 16);
             var backing = bytes.duplicate().clear().order(ByteOrder.LITTLE_ENDIAN);
             Block block = new Block(address,backing,null); blocks.put(address,block);
-            view = new View(block,0,1); views.put(buffer,view);
+            view = new View(block,0,1); track(buffer,view);
         }
         if (!blocks.containsKey(view.block.address)) throw new IllegalStateException("Buffer allocation was freed");
         return view.block.address + view.offset + (long) position * view.stride;

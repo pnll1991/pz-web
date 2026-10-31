@@ -1,17 +1,20 @@
 // Ronda 64b: ¿el canvas dibuja pixeles del menu? Lee el framebuffer por defecto en el mismo
 // frame (readPixels tras cada callback de rAF) una vez que MainScreenState#render volvio >= N.
 import { chromium } from '@playwright/test';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, appendFileSync } from 'node:fs';
 const PORT = process.env.PZ_DIAG_PORT || '8097';
 const MAX = Number(process.env.PZ_DIAG_MAX || '900000');
 const N = Number(process.env.PZ_RENDERS || '6');
 const OUT = process.env.PZ_SHOT || `${process.env.HOME}/pzshots/menu-64b.png`;
+// stdout to a redirected file came out empty in r68b/r69; also append every line to <shot>-log.txt.
+const LOGF = OUT.replace('.png', '-log.txt'); writeFileSync(LOGF, '');
+const log = (...a) => { const line = a.map(String).join(' '); try { appendFileSync(LOGF, line + '\n'); } catch {} process.stdout.write(line + '\n'); };
 const race = (p, ms) => Promise.race([p, new Promise((_, rj) => setTimeout(() => rj(new Error('timeout')), ms))]);
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome',
   args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-dev-shm-usage'] });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const cons = []; page.on('console', m => { cons.push(m.text().slice(0, 300)); if (cons.length > 4000) cons.shift(); });
-const errs = []; page.on('pageerror', e => { const s = String(e.stack || e.message).slice(0, 4000); errs.push(s); console.log('PAGEERROR', s.slice(0, 600).replace(/\n/g, ' | ')); });
+const errs = []; page.on('pageerror', e => { const s = String(e.stack || e.message).slice(0, 4000); errs.push(s); log('PAGEERROR', s.slice(0, 600).replace(/\n/g, ' | ')); });
 await page.addInitScript((N) => {
   const S = globalThis.__px = { frames: 0, shots: [], log: [] };
   const orig = HTMLCanvasElement.prototype.getContext;
@@ -57,6 +60,8 @@ await page.addInitScript((N) => {
 await page.goto(`http://127.0.0.1:${PORT}/game.html?maplog=1`, { waitUntil: 'domcontentloaded' });
 const t0 = Date.now(); let res = null; let profiled = false;
 const PROFILE_AT = Number(process.env.PZ_PROFILE_AT || '0'); // seconds; 0 = off
+const CLICK = process.env.PZ_CLICK_AT ? process.env.PZ_CLICK_AT.split(',').map(Number) : null; // viewport px
+const CLICK_AFTER = Number(process.env.PZ_CLICK_AFTER || '0'); let clicks = 0;
 const SHOT_AFTER = Number(process.env.PZ_SHOT_AFTER || '0'); // seconds; 0 = only after MainScreenState renders
 async function profile() { // CPU profile of the main thread, top self-time functions (diagnostic only)
   const cdp = await page.context().newCDPSession(page);
@@ -66,26 +71,29 @@ async function profile() { // CPU profile of the main thread, top self-time func
   const self = new Map(), byId = new Map(pr.nodes.map(n => [n.id, n])); const dt = pr.timeDeltas || [];
   pr.samples.forEach((id, i) => { const n = byId.get(id); const k = n.callFrame.functionName + ' ' + n.callFrame.url.split('/').pop() + ':' + n.callFrame.lineNumber; self.set(k, (self.get(k) || 0) + (dt[i] || 0)); });
   const top = [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([k, v]) => (v / 1000).toFixed(0) + 'ms ' + k);
-  writeFileSync(OUT.replace('.png', '-profile.txt'), top.join('\n')); console.log('PROFILE saved');
+  writeFileSync(OUT.replace('.png', '-profile.txt'), top.join('\n')); log('PROFILE saved');
 }
 while (Date.now() - t0 < MAX) {
   await page.waitForTimeout(20000);
-  if (PROFILE_AT && !profiled && Date.now() - t0 > PROFILE_AT * 1000) { profiled = true; try { await race(profile(), 120000); } catch (e) { console.log('PROFILE_FAIL', String(e)); } }
-  if (SHOT_AFTER && Date.now() - t0 > SHOT_AFTER * 1000) { try { await race(page.evaluate(() => { globalThis.__pxForce = true; return Object.keys(globalThis.pzGameCounts || {}).filter(k => /State#/.test(k)).join(' '); }).then(k => console.log('FORCE states:', k)), 60000); } catch (e) {} }
+  if (PROFILE_AT && !profiled && Date.now() - t0 > PROFILE_AT * 1000) { profiled = true; try { await race(profile(), 120000); } catch (e) { log('PROFILE_FAIL', String(e)); } }
+  if (SHOT_AFTER && Date.now() - t0 > SHOT_AFTER * 1000) { try { await race(page.evaluate(() => { globalThis.__pxForce = true; return Object.keys(globalThis.pzGameCounts || {}).filter(k => /State#/.test(k)).join(' '); }).then(k => log('FORCE states:', k)), 60000); } catch (e) {} }
   try { res = await race(page.evaluate(() => { const S = globalThis.__px; return { frames: S.frames, attrs: S.attrs, viewports: S.viewports, canvas: S.canvas && [S.canvas.width, S.canvas.height], winEvents: (globalThis.pzRuntime?.window?.events || []).filter(e => /created|resized|init/.test(e.type)).slice(0, 8), shots: S.shots.length, out: S.shots.length >= 3 ? S.shots : null,
     renders: Object.entries(globalThis.pzGameCounts || {}).filter(([k]) => /MainScreenState#render/.test(k)) }; }), 90000); }
-  catch (e) { console.log('SAMPLE_FAIL', String(e)); continue; }
+  catch (e) { log('SAMPLE_FAIL', String(e)); continue; }
   writeFileSync(OUT.replace('.png', '-console.txt'), cons.join('\n'));
-  console.log('SAMPLE', Math.round((Date.now() - t0) / 1000), JSON.stringify({ frames: res.frames, shots: res.shots, renders: res.renders }), 'LAST', JSON.stringify(cons.slice(-2)));
+  log('SAMPLE', Math.round((Date.now() - t0) / 1000), JSON.stringify({ frames: res.frames, shots: res.shots, renders: res.renders }), 'LAST', JSON.stringify(cons.slice(-2)));
+  if (CLICK && clicks < 4 && Date.now() - t0 > CLICK_AFTER * 1000) { // real mouse click on the canvas (e.g. TOS ACCEPT)
+    clicks++; try { await page.mouse.move(CLICK[0], CLICK[1]); await page.waitForTimeout(300); await page.mouse.down(); await page.waitForTimeout(120); await page.mouse.up();
+      log('CLICK', clicks, CLICK.join(',')); await page.waitForTimeout(8000); await page.screenshot({ path: OUT.replace('.png', `-click${clicks}.png`), timeout: 60000 }); } catch (e) { log('CLICK_FAIL', String(e).slice(0, 200)); } }
   if (res.out) break;
 }
 if (res?.out) {
   const first = res.out[0]; if (first.url) writeFileSync(OUT, Buffer.from(first.url.split(',')[1], 'base64'));
-  for (const s of res.out) { delete s.url; console.log('SHOT', JSON.stringify(s)); }
-  console.log('VIEWPORTS', JSON.stringify(res.viewports), 'CANVAS', JSON.stringify(res.canvas), 'WIN', JSON.stringify(res.winEvents));
-  console.log('ATTRS', JSON.stringify(res.attrs), 'SAVED', OUT);
-} else console.log('RESULT no menu frame captured');
-try { await page.screenshot({ path: OUT.replace('.png', '-page.png'), timeout: 120000 }); console.log('PAGESHOT ok'); } catch (e) { console.log('PAGESHOT_FAIL', String(e).slice(0, 200)); }
+  for (const s of res.out) { delete s.url; log('SHOT', JSON.stringify(s)); }
+  log('VIEWPORTS', JSON.stringify(res.viewports), 'CANVAS', JSON.stringify(res.canvas), 'WIN', JSON.stringify(res.winEvents));
+  log('ATTRS', JSON.stringify(res.attrs), 'SAVED', OUT);
+} else log('RESULT no menu frame captured');
+try { await page.screenshot({ path: OUT.replace('.png', '-page.png'), timeout: 120000 }); log('PAGESHOT ok'); } catch (e) { log('PAGESHOT_FAIL', String(e).slice(0, 200)); }
 writeFileSync(OUT.replace('.png', '-console.txt'), cons.join('\n'));
-console.log('ERRS', JSON.stringify(errs.slice(0, 10)));
+log('ERRS', JSON.stringify(errs.slice(0, 10)));
 await browser.close();

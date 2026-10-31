@@ -82,7 +82,10 @@ const PORT_PROVIDED = new Set([
   'glTexImage2D', 'glTexSubImage2D', 'glGetTexImage',
 ]);
 
+const EAGER_ERROR_CALLS = new Set(['texImage2D', 'texSubImage2D', 'readPixels', 'compressedTexImage2D']);
+
 /** WebGL2 context and object handles; unsupported entrypoints must throw. */
+
 export class GLBridge {
   constructor(canvas) {
     const context = canvas.getContext('webgl2', { alpha: false, antialias: false, preserveDrawingBuffer: true });
@@ -135,6 +138,7 @@ export class GLBridge {
     // still reported once, in order, and now carries the call that really produced it (the sticky
     // queue otherwise blames whichever call checks first).
     this.pendingErrors = []; // [{seq, name, code}] oldest first
+    this.unchecked = null; this.eagerErrors = globalThis.PZ_GL_EAGER_ERRORS === true;
     this.uploadFailCount = 0;   // failed level uploads (glTexImage2D/glTexSubImage2D)
     this.firstUploadFailure = undefined;
     // Result of the real framebuffer-object probe (see framebufferProbe). Undefined until the
@@ -170,12 +174,24 @@ export class GLBridge {
     if (name === 'scissor') this.scissorBox = args.slice(0, 4).map(Number);
     const method = this.context[name];
     if (typeof method !== 'function') throw new Error(`Unsupported WebGL function: ${name}`);
+    // Deferred error drain: gl.getError() is a synchronous GPU-process round trip, and doing it after
+    // every call cost ~15 s per 30 s of boot (r69 profile). Calls whose own errors are inspected
+    // (EAGER_ERROR_CALLS) and every consumer of the queue flush first, so attribution stays exact for
+    // them; other errors are attributed to the last unchecked call ("deferred..name"). Set
+    // globalThis.PZ_GL_EAGER_ERRORS = true to restore the per-call drain for debugging.
+    const eager = this.eagerErrors || EAGER_ERROR_CALLS.has(name);
+    if (eager) this.flushErrors();
     const result = method.apply(this.context, args);
     this.recordAttrib(name, args);
-    this.drainQueue(name, this.callSeq);
+    if (eager) this.drainQueue(name, this.callSeq); else this.unchecked = { seq: this.callSeq, name };
     return result;
   }
   /** Move whatever WebGL2 queued for the call just made into the emulated desktop queue. */
+  /** Move errors left by unchecked calls into the queue before anyone reads or marks it. */
+  flushErrors() {
+    const u = this.unchecked; if (u === undefined || u === null) return;
+    this.unchecked = null; this.drainQueue(`deferred..${u.name}`, u.seq);
+  }
   drainQueue(name, seq) {
     const gl = this.context;
     if (typeof gl.getError !== 'function') return;
@@ -187,13 +203,14 @@ export class GLBridge {
     }
   }
   /** Errors the emulated queue attributes to one specific call. */
-  errorsFor(seq) { return this.pendingErrors.filter((e) => e.seq === seq); }
+  errorsFor(seq) { this.flushErrors(); return this.pendingErrors.filter((e) => e.seq === seq); }
   /**
    * Error check for calls this bridge makes on its own behalf. glGetError belongs to the game (it
    * pops the emulated queue), so an internal check must not consume it: it looks at what the queue
    * attributes to its own call instead.
    */
   internalErrors(sinceSeq) {
+    this.flushErrors();
     return this.pendingErrors.filter((e) => e.seq >= sinceSeq).map((e) =>
       `${this.webglConstantName(e.code) ?? e.code} from ${e.name}#${e.seq}`);
   }
@@ -271,6 +288,7 @@ export class GLBridge {
     this.callLog.push({ seq: this.callSeq, name: 'getError' });
     if (this.callLog.length > 160) this.callLog.shift();
     this.calls.getError = (this.calls.getError || 0) + 1;
+    this.flushErrors();
     this.lastErrorDrainSeq = this.callSeq;
     const entry = this.pendingErrors.shift();
     if (entry === undefined) return this.context.NO_ERROR;
@@ -834,7 +852,7 @@ export class GLBridge {
         owned.texture, level);
       if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE)
         throw new Error(`Texture ${this.activeBoundTexture()} level ${level} is not readable`);
-      const readSeq = this.callSeq;
+      this.flushErrors(); const readSeq = this.callSeq;
       this.call('readPixels', 0, 0, size.width, size.height, gl.RGBA, gl.UNSIGNED_BYTE, data);
       this.checkInternal(readSeq + 1, `glGetTexImage readback for texture ${this.activeBoundTexture()} level ${level}`);
     } finally {
@@ -1074,7 +1092,7 @@ export class GLBridge {
     // The queue is sticky, so remember the drain point *before* this call: getError() below moves
     // it forward and would otherwise hide the calls that actually belong to this upload.
     const drainBefore = this.lastErrorDrainSeq;
-    const seqBefore = this.callSeq;
+    this.flushErrors(); const seqBefore = this.callSeq;
     const glFormat = this.textureFormat(format, 'glTexImage2D');
     const glType = this.textureType(type, 'glTexImage2D');
     const sized = this.sizedInternalFormat(internalformat, type);
@@ -1137,7 +1155,7 @@ export class GLBridge {
       this.call('texParameteri', gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       this.call('texParameteri', gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       this.call('texParameteri', gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      const seq = this.callSeq;
+      this.flushErrors(); const seq = this.callSeq;
       this.call('texImage2D', gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
       this.checkInternal(seq + 1, 'Texture upload');
       return { texture, width:bitmap.width, height:bitmap.height };
@@ -1154,7 +1172,7 @@ export class GLBridge {
       this.call('framebufferTexture2D', gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
       if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('Texture framebuffer incomplete');
       const pixels = new Uint8Array(width * height * 4);
-      const seq = this.callSeq;
+      this.flushErrors(); const seq = this.callSeq;
       this.call('readPixels', 0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
       this.checkInternal(seq + 1, 'Texture readback');
       return pixels;
@@ -1784,7 +1802,7 @@ export class GLBridge {
     if (this.fboProbe !== undefined) return this.fboProbe;
     if (this.lost) throw new Error('WebGL context lost: the framebuffer probe needs a live context');
     const gl = this.context;
-    const startSeq = this.callSeq;
+    this.flushErrors(); const startSeq = this.callSeq;
     const previousDraw = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING);
     const previousRead = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);
     const previousTexture = gl.getParameter(gl.TEXTURE_BINDING_2D);
@@ -1899,7 +1917,7 @@ export class GLBridge {
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
     const vao = this.call('createVertexArray');
     this.call('bindVertexArray', vao); this.call('useProgram', program);
-    const probeSeq = this.callSeq;
+    this.flushErrors(); const probeSeq = this.callSeq;
     this.call('drawArrays', gl.TRIANGLES, 0, 3);
     const pixel = new Uint8Array(4);
     this.call('readPixels', gl.drawingBufferWidth >> 1, gl.drawingBufferHeight >> 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);

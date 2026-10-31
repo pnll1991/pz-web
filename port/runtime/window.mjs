@@ -376,9 +376,11 @@ export class BrowserWindow {
       this.dispatchedEvents++;
       return [11, event.slot, event.connected].join('\t');
     }
-    const events = this.input.drain();
-    if (events.length === 0) return null;
-    const event = events[0];
+    // One event per poll: drain() used to splice the whole queue and dispatch only events[0], so a
+    // click that arrived after cursor moves in the same frame was silently dropped (r70: ACCEPT
+    // highlighted on hover but never pressed).
+    const event = this.input.events.shift();
+    if (event === undefined) return null;
     const kind = {key:0, button:1, cursor:2, scroll:3, text:4}[event.type];
     if (kind === undefined) return this.poll(); // unknown event type: skip without dispatching
     this.dispatchedEvents++;

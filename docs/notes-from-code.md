@@ -646,3 +646,11 @@ llegue a `NativeArena.free`). Sin stubs: los depthmaps se tienen que cargar de v
 - malloc vs calloc: nmemAlloc/nmemAlignedAlloc -> NativeArena.allocateUninit (bloque reciclado del pool sin poner a cero, como malloc real); nmemCalloc/memCalloc* siguen poniendo a cero. ByteBuffer.allocateDirect/allocate() por defecto ponen a cero.
 - r69 (PZ_SHOT_AFTER=400): se ve el diálogo real "TERMS OF SERVICE AND PRIVACY NOTICE" de PZ (mapache juez, botones ACCEPT/QUIT) — UI real de Lua/Xui renderizada, previa al menú principal.
 - Perfil a 300 s: getError 15.6 s (gl.mjs drainQueue llama gl.getError tras CADA llamada GL: sync roundtrip), NativeArena.free 1.8 s + removeIf 2.4 s (escaneo lineal de views por cada free). Próximos fixes.
+
+## Ronda 70
+- gl.mjs: drenado diferido de gl.getError (solo inmediato para texImage2D/texSubImage2D/readPixels/compressedTexImage2D; flushErrors() antes de glGetError, errorsFor, internalErrors y de cada marca de seq interna). PZ_GL_EAGER_ERRORS=true restaura el modo por llamada.
+- NativeArena: índice de vistas por bloque (Block.owned); free() ya no recorre todas las vistas. retired acotado a 4096 entradas.
+- menu_pixels: log también a <shot>-log.txt; PZ_CLICK_AT/PZ_CLICK_AFTER hacen clic real con el mouse.
+- r70 (puerto 8098): getError 15.6 s -> 0.9 s; ~9400 frames a los 424 s (antes ~850). TermsOfServiceState renderiza; hover sobre ACCEPT se resalta pero el clic no se aplica.
+- Causa: window.mjs poll() hacía input.drain() (vacía toda la cola) y despachaba solo events[0]; los clics tras movimientos de cursor se perdían. Fix: shift de un evento por poll.
+- Nuevo hot spot: TileDepthTexture.load 7.7 s + decodePng 4 s + ByteBufferWasmGC.copy 1.4 s + inflate 1.3 s.
