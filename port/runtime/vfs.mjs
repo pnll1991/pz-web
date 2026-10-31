@@ -78,6 +78,11 @@ export class VirtualFileSystem {
     this.directories = new IndexedSet(this.childIndex, ['/', '/media', '/Zomboid']);
     this.metadata = new Map();
     this.readOnlyMounted = new Set();
+    // Round 80 (front H): several pack paths may be views over the SAME blob range (a clip listed in
+    // media/anims_X/Bob and read from its media/anims/bob lowercase fallback). Resident memory is that
+    // range once, so the budget counts it once: sharedViewBytes = bytes of the duplicate views.
+    this.viewKeys = new Map(); this.viewRefs = new Map(); this.viewBuffers = new WeakMap();
+    this.sharedViewBytes = 0; this.nextViewBuffer = 0;
     this.listeners = new Set();
     // Round 79: read-only files of PZ_HOME/media that are not preloaded from a pack. Their bytes are
     // read on demand with synchronous Range requests (the game's java.io is synchronous) and kept in
@@ -191,7 +196,23 @@ export class VirtualFileSystem {
     }
     return this;
   }
-  get byteLength() { return [...this.files.values()].reduce((n, bytes) => n + bytes.byteLength, 0); }
+  get byteLength() {
+    let total = 0;
+    for (const bytes of this.files.values()) total += bytes.byteLength;
+    return total - this.sharedViewBytes;
+  }
+  viewKey(blob, offset, length) {
+    let id = this.viewBuffers.get(blob.buffer);
+    if (id === undefined) this.viewBuffers.set(blob.buffer, id = this.nextViewBuffer++);
+    return `${id}:${blob.byteOffset + offset}:${length}`;
+  }
+  releaseView(path) {
+    const key = this.viewKeys.get(path);
+    if (key === undefined) return;
+    this.viewKeys.delete(path);
+    const ref = this.viewRefs.get(key);
+    if (--ref.count === 0) this.viewRefs.delete(key); else this.sharedViewBytes -= ref.length;
+  }
   ensureParents(path) {
     let current = parent(path);
     const missing = [];
@@ -212,6 +233,7 @@ export class VirtualFileSystem {
     if (this.directories.has(path)) throw new Error(`EISDIR: ${path}`);
     const existed = this.files.has(path);
     this.ensureParents(path);
+    this.releaseView(path);
     this.files.set(path, data.slice());
     this.metadata.set(path, { directory:false, modified:Date.now(), readOnly:!writable(path) });
     this.changed(path, existed ? 'modify' : 'create');
@@ -252,10 +274,16 @@ export class VirtualFileSystem {
         || offset + length > blob.byteLength) throw new Error(`Invalid view range: ${path}`);
     if (!path.startsWith('/media/') && !READ_ONLY_MOUNTABLE.has(path))
       throw new Error(`Pack views are only allowed for /media or the read-only /Zomboid files: ${path}`);
-    if (this.byteLength + length > this.maxBytes) throw new Error('VFS memory budget exceeded');
+    const key = this.viewKey(blob, offset, length);
+    const shared = this.viewRefs.has(key) && this.viewKeys.get(path) !== key;
+    if (this.byteLength + (shared ? 0 : length) > this.maxBytes) throw new Error('VFS memory budget exceeded');
     if (this.directories.has(path)) throw new Error(`EISDIR: ${path}`);
     const existed = this.files.has(path);
     this.ensureParents(path);
+    this.releaseView(path);
+    const ref = this.viewRefs.get(key);
+    if (ref) { ref.count++; this.sharedViewBytes += length; } else this.viewRefs.set(key, { count:1, length });
+    this.viewKeys.set(path, key);
     this.files.set(path, blob.subarray(offset, offset + length));
     this.metadata.set(path, { directory:false, modified:Date.now(), readOnly:true });
     this.readOnlyMounted.add(path);

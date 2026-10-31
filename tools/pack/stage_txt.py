@@ -31,11 +31,50 @@ def emit(media_src, dst_root, rel_out):
     return len(txt), bones, anims
 
 
+# Round 80 (front H): ModelManager.loadAnimsFromDir loads every clip listed under media/anims_X/<dir>
+# at boot, so with only Bob_Idle/Walk/Run the AnimSets nodes that name other clips have no track:
+# defaultWalk's 2D blend (Bob_WalkSlow, limps), Idle's (Bob_Idle_HeavyBreathing), the non-looped
+# turns (Bob_IdleTurn90/180L/R, Bob_IdleToWalk180L/R) and CopyFrame's Bob_IdleDrinkPopCan
+# (scripts/generated/animations.txt). LOCOMOTION_ANIMSETS is the closure of m_AnimName in the
+# player's idle/movement/run/sprint/turning sets; names are resolved case-insensitively against
+# the pinned anims_X/Bob tree (sub-folders kept, as the game lists them recursively).
+LOCOMOTION_ANIMSETS = ('AnimSets/player/idle.xml', 'AnimSets/player/idle/*.xml',
+                       'AnimSets/player/walk.xml', 'AnimSets/player/movement/*.xml',
+                       'AnimSets/player/run.xml', 'AnimSets/player/run/*.xml',
+                       'AnimSets/player/sprint/*.xml', 'AnimSets/player/slowidleblend/*.xml',
+                       'AnimSets/player/turning/*.xml', 'AnimSets/player/turningAim180/*.xml',
+                       'AnimSets/player/turningIdle180/*.xml', 'AnimSets/player/turningMovement180/*.xml')
+RUNTIME_ANIMATION_SCRIPTS = ('scripts/generated/animations.txt',)
+
+
+def bob_clips(media, mode):
+    """Relative .x paths under anims_X/Bob for the requested set ('locomotion' or 'all')."""
+    import re
+    tree = {}
+    for src in sorted((media / 'anims_X/Bob').rglob('*.x')):
+        tree.setdefault(src.stem.lower(), src.relative_to(media).as_posix())
+    if mode == 'all':
+        return sorted(tree.values()), []
+    names = set()
+    for pattern in LOCOMOTION_ANIMSETS:
+        for xml in sorted(media.glob(pattern)):
+            names |= set(re.findall(r'<m_AnimName>\s*([^<\s]+)\s*</m_AnimName>', xml.read_text(errors='replace')))
+    for script in RUNTIME_ANIMATION_SCRIPTS:
+        if (media / script).is_file():
+            names |= set(re.findall(r'\bsource\s*=\s*([A-Za-z0-9_]+)', (media / script).read_text(errors='replace')))
+    found = sorted({tree[n.lower()] for n in names if n.lower() in tree})
+    missing = sorted(n for n in names if n.lower() not in tree)
+    return found, missing
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--pz-home', required=True)
     parser.add_argument('--stage', required=True, type=Path)
     parser.add_argument('--clean', action='store_true')
+    parser.add_argument('--bob-anims', choices=('boot', 'locomotion', 'all'), default='boot',
+                        help='boot = Bob_Idle/Walk/Run only (round 60); locomotion = closure of the player '
+                             'idle/walk/run/turn AnimSets + runtime animation sources; all = every anims_X/Bob clip')
     args = parser.parse_args()
     home = Path(args.pz_home).expanduser().resolve()
     stage = args.stage.expanduser().resolve()
@@ -53,7 +92,12 @@ def main():
         n, bones, anims = emit(src, media, f'models/skinned/{name}.txt')
         total += n
         print(f'  models/skinned/{name}.txt {n} B bones={bones} anims={anims}')
-    for src_rel in ANIMS:
+    anims = list(ANIMS)
+    if args.bob_anims != 'boot':
+        extra, missing = bob_clips(home / 'media', args.bob_anims)
+        anims += [rel for rel in extra if rel not in anims]
+        print(f'bob-anims={args.bob_anims}: {len(anims)} clips; not in anims_X/Bob: {missing}')
+    for src_rel in anims:
         src = home / 'media' / src_rel
         if not src.is_file():
             raise SystemExit(f'Missing .x source: media/{src_rel}')

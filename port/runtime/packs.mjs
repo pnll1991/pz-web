@@ -31,6 +31,9 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json') {
   const base = new URL(indexUrl, location.href);
   const cache = await caches.open('pz-web-packs-v1');
   const pending = [];
+  // Round 80 (front H): several paths may alias one pack range (a clip listed in media/anims_X/Bob and
+  // read from media/anims/bob): it is verified once and counted once, as the VFS does for its views.
+  const verifiedRanges = new Map();
   for (const pack of index.packs) {
     if (!/^[a-f0-9]{64}\.bin$/.test(pack.name) || pack.name !== `${pack.sha256}.bin`)
       throw new Error('Invalid pack name');
@@ -58,9 +61,11 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json') {
     for (const file of index.files.filter(file => file.pack === pack.name)) {
       if (!Number.isSafeInteger(file.offset) || !Number.isSafeInteger(file.length) || file.offset < 0 || file.length < 0 || file.offset + file.length > blob.byteLength)
         throw new Error('Invalid file bounds in pack');
-      const content = new Uint8Array(bytes, file.offset, file.length);
-      if (await digest(content) !== file.sha256) throw new Error(`File integrity mismatch: ${file.path}`);
-      pending.push([file.path, blob, file.offset, file.length]);
+      const range = `${pack.name}:${file.offset}:${file.length}`;
+      if (!verifiedRanges.has(range))
+        verifiedRanges.set(range, await digest(new Uint8Array(bytes, file.offset, file.length)));
+      if (verifiedRanges.get(range) !== file.sha256) throw new Error(`File integrity mismatch: ${file.path}`);
+      pending.push([file.path, blob, file.offset, file.length, range]);
     }
   }
   if (pending.length !== index.files.length || new Set(pending.map(([path]) => path)).size !== pending.length)
@@ -71,7 +76,8 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json') {
   // Views, not copies: the blob stays alive because every mounted file is a subarray of it, so a
   // 321 MB pack (media/texturepacks/Tiles2x.pack, which the game always asks for) costs its own
   // bytes once instead of blob + per-file slices.
-  const total = pending.reduce((n, [, , , length]) => n + length, 0);
+  const counted = new Set();
+  const total = pending.reduce((n, [, , , length, range]) => counted.has(range) ? n : (counted.add(range), n + length), 0);
   if (total > vfs.maxBytes) throw new Error('Pack files exceed VFS memory budget');
   for (const [path, blob, offset, length] of pending) vfs.mountView(path, blob, offset, length);
   return { files:pending.length, bytes:total };

@@ -121,6 +121,22 @@ test('a pack view is read-only, shares the blob bytes and counts once', () => {
   assert.throws(() => small.mountView('/media/big.bin', blob, 0, 8), /budget/);
 });
 
+test('pack paths aliasing the same range are resident once (anims_X listing + anims fallback)', () => {
+  const vfs = new VirtualFileSystem({maxBytes:24});
+  const blob = new Uint8Array(32), other = new Uint8Array(32);
+  vfs.mountView('/media/anims_X/Bob/Bob_Walk.txt', blob, 0, 16);
+  vfs.mountView('/media/anims/bob/bob_walk.txt', blob, 0, 16);
+  assert.equal(vfs.byteLength, 16, 'two paths over one range cost the range once');
+  assert.equal(vfs.readFile('/media/anims/bob/bob_walk.txt').byteLength, 16);
+  // A different range, or the same offsets in another blob, is real extra memory.
+  assert.throws(() => vfs.mountView('/media/x.bin', blob, 16, 16), /budget/);
+  assert.throws(() => vfs.mountView('/media/y.bin', other, 0, 16), /budget/);
+  vfs.mountView('/media/anims/bob/bob_walk.txt', blob, 8, 8);
+  assert.equal(vfs.byteLength, 24, 're-mounting a path releases its previous shared range');
+  vfs.mountView('/media/anims/bob/bob_walk.txt', blob, 0, 16);
+  assert.equal(vfs.byteLength, 16);
+});
+
 test('autoFlush persists /Zomboid changes incrementally once the VFS is quiet', async () => {
   const vfs = new VirtualFileSystem();
   vfs.mountReadOnly('/Zomboid/options.ini', new TextEncoder().encode('version=8\n'));
