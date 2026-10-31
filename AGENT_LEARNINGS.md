@@ -783,3 +783,20 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   propio shell (exit 144). Usar `ps -eo pid,args | grep -v grep` y revisar los pids antes de `kill`.
 - Patrón: un proceso desacoplado lanzado dentro de `flock X cmd` hereda el fd de X y mantiene el lock (así se
   trabó chrome.lock con el dev server). Cerrar fds >2 al desacoplar (`for fd in /proc/$$/fd/*; ... exec N>&-`).
+
+## Ronda 80 (frente E, Code, 31/10) — del mundo negro/blanco al mundo dibujado
+- Error: el puente registraba `glActiveTexture` (sólo `activeUnit`) sin llamar a WebGL2; todo `glBindTexture` caía en la
+  unidad 0 y los shaders multi-textura (chunkShader DIFFUSE+DEPTH) muestreaban mal. Patrón a evitar: estado "contable"
+  en el puente que nunca llega al contexto. Mejor enfoque: cada setter de estado del puente termina en `this.call(...)`;
+  un test con contexto falso debe afirmar la secuencia de llamadas WebGL2, no sólo el estado interno.
+- Error: los inicializadores de uniform (`uniform int useTexture = 1;`, `FinalScale = 1.0`) se quitaban al traducir
+  y sólo `desktopProgram` los subía; los programas del juego (`linkProgram`) quedaban en 0: chunks blancos y personajes
+  aplastados. Mejor enfoque: subirlos tras cada link exitoso (como el driver de escritorio).
+- Patrón: el juego reescribe `#version 330/110/130/140/430` a `#version 120` con `Core.getUseOpenGL21()`
+  (`ShaderUnit.processShaderSyntax`): la versión que ve el traductor no es la del archivo. En 1.10/1.20 (§6.1) una
+  función de usuario homónima de un built-in también oculta el built-in.
+- Proceso: diagnóstico sin rebuild desde el driver con `eval`: envolver `pzRuntime.gl.call` para grabar un frame con
+  ids (T/F/P), muestrear `readPixels` de cada FBO y tras cada draw en el FBO principal, y parchear el prototipo en vivo
+  para validar un fix antes de commitear. El eval del driver trunca a 6000 caracteres: volcar en trozos con `slice`.
+- Proceso: `until ! pgrep -af "drive.mjs" | grep -q X` dentro de un comando cuyo texto contiene X se encuentra a sí
+  mismo y no termina. Mejor enfoque: esperar el PID del driver o el fin de la tarea en segundo plano.
