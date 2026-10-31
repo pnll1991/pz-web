@@ -1557,6 +1557,7 @@ export class GLBridge {
   buildStages(program) {
     this.dropMerged(program);
     let alphaTest = false;
+    program.uniformDefaults = [];
     for (const type of [this.context.VERTEX_SHADER, this.context.FRAGMENT_SHADER]) {
       const units = [...program.shaders].map(h => [h, this.shaders.get(h)]).filter(([, e]) => e && e.type === type);
       if (units.length === 0) continue;
@@ -1582,7 +1583,11 @@ export class GLBridge {
         if (!this.call('getShaderParameter', gl, this.context.COMPILE_STATUS))
           return `merged ${name} stage (handles ${units.map(([h]) => h).join(',')}) failed to compile: ${this.call('getShaderInfoLog', gl)}`;
         if (translated.alphaTestEmulated) alphaTest = true;
-      } else if (mains[0][1].alphaTest) alphaTest = true;
+        program.uniformDefaults.push(...translated.uniformDefaults);
+      } else {
+        if (mains[0][1].alphaTest) alphaTest = true;
+        program.uniformDefaults.push(...(mains[0][1].uniformDefaults ?? []));
+      }
       this.call('attachShader', program.program, gl);
       program.glAttached.push(gl);
     }
@@ -1606,6 +1611,7 @@ export class GLBridge {
       this.call('linkProgram', program.program);
       program.linked = this.call('getProgramParameter', program.program, this.context.LINK_STATUS) ? true : false;
       program.log = String(this.call('getProgramInfoLog', program.program) ?? '');
+      if (program.linked) this.applyUniformDefaults(program);
     }
     const sources = [];
     for (const h of program.shaders) {
@@ -1614,6 +1620,30 @@ export class GLBridge {
     }
     if (this.shaderTrail.length < 400)
       this.shaderTrail.push({ kind: 'link', handle, ok: program.linked, log: program.log, shaders: sources });
+  }
+  /**
+   * Round 80: desktop GLSL `uniform T x = v;` sets the uniform at every successful link (and the
+   * game relies on it: chunkShader/default declare `useTexture = 1` and DefaultShader only uploads
+   * it when it changes). GLSL ES 3.00 forbids the initializer, so glsl.mjs strips it into
+   * uniformDefaults and they are uploaded here, keeping the program the game has current.
+   * Different initializers for the same uniform in two stages fail the link, as on desktop.
+   */
+  applyUniformDefaults(program) {
+    const defaults = new Map();
+    for (const entry of program.uniformDefaults ?? []) {
+      const name = webglIdentifier(entry.name);
+      if (defaults.has(name) && JSON.stringify(defaults.get(name).value) !== JSON.stringify(entry.value)) {
+        program.linked = false; program.log = `uniform ${entry.name} has different initializers in its stages`;
+        return;
+      }
+      defaults.set(name, { ...entry, name });
+    }
+    if (defaults.size === 0) return;
+    const previous = this.context.getParameter(this.context.CURRENT_PROGRAM);
+    try {
+      this.call('useProgram', program.program);
+      for (const entry of defaults.values()) this.uniformDefault(program.program, entry);
+    } finally { this.call('useProgram', previous); }
   }
   useProgram(handle) {
     if (handle === 0) { this.call('useProgram', null); this.currentProgram = null; return; }
