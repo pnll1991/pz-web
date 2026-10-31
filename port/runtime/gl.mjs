@@ -1673,15 +1673,26 @@ export class GLBridge {
       const vao = this.vertexArrays.get(handles[i]);
       if (vao === undefined) continue;
       this.vertexArrays.delete(handles[i]);
+      this.vaoElements?.delete(handles[i]);
+      if (this.currentVao === handles[i]) { this.currentVao = 0; this.boundElements = this.vaoElements?.get(0)?.buffer ?? null; this.boundElementHandle = this.vaoElements?.get(0)?.handle ?? 0; }
       this.call('deleteVertexArray', vao);
     }
   }
   isVertexArray(handle) { return this.vertexArrays.has(handle); }
   bindVertexArray(handle) {
-    if (handle === 0) { this.call('bindVertexArray', null); return; }
-    const vao = this.vertexArrays.get(handle);
-    if (vao === undefined) throw new Error(`Unknown vertex array handle: ${handle}`);
-    this.call('bindVertexArray', vao);
+    // Round 79: ELEMENT_ARRAY_BUFFER is VAO state in GL3/WebGL2. Keep the tracked binding (used to
+    // tell a buffer offset from a client pointer in drawElements) in step with the bound VAO.
+    const elements = this.vaoElements ?? (this.vaoElements = new Map());
+    elements.set(this.currentVao ?? 0, { buffer: this.boundElements, handle: this.boundElementHandle });
+    if (handle === 0) this.call('bindVertexArray', null);
+    else {
+      const vao = this.vertexArrays.get(handle);
+      if (vao === undefined) throw new Error(`Unknown vertex array handle: ${handle}`);
+      this.call('bindVertexArray', vao);
+    }
+    this.currentVao = handle;
+    const restored = elements.get(handle) ?? { buffer: null, handle: 0 };
+    this.boundElements = restored.buffer; this.boundElementHandle = restored.handle;
   }
   /* --- GL30 framebuffers and renderbuffers -------------------------------------------
    * Desktop framebuffer/renderbuffer targets and attachment tokens are numerically identical to
@@ -1895,6 +1906,14 @@ export class GLBridge {
     if (indices % elementBytes !== 0)
       throw new Error(`Index offset ${indices} is not a multiple of the ${elementBytes}-byte index size`);
     this.call('drawRangeElements', mode, start >>> 0, end >>> 0, count, webglType, indices);
+  }
+  /** Round 79: glTexEnvi has no WebGL2 state; recorded per unit (shaders do the combining). */
+  texEnvi(target, pname, param) {
+    if (target !== 0x2300 && target !== 0x8500 && target !== 0x8861)
+      throw new Error(`glTexEnvi: unsupported target 0x${target.toString(16)}`);
+    const unit = this.activeUnit ?? 0;
+    const env = this.texEnv ?? (this.texEnv = {});
+    (env[unit] ?? (env[unit] = {}))[`${target.toString(16)}:${pname.toString(16)}`] = param;
   }
   /** Round 79: desktop client-memory indices (no ELEMENT_ARRAY_BUFFER bound). The bytes are
    * streamed into a scratch element buffer for this one draw and the binding is restored. */

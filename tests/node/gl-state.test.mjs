@@ -254,3 +254,19 @@ test('the stack depth and limit are answered from this backend state, and overfl
   assert.throws(() => gl.pushAttrib(2048), /attribute stack is full/);
   assert.ok(gl.hasEntrypoint('glPushAttrib') && gl.hasEntrypoint('glPopAttrib'));
 });
+
+// Round 79: ELEMENT_ARRAY_BUFFER is VAO state; drawElements must see the binding of the bound VAO.
+test('element buffer binding follows the bound vertex array', () => {
+  const context = fakeContext();
+  Object.assign(context, { ARRAY_BUFFER: 34962, ELEMENT_ARRAY_BUFFER: 34963,
+    createBuffer: () => ({ __buf: 1 }), bindBuffer: () => {}, createVertexArray: () => ({ __vao: 1 }),
+    bindVertexArray: () => {}, drawElements: (...a) => context.calls.push(['drawElements', ...a]) });
+  const gl = bridge(context);
+  const [vaoA, vaoB] = gl.genVertexArrays(2), [ebo] = gl.genBuffers(1);
+  gl.bindVertexArray(vaoA); gl.bindBuffer(34963, ebo);
+  gl.bindVertexArray(vaoB); assert.equal(gl.boundElements, null);
+  assert.throws(() => gl.drawElements(4, 6, 0x1403, 0), /needs a bound ELEMENT_ARRAY_BUFFER/);
+  gl.bindVertexArray(vaoA); assert.notEqual(gl.boundElements, null);
+  gl.drawElements(4, 6, 0x1403, 156);
+  assert.deepEqual(context.calls.at(-1), ['drawElements', 4, 6, 0x1403, 156]);
+});

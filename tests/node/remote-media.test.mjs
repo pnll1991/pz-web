@@ -7,9 +7,9 @@ test('remote media files are listed, sized and read by range without shadowing p
   const data = new Uint8Array(3 * (1 << 20) + 5).map((_, i) => (i * 7) & 0xff);
   const seen = [];
   globalThis.XMLHttpRequest = class {
-    open(method, url) { this.url = url; } overrideMimeType() {} setRequestHeader(k, v) { this.range = v; }
+    open(method, url) { this.url = url; } overrideMimeType() {} setRequestHeader(k, v) { if (k === 'Range') this.range = v; else this.headers = { ...this.headers, [k]: v }; }
     send() {
-      seen.push([this.url, this.range]);
+      seen.push([this.url, this.range, this.headers?.['Cache-Control']]);
       const [, a, b] = /bytes=(\d+)-(\d+)/.exec(this.range).map(Number);
       this.status = 206; this.responseText = String.fromCharCode(...data.subarray(a, b + 1).slice(0, 65536)) +
         (b + 1 - a > 65536 ? Array.from(data.subarray(a + 65536, b + 1), c => String.fromCharCode(c)).join('') : '');
@@ -27,6 +27,7 @@ test('remote media files are listed, sized and read by range without shadowing p
   assert.equal(vfs.readInto('/media/maps/Muldraugh, KY/0_0.lotpack', (1 << 20) - 4, target), 10);
   assert.deepEqual([...target], [...data.subarray((1 << 20) - 4, (1 << 20) + 6)]);
   assert.match(seen[0][0], /Muldraugh%2C%20KY/);
+  assert.equal(seen[0][2], 'no-store');
   assert.deepEqual(vfs.readFile('/media/maps/Muldraugh, KY/0_0.lotpack'), data);
   assert.throws(() => vfs.writeFile('/media/maps/Muldraugh, KY/0_0.lotpack', new Uint8Array(1)), /EROFS/);
   delete globalThis.XMLHttpRequest;

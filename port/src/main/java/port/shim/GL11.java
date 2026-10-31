@@ -34,6 +34,12 @@ public final class GL11 {
     public static void glLineWidth(float width) { lineWidth(width); }
     /** Round 79: WebGL2 has no polygon mode and always fills; GL_FILL (0x1B02) is therefore the
      * current state. Wireframe/point modes have no WebGL2 equivalent and raise. */
+    /** Round 79: texture environment (WorldMapRenderer sets GL_MODULATE). Desktop GL ignores it while a
+     * fragment shader is bound, and this backend always draws with the game's shaders, so gl.mjs only
+     * records the requested state (visible in pzRuntime.gl.texEnv), like the other fixed-function caps. */
+    public static void glTexEnvi(int target, int pname, int param) { texEnviNative(target, pname, param); }
+    @JSBody(params={"target","pname","param"}, script="globalThis.pzRuntime.gl.texEnvi(target,pname,param);")
+    private static native void texEnviNative(int target, int pname, int param);
     public static void glPolygonMode(int face, int mode) {
         if (face != 0x0404 && face != 0x0405 && face != 0x0408)
             throw new IllegalArgumentException("glPolygonMode: invalid face 0x" + Integer.toHexString(face));

@@ -111,6 +111,9 @@ export class VirtualFileSystem {
     xhr.open('GET', this.remoteBase + path.slice('/media/'.length).split('/').map(encodeURIComponent).join('/'), false);
     xhr.overrideMimeType('text/plain; charset=x-user-defined');
     xhr.setRequestHeader('Range', `bytes=${start}-${end - 1}`);
+    // Bypass the HTTP cache: a cached partial entry makes Chrome revalidate with If-Range and the
+    // server then answers 200 with the whole file (seen for a 165 MB zip). Blocks are cached here.
+    xhr.setRequestHeader('Cache-Control', 'no-store');
     xhr.send();
     if (xhr.status !== 206 && !(xhr.status === 200 && start === 0)) throw new Error(`EIO: ${path} HTTP ${xhr.status}`);
     const text = xhr.responseText, n = Math.min(text.length, end - start);

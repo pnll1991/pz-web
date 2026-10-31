@@ -37,7 +37,7 @@ SCALAR_DIRECT = {('glClearColor','(FFFF)V'), ('glClear','(I)V'), ('glViewport','
     ('glPushAttrib','(I)V'), ('glPopAttrib','()V'), ('glPushClientAttrib','(I)V'),
     ('glPopClientAttrib','()V'),
     # Round 79: WorldMapRenderer sets GL_FILL every frame; WebGL2 only rasterizes filled polygons.
-    ('glPolygonMode','(II)V'),
+    ('glPolygonMode','(II)V'), ('glTexEnvi','(III)V'),
     ('glGetString','(I)Ljava/lang/String;'), ('glGetStringi','(II)Ljava/lang/String;'),
     ('glGetInteger','(I)I'), ('glGetIntegerv','(I[I)V'), ('glGetIntegerv','(ILjava/nio/IntBuffer;)V'),
     ('glGetFloat','(I)F'), ('glGetFloatv','(I[F)V'), ('glGetFloatv','(ILjava/nio/FloatBuffer;)V'),
