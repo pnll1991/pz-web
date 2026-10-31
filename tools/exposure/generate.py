@@ -13,6 +13,22 @@ sys.path.insert(0, str(ROOT / 'tools/inventory'))
 from classfile import ClassReader
 
 
+def jdk_supertypes(name):
+    """Superclass and interfaces of a JDK class, read with javap from the build JDK (never a game class)."""
+    if not (name.startswith('java.') or name.startswith('javax.')): return []
+    out = subprocess.run(['javap', '-public', name], capture_output=True, text=True)
+    if out.returncode != 0: return []
+    for line in out.stdout.splitlines():
+        if ' class ' in line or ' interface ' in line:
+            head = line.split('{')[0].replace(',', ' ').split()
+            words, result, take = head, [], False
+            for word in words:
+                if word in ('extends', 'implements'): take = True; continue
+                if take: result.append(word.split('<')[0])
+            return [r for r in result if r != name and '.' in r and '>' not in r]
+    return []
+
+
 def generate(inventory, output):
     data = json.loads(Path(inventory).read_text())
     home = Path(data['pz_home'])
@@ -43,6 +59,11 @@ def generate(inventory, output):
             entry = name.replace('.', '/') + '.class'
             if entry not in jar.namelist():
                 external.add(name)
+                # Round 78 (menu-r77-console.txt, MapSpawnSelect.lua:954 "expected 3 arguments, got 1"):
+                # Kahlua exposes Class.getMethods(), so the inherited JDK API must be reflectable too.
+                # SimpleDateFormat.format(Date) lives in java.text.DateFormat, which was never listed,
+                # leaving only format(Date,StringBuffer,FieldPosition). Walk JDK supertypes as well.
+                pending.extend(jdk_supertypes(name))
                 continue
             cls = ClassReader(jar.read(entry)).parse()
             classes[name] = {'name': name, 'source': game['path'], 'registered': name in roots,

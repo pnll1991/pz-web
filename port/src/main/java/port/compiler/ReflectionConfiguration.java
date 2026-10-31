@@ -81,8 +81,9 @@ public final class ReflectionConfiguration extends SimpleReflectionPolicy {
             // components through ClassReflection.getDeclaredConstructor() + setAccessible(true); every
             // ComponentScript/Component subclass declares a *private* no-arg constructor, which
             // reflectablePublicMembers() leaves out ("missing no-arg constructor" for FluidContainerScript).
-            selectClasses(cls -> cls != null && names.contains(cls.name())
-                    && extendsAny(cls, COMPONENT_BASES))
+            // Round 78 (menu-r77-console.txt): ResourcesScript and DurabilityScript are not Lua-exposed, so the
+            // names filter hid them ("missing no-arg constructor"); the factories reach every subclass.
+            selectClasses(cls -> cls != null && extendsAny(cls, COMPONENT_BASES))
                 .reflectableMethods(method -> method.isConstructor() && method.parameters().isEmpty());
         } catch (IOException error) {
             throw new IllegalStateException("Cannot read reflection configuration", error);

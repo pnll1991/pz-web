@@ -701,3 +701,11 @@ llegue a `NativeArena.free`). Sin stubs: los depthmaps se tienen que cargar de v
   (1860 archivos, ~9 MB). Packs regenerados en `build/real-browser/packs-r77`: pack.py + alias_index (fonts/,
   fonts/EN/1x/) + case_alias (AnimSets/, anims_X/) + boot_options. Verificado: superset exacto del índice anterior
   (10559 rutas, 0 faltantes, 0 sha distintos) + las nuevas = 12419.
+
+## Ronda 78
+- MapSpawnSelect.lua:954 "expected 3 arguments, got 1": `DateFormat.format(Date)` no era reflectable (solo SimpleDateFormat estaba en la lista). `tools/exposure/generate.py` ahora agrega los supertipos JDK (`javap -public`) de cada clase externa expuesta, así DateFormat/Format entran en reflection-lua.txt. MainScreen:instantiate completa.
+- Menú principal dibujado: logo arriba-izquierda + columna de botones (x≈160–280, y 280–680), verificado por píxeles (r77: 0).
+- `ReflectionConfiguration`: los constructores sin args de subclases de COMPONENT_BASES se seleccionan siempre (ya no filtrado por `names`). Arregla "Class cannot be created (missing no-arg constructor)" de ResourcesScript/DurabilityScript, que borraba items (BeerImported...) en Loading Scripts.
+- Fuentes AngelCode (mainfont_0, mainfont2_0, zomboidDialogue.bmfc_0): initFonts() corre antes de LoadTexturePack("UI"), así que texturePackTextures está vacío; no hay PNG suelto en PZ_HOME. Es comportamiento del juego original, no del port; no se falsea.
+- FileNotFoundException restantes: 6 son packs 2x no montados (Overlays2x, JumboTrees2x, ...), esperados; 3 sin ruta (tras LightingFPS, salida de TISLogo, salida de TOS) pendientes.
+- Test real: `playwright.menu.config.mjs` + `tests/browser/menu.spec.mjs` (puerto 8098, packs reales, sin prepare_real.py).
