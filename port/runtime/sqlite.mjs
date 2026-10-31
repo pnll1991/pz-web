@@ -11,7 +11,10 @@ export async function sqliteBridge(vfs) {
     open(filename){return attempt(()=>{
       const persistent=filename!==':memory:';
       if(persistent && (!filename.startsWith('/Zomboid/') || filename.split('/').includes('..')))throw new Error('SQLite path must be in /Zomboid');
-      if(persistent&&active.has(filename))throw new Error('Concurrent connections to the same VFS database are not supported yet');
+      // Round 79: the game opens vehicles.db from VehiclesDB2 and PlayerDBHelper at once. Later
+      // connections share the first one's in-memory database (reference counted); they therefore
+      // also share its transaction state, which is acceptable on this single-threaded runtime.
+      if(persistent&&active.has(filename)){const shared=active.get(filename);shared.refs++;return {db:shared.db,filename,persistent,closed:false,shared};}
       const db=new sqlite.oo1.DB(':memory:');
       try {
         if(persistent&&vfs.exists(filename)){
@@ -19,7 +22,7 @@ export async function sqliteBridge(vfs) {
           const rc=sqlite.capi.sqlite3_deserialize(db.pointer,'main',pointer,BigInt(bytes.length),BigInt(bytes.length),sqlite.capi.SQLITE_DESERIALIZE_FREEONCLOSE|sqlite.capi.SQLITE_DESERIALIZE_RESIZEABLE);
           if(rc){sqlite.wasm.dealloc(pointer);throw new Error('SQLite deserialize error '+rc);}
         }
-        const connection={db,filename,persistent,closed:false};if(persistent)active.set(filename,connection);return connection;
+        const shared={db,refs:1};const connection={db,filename,persistent,closed:false,shared};if(persistent)active.set(filename,shared);return connection;
       }catch(error){db.close();throw error;}
     });},
     run(connection,sql,bindings){return attempt(()=>{
@@ -38,6 +41,6 @@ export async function sqliteBridge(vfs) {
       if(!sqlite.capi.sqlite3_get_autocommit(connection.db.pointer))throw new Error('Cannot persist an uncommitted SQLite transaction');
       if(connection.persistent)vfs.writeFile(connection.filename,sqlite.capi.sqlite3_js_db_export(connection.db));return connection.persistent;
     });},
-    close(connection){return attempt(()=>{if(!connection.closed){connection.db.close();connection.closed=true;if(connection.persistent)active.delete(connection.filename);}return null;});},
+    close(connection){return attempt(()=>{if(!connection.closed){connection.closed=true;const shared=connection.shared;if(--shared.refs===0){connection.db.close();if(connection.persistent&&active.get(connection.filename)===shared)active.delete(connection.filename);}}return null;});},
   };
 }
