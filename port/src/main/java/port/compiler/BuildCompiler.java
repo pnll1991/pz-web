@@ -68,6 +68,11 @@ public final class BuildCompiler {
             tool.setTargetFileName("boot.wasm");
             tool.setOptimizationLevel(TeaVMOptimizationLevel.SIMPLE);
             tool.setObfuscated(false);
+            // Round 79: Java semantics for null/array-bounds/cast failures. Without strict mode Wasm GC
+            // traps ("dereferencing a null pointer") and kills the whole fiber, while on the JVM the
+            // same NullPointerException is an ordinary exception the game catches (Kahlua pcall,
+            // ExceptionLogger). Seen in InventoryItem.getActualWeightUnmodded during IsoWorld.init.
+            tool.setStrict(game);
             // Direct-buffer heap (linear memory behind ByteBuffer.allocateDirect / NativeArena). The 2 MiB
             // default grows on demand and hit "memory access out of bounds" in Heap.allocFromFreeRecord
             // while loading 1024x11008 depthmaps (ronda 66). Real fix is the NativeArena reuse pool; 256 MiB up front.
