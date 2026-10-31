@@ -258,9 +258,14 @@ test('the stack depth and limit are answered from this backend state, and overfl
 // Round 79: ELEMENT_ARRAY_BUFFER is VAO state; drawElements must see the binding of the bound VAO.
 test('element buffer binding follows the bound vertex array', () => {
   const context = fakeContext();
+  // Real WebGL2 semantics: each VAO (null = default) owns its ELEMENT_ARRAY_BUFFER binding.
+  const owned = new Map(); let vao = null; const baseGet = context.getParameter;
   Object.assign(context, { ARRAY_BUFFER: 34962, ELEMENT_ARRAY_BUFFER: 34963,
-    createBuffer: () => ({ __buf: 1 }), bindBuffer: () => {}, createVertexArray: () => ({ __vao: 1 }),
-    bindVertexArray: () => {}, drawElements: (...a) => context.calls.push(['drawElements', ...a]) });
+    createBuffer: () => ({ __buf: 1 }), createVertexArray: () => ({ __vao: Math.random() }),
+    bindBuffer: (target, b) => { if (target === 34963) owned.set(vao, b); },
+    bindVertexArray: (v) => { vao = v; },
+    getParameter: (pname) => (pname === 0x8895 ? owned.get(vao) ?? null : baseGet(pname)),
+    drawElements: (...a) => context.calls.push(['drawElements', ...a]) });
   const gl = bridge(context);
   const [vaoA, vaoB] = gl.genVertexArrays(2), [ebo] = gl.genBuffers(1);
   gl.bindVertexArray(vaoA); gl.bindBuffer(34963, ebo);

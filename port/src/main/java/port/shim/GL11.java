@@ -40,6 +40,13 @@ public final class GL11 {
     public static void glTexEnvi(int target, int pname, int param) { texEnviNative(target, pname, param); }
     @JSBody(params={"target","pname","param"}, script="globalThis.pzRuntime.gl.texEnvi(target,pname,param);")
     private static native void texEnviNative(int target, int pname, int param);
+    /** Round 79: conventional client arrays (GL_VERTEX_ARRAY 0x8074, GL_NORMAL_ARRAY 0x8075,
+     * GL_COLOR_ARRAY 0x8076, GL_TEXTURE_COORD_ARRAY 0x8078) do not exist in WebGL2; the game's draws
+     * use generic attributes. The enable state is recorded only; glVertexPointer & co. still raise. */
+    public static void glEnableClientState(int array) { clientStateNative(array, true); }
+    public static void glDisableClientState(int array) { clientStateNative(array, false); }
+    @JSBody(params={"array","on"}, script="globalThis.pzRuntime.gl.clientState(array,on);")
+    private static native void clientStateNative(int array, boolean on);
     public static void glPolygonMode(int face, int mode) {
         if (face != 0x0404 && face != 0x0405 && face != 0x0408)
             throw new IllegalArgumentException("glPolygonMode: invalid face 0x" + Integer.toHexString(face));
@@ -267,7 +274,7 @@ public final class GL11 {
         if (address == 0L || count < 0) throw new IllegalArgumentException("Client index pointer " + address + " count " + count);
         return arena(address, count * size);
     }
-    @JSBody(script="return globalThis.pzRuntime.gl.boundElements !== null;")
+    @JSBody(script="return globalThis.pzRuntime.gl.hasElementBuffer();")
     private static native boolean elementBufferBound();
     @JSBody(params={"mode","start","end","count","type","data"},
         script="globalThis.pzRuntime.gl.drawElementsClient(mode,start,end,count,type,data);")

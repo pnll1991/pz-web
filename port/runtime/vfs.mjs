@@ -108,7 +108,10 @@ export class VirtualFileSystem {
   fetchRange(path, start, end) {
     const t0 = performance.now();
     const xhr = new XMLHttpRequest();
-    xhr.open('GET', this.remoteBase + path.slice('/media/'.length).split('/').map(encodeURIComponent).join('/'), false);
+    // One URL per range (the dev server ignores the query): Chrome otherwise reuses a cached partial
+    // entry, revalidates it with If-Range and the server answers 200 with the whole file.
+    xhr.open('GET', this.remoteBase + path.slice('/media/'.length).split('/').map(encodeURIComponent).join('/')
+      + `?r=${start}-${end}`, false);
     xhr.overrideMimeType('text/plain; charset=x-user-defined');
     xhr.setRequestHeader('Range', `bytes=${start}-${end - 1}`);
     // Bypass the HTTP cache: a cached partial entry makes Chrome revalidate with If-Range and the

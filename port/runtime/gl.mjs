@@ -1887,8 +1887,17 @@ export class GLBridge {
     return report;
   }
   /* --- Draw calls (GL11 natives) ------------------------------------------------------ */
+  /** Round 79: the element binding WebGL2 really has for the bound VAO (client-side state query). */
+  hasElementBuffer() {
+    const bound = this.context.getParameter(0x8895) ?? null; // ELEMENT_ARRAY_BUFFER_BINDING
+    if ((bound !== null) !== (this.boundElements !== null)) {
+      this.elementTrackingMismatches = (this.elementTrackingMismatches || 0) + 1;
+      this.boundElements = bound;
+    }
+    return bound !== null;
+  }
   drawElements(mode, count, type, indices) {
-    if (this.boundElements === null)
+    if (!this.hasElementBuffer())
       throw new Error('glDrawElements needs a bound ELEMENT_ARRAY_BUFFER');
     const webglType = GLBridge.indexType(type);
     const elementBytes = webglType === 0x1405 ? 4 : webglType === 0x1403 ? 2 : 1;
@@ -1898,7 +1907,7 @@ export class GLBridge {
     this.call('drawElements', mode, count, webglType, indices);
   }
   drawRangeElements(mode, start, end, count, type, indices) {
-    if (this.boundElements === null)
+    if (!this.hasElementBuffer())
       throw new Error('glDrawRangeElements needs a bound ELEMENT_ARRAY_BUFFER');
     if (end < start) throw new Error(`glDrawRangeElements end ${end} < start ${start}`);
     const webglType = GLBridge.indexType(type);
@@ -1906,6 +1915,12 @@ export class GLBridge {
     if (indices % elementBytes !== 0)
       throw new Error(`Index offset ${indices} is not a multiple of the ${elementBytes}-byte index size`);
     this.call('drawRangeElements', mode, start >>> 0, end >>> 0, count, webglType, indices);
+  }
+  /** Round 79: glEnable/DisableClientState for the conventional arrays; recorded, no WebGL2 state. */
+  clientState(array, on) {
+    if (![0x8074, 0x8075, 0x8076, 0x8078].includes(array))
+      throw new Error(`gl${on ? 'Enable' : 'Disable'}ClientState: unsupported array 0x${array.toString(16)}`);
+    (this.clientArrays ?? (this.clientArrays = {}))[array.toString(16)] = !!on;
   }
   /** Round 79: glTexEnvi has no WebGL2 state; recorded per unit (shaders do the combining). */
   texEnvi(target, pname, param) {
@@ -1918,7 +1933,7 @@ export class GLBridge {
   /** Round 79: desktop client-memory indices (no ELEMENT_ARRAY_BUFFER bound). The bytes are
    * streamed into a scratch element buffer for this one draw and the binding is restored. */
   drawElementsClient(mode, start, end, count, type, data) {
-    if (this.boundElements !== null) throw new Error('drawElementsClient with an ELEMENT_ARRAY_BUFFER bound');
+    if (this.hasElementBuffer()) throw new Error('drawElementsClient with an ELEMENT_ARRAY_BUFFER bound');
     const gl = this.context, webglType = GLBridge.indexType(type);
     const scratch = this.clientIndexBuffer ?? (this.clientIndexBuffer = gl.createBuffer());
     this.call('bindBuffer', gl.ELEMENT_ARRAY_BUFFER, scratch);
