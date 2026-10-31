@@ -739,3 +739,11 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   built-ins y los `pz_user_*` renombrados como `identifier`. Distinguir constructores de struct por la tabla de structs.
 - Patrón: los prototipos no crean bindings de parámetros; renombrarlos aparte con la misma regla determinista.
 - Proceso: un barrido completo de los shaders del juego con el arnés tarda >2 min; lanzarlo en segundo plano.
+
+## Ronda 80 (frente A, 31/10) — GPU real en el Chrome de pruebas
+- Patrón: Chrome 156 headless (`--ozone-platform=headless` que agrega Playwright) usa la NVIDIA sin ventana con
+  `--enable-gpu --ignore-gpu-blocklist --use-angle=gl` (o `vulkan`); no hace falta DISPLAY/Wayland. Verificar con
+  `tools/diag/gpu_check.mjs` (UNMASKED_RENDERER debe decir NVIDIA) antes de atribuir tiempos a la GPU.
+- Error evitado: suponer que la GPU acelera el arranque. Con NVIDIA el menú tarda lo mismo que con SwiftShader
+  (~404 s hasta `exit TISLogoState`): el cuello es CPU/wasm del hilo principal (heartbeats `evaluate-timeout`).
+  Mejor enfoque: perfilar el hilo principal (JFR en JVM / perfil de Chrome) en vez de cambiar flags de gráficos.

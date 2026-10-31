@@ -4,6 +4,7 @@
 //   until KEYSUBSTR MIN TIMEOUT_MS (waits for pzGameCounts)
 // Output goes to $PZ_DRIVE/out.txt; console to $PZ_DRIVE/console.txt; shots to ~/pzshots/NAME.png.
 import { chromium } from '@playwright/test';
+import { launchOptions } from './chrome-flags.mjs';
 import { writeFileSync, appendFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 const PORT = process.env.PZ_DIAG_PORT || '8098';
 const D = process.env.PZ_DRIVE || '/tmp/pzdrive'; mkdirSync(D, { recursive: true });
@@ -11,8 +12,7 @@ const SHOTS = `${process.env.HOME}/pzshots`;
 writeFileSync(`${D}/cmd.txt`, ''); writeFileSync(`${D}/out.txt`, ''); writeFileSync(`${D}/console.txt`, '');
 const t0 = Date.now();
 const log = (...a) => appendFileSync(`${D}/out.txt`, `[${Math.round((Date.now() - t0) / 1000)}s] ` + a.map(String).join(' ') + '\n');
-const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome',
-  args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-dev-shm-usage'] });
+const browser = await chromium.launch(launchOptions()); // Ronda 80: PZ_GPU=nvidia (defecto) | swiftshader
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 page.on('console', m => appendFileSync(`${D}/console.txt`, m.text().slice(0, 2000) + '\n'));
 page.on('pageerror', e => log('PAGEERROR', String(e.stack || e.message).slice(0, 1500).replace(/\n/g, ' | ')));
