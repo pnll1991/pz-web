@@ -776,3 +776,10 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   (GC = 2 %). `filterType` con streams en el camino caliente costaba ~40 % del análisis.
 - Patrón: TeaVM no es determinista entre builds (orden de clases `$$_impl`); comparar salidas por conjunto de nombres
   de funciones del name section, no por hash.
+- Error: editar `scripts/build.sh` mientras un build lo ejecuta. bash lee el script de a poco; terminó con
+  `syntax error near unexpected token` después del swap (EXIT=2 con el build bueno). Mejor enfoque: no editar
+  scripts en ejecución; probar cambios con `bash -n` y en el próximo build.
+- Error repetido (ronda 79): `pgrep -f "<patrón>"` + `kill` en un comando cuyo texto contiene el patrón mató a mi
+  propio shell (exit 144). Usar `ps -eo pid,args | grep -v grep` y revisar los pids antes de `kill`.
+- Patrón: un proceso desacoplado lanzado dentro de `flock X cmd` hereda el fd de X y mantiene el lock (así se
+  trabó chrome.lock con el dev server). Cerrar fds >2 al desacoplar (`for fd in /proc/$$/fd/*; ... exec N>&-`).

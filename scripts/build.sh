@@ -11,7 +11,8 @@ cd "$PZ_WEB_ROOT"
 # (javac incremental), mvn -o, sin tests JUnit ni jar (fase prepare-package). Además compila en
 # port/target/web-staging y sólo al final, con los gates aprobados, reemplaza boot.wasm/pulse-map.json/
 # build-state.json servidos por rename atómico (scripts/swap_staged.sh): el boot.wasm servido no desaparece
-# durante el build. PZ_SWAP_LOCK=<archivo> hace el swap bajo `flock` (p. ej. el chrome.lock de la ronda);
+# durante el build. PZ_SWAP_LOCK=<archivo> hace el swap en segundo plano bajo `flock` de ese archivo (p. ej. el
+# chrome.lock de la ronda), sin retener el build;
 # PZ_NO_SWAP=1 deja el resultado en staging (swap manual con scripts/swap_staged.sh). Sin --dev: igual que antes.
 DEV=0; GAME=0; ARGS=()
 for arg in "$@"; do
@@ -87,8 +88,15 @@ if [ "$DEV" = 1 ]; then
   if [ "${PZ_NO_SWAP:-0}" = 1 ]; then
     echo "[build.sh] PZ_NO_SWAP=1: resultado en $STAGE; publicar con: bash scripts/swap_staged.sh $STAGE port/target/web/$SUB"
   elif [ -n "${PZ_SWAP_LOCK:-}" ]; then
-    echo "[build.sh] esperando $PZ_SWAP_LOCK para el swap"
-    flock "$PZ_SWAP_LOCK" bash scripts/swap_staged.sh "$STAGE" "port/target/web/$SUB"
+    # No retener build.lock mientras se espera el lock del swap: copia instantánea del staging y un proceso
+    # desacoplado que publica cuando obtiene el lock. Un build posterior borra las copias viejas (su swap falla).
+    rm -rf port/target/web-staging/ready-*
+    snap=port/target/web-staging/ready-$(date +%s); cp -a "$STAGE" "$snap"
+    # Cerrar los fd heredados (>2): el del `flock build.lock` que lanzó este build mantendría el lock tomado.
+    setsid nohup bash -c 'for fd in /proc/$$/fd/*; do n=${fd##*/}; [ "$n" -gt 2 ] && eval "exec $n>&-" 2>/dev/null; done
+      exec flock "$0" bash scripts/swap_staged.sh "$1" "$2"' "$PZ_SWAP_LOCK" "$snap" "port/target/web/$SUB" \
+      >> port/target/web-staging/swap.log 2>&1 < /dev/null &
+    echo "[build.sh] swap en espera de $PZ_SWAP_LOCK (pid $!, log port/target/web-staging/swap.log)"
   else
     bash scripts/swap_staged.sh "$STAGE" "port/target/web/$SUB"
   fi

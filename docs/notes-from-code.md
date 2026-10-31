@@ -870,8 +870,11 @@ Commits en `code/menu`: `acf5ac6` (nativas Clipper), `d80bc78` (`Bullet.setVehic
   fuentes generadas idénticas conservan su mtime (javac no recompila por eso); `mvn -o`; sin tests JUnit
   (`-Dmaven.test.skip`) ni jar (fase `prepare-package`). Compila en `port/target/web-staging/game` y, con los gates
   aprobados, `scripts/swap_staged.sh` reemplaza boot.wasm/pulse-map.json/build-state.json servidos por rename atómico
-  y corre sync_web: el `boot.wasm` servido nunca desaparece. `PZ_SWAP_LOCK=/tmp/pz80-locks/chrome.lock` hace el swap
-  bajo ese lock (el build sigue reteniendo build.lock mientras espera); `PZ_NO_SWAP=1` deja el resultado en staging.
+  y corre sync_web: el `boot.wasm` servido nunca desaparece. `PZ_SWAP_LOCK=/tmp/pz80-locks/chrome.lock` copia el staging a
+  `web-staging/ready-<ts>` y deja un proceso desacoplado (setsid, fds >2 cerrados para no heredar build.lock) que
+  publica al obtener ese lock (log `port/target/web-staging/swap.log`); el build termina y suelta build.lock.
+  `PZ_NO_SWAP=1` deja el resultado en staging. Comando de la ronda:
+  `flock /tmp/pz80-locks/build.lock env PZ_SWAP_LOCK=/tmp/pz80-locks/chrome.lock bash scripts/build.sh --with-game --dev`.
 - Resultado medido (mismas fuentes salvo 28fed96): dev1 (sin memo, con JFR) TeaVM 403 s / maven 411 s;
   dev2 (con memo) DEPENDENCY_ANALYSIS 203 s, TeaVM 238 s, maven 246 s, prepare 1 s (antes 11–12 s). Total
   ~4:10 contra ~7:00. Clases alcanzables iguales (10319); la diferencia de funciones del name section entre dev1 y
