@@ -991,3 +991,27 @@ Análisis estático (`javap -c` del jar fijado, volcado en /tmp; `translateShade
 - Riesgo abierto: los clips siguen en `.txt` (x_anim_to_txt, calibrado contra `Bob_Sprint.txt` del juego); el esqueleto
   ahora viene del camino jassimp (MAKE_LEFT_HANDED). Si el personaje aparece pero deformado/girado, la siguiente pieza es
   servir también los clips por jassimp (perfil `x-anim` del dumper) en vez de `.txt`.
+
+## Ronda 80 — frente M (31/10): sonda del jugador (W llega a JS pero el jugador no se traslada)
+- Diagnóstico de sólo lectura, opt-in: `port.runtime.PlayerProbe.frame()` se inyecta antes de cada retorno de
+  `zombie.gameStates.IngameState#update()` (`PlayerProbeCompatibility`, sólo `--with-game`). Apagada cuesta un contador
+  y una llamada JS que devuelve un booleano cacheado; el flag (`globalThis.PZ_PLAYER_PROBE === true` o `?probe=1`) se
+  relee como mucho una vez por segundo. Encendida publica `pzRuntime.playerProbe` en cada frame de juego.
+- Nuestras fuentes no compilan contra el jar: los stubs `g*` de PlayerProbe (tipos del juego como `Object`) se reescriben
+  con IR directa (getstatic/getfield/invokevirtual de getters públicos; descriptores de `javap -s` del jar fijado). El
+  build falla si falta el miembro del juego o una reescritura; `PlayerProbeTest` compara stubs y reescrituras en JVM.
+- Getters elegidos por no tener efectos (`javap -c`): `getDeferredMovement(Vector2)` = `(v,false)`, copia sin poner a
+  cero el acumulador; `GameKeyboard.isKeyDown(KeybindId)` = `isKeyDown(getId())` -> binding de `Core`. Descartado
+  `IsoPlayer.getInputMoveVector`: llama a `setAutoWalkDirection` (escribe estado).
+- Campos: frames/samples, `IngameState.numberTicks/paused`, `GameTime.isGamePaused/getMultiplier/getTrueMultiplier`,
+  `SpeedControls.getCurrentGameSpeed`, `UIManager.isShowPausedMessage`, `Core.isDoingTextEntry`; `KeybindId.FORWARD/RIGHT`
+  (id, `Core.getKey`, `GameKeyboard.isKeyDown`), `GameKeyboard.isKeyDown(17/32)`, `org.lwjglx.input.Keyboard.isKeyDown(17/32)`;
+  `IsoPlayer.players[0]`: x/y/z, forward, moveForwardVec, isMoving/isPlayerMoving/isWalking/isRunning/isSprinting/
+  isAiming/autoWalk/blockMovement/performingAction/pathfindRunning/ghost/dead/asleep/falling/sitOnGround, moveSpeed,
+  pathSpeed, currentState/actionState/actionContextState, hasAnimationPlayer, isAnimationUpdatingThisFrame,
+  deferredX/Y/Len; AdvancedAnimator: estado y capas (root + sub0..7) con sus LiveAnimNode (nombre, peso, activo).
+  Acumulados desde que se enciende: forwardFrames, movingFrames, animUpdatingFrames, deferredNonZeroFrames,
+  translatedFrames, maxDist.
+- Lectura esperada: tecla sin `forwardDown` -> binding/GameKeyboard; `forwardDown` sin `isPlayerMoving` -> entrada del
+  jugador (estado/acción/UI/pausa); `isPlayerMoving` sin `deferredLen>0` -> root motion (clip/hueso Translation_Data);
+  `deferredLen>0` con `animUpdatingThisFrame=false` -> `doDeferredMovement` no aplica (ver frente H).

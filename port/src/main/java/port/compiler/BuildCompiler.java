@@ -114,6 +114,8 @@ public final class BuildCompiler {
             if (game) {
                 tool.getTransformers().add(GameEntryTransformer.class.getName());
                 tool.getTransformers().add(StartupProgress.class.getName());
+                // Ronda 80 (frente M): sonda opt-in del jugador (?probe=1 / PZ_PLAYER_PROBE).
+                tool.getTransformers().add(PlayerProbeCompatibility.class.getName());
             }
             try {
                 verifyCompilerPatch();

@@ -859,3 +859,10 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   falla en `STBImageWrite.<clinit>`, que mapea las cuatro globales seguidas; implementar sólo la del log deja la clase
   igual de muerta. Mejor enfoque: `javap -c` del `static {}` de la clase LWJGL y cubrir todas sus nativas/getters, y
   revisar que cada `MemoryUtil.memXBuffer` que usen tenga mapeo en `NativeMemory` (memPointerBuffer no lo tiene).
+
+## Ronda 80 (frente M, 31/10) — sonda del jugador
+- Error: en un `ClassHolderTransformer`, `context.getHierarchy().resolve(FieldReference)` devolvió null para
+  `zombie.gameStates.IngameState.instance` (campo público estático que `javap` muestra) y el build falló a los ~4 min.
+  Patrón a evitar: validar miembros del juego con `ClassHierarchy.resolve` dentro de la transformación. Mejor enfoque:
+  `getHierarchy().getClassSource().get(owner)` y recorrer `getParent()` a mano (como JassimpNativeCompatibility), y
+  compilar con javac + un test JVM rápido (stubs vs reescrituras) antes de pedir el build.lock.
