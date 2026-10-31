@@ -747,3 +747,19 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Error evitado: suponer que la GPU acelera el arranque. Con NVIDIA el menú tarda lo mismo que con SwiftShader
   (~404 s hasta `exit TISLogoState`): el cuello es CPU/wasm del hilo principal (heartbeats `evaluate-timeout`).
   Mejor enfoque: perfilar el hilo principal (JFR en JVM / perfil de Chrome) en vez de cambiar flags de gráficos.
+
+## Ronda 80 (frente F, 31/10) — auditoría estática de GL en partida
+- Error de herramienta: en Python `p[0] += u4()` evalúa `p[0]` ANTES de que `u4()` avance el cursor; el lector
+  de class files propio saltaba mal los atributos de campos y ~30 % de las clases fallaban. Mejor enfoque:
+  `ln = u4(); p[0] += ln`.
+- Error de shell: en este entorno `grep` es una función que llama a ugrep con `-I` (salta binarios);
+  `grep -rl X zombie/` sobre `.class` no encuentra nada. Mejor enfoque: `command grep -rla`.
+- Patrón: la alcanzabilidad estática de GL debe respetar las compuertas de `GLCapabilities`. `OpenGL30/31/33/43`
+  son false aquí (LWJGL exige TODAS las direcciones de esa versión y `hasEntrypoint` no da, p. ej.,
+  `glMapBufferRange`), así que RenderList/RenderTexture/ShaderBuffer (GL43+), `glMapBufferRange` y los caminos
+  ARB/EXT no se ejecutan; pero `iso.Particles` sólo *avisa* sin OpenGL33 y usa instanciado igual.
+- Error encontrado: tokens de consulta mal escritos sin test (`GL_SCISSOR_BOX` 0x0c36 en vez de 0x0C10,
+  `GL_MAJOR/MINOR_VERSION` 0x820b/0x820d en vez de 0x821B/0x821C). Mejor enfoque: cada token nuevo con
+  `javap -constants` sobre GL11/GL30C del jar fijado y un test que lo consulte.
+- Error evitado: `glClearDepthf` del shim llamaba `clearDepthf` de WebGL2, que no existe (WebGL2 sólo tiene
+  `clearDepth`); se veía recién al mapear GL41C. Mejor enfoque: pasar por el método del puente, no por `call(nombre)`.
