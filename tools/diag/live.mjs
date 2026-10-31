@@ -59,7 +59,11 @@ setInterval(async () => {
   writeFileSync(`${D}/heartbeat.json`, JSON.stringify(h) + '\n');
 }, 10000);
 
-const countsOf = (r) => page.evaluate(r => Object.fromEntries(Object.entries(globalThis.pzGameCounts || {}).filter(([k]) => !k.endsWith('#last') && new RegExp(r).test(k))), r);
+// Tope por comando: un hilo principal colgado no debe bloquear la cola (frente V, ronda 80).
+const CMD_TIMEOUT = +(process.env.LIVE_CMD_TIMEOUT_MS || 60000);
+const capped = (p, ms = CMD_TIMEOUT, what = 'evaluate') => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`${what} sin respuesta en ${ms} ms`)), ms))]);
+const evalc = (fn, arg, ms) => capped(page.evaluate(fn, arg), ms);
+const countsOf = (r) => evalc(r => Object.fromEntries(Object.entries(globalThis.pzGameCounts || {}).filter(([k]) => !k.endsWith('#last') && new RegExp(r).test(k))), r);
 let done = 0;
 for (;;) {
   await new Promise(r => setTimeout(r, 300));
@@ -73,12 +77,12 @@ for (;;) {
       else if (c === 'key') { await page.keyboard.down(a[0]); await page.waitForTimeout(+(a[1] || 120)); await page.keyboard.up(a[0]); }
       else if (c === 'type') await page.keyboard.type(a.join(' '), { delay: 80 });
       else if (c === 'wait') await page.waitForTimeout(+a[0]);
-      else if (c === 'shot') { await page.screenshot({ path: `${SHOTS}/${a[0]}.png`, timeout: 90000 }); log(`#${cur} SHOT`, `${SHOTS}/${a[0]}.png`); }
-      else if (c === 'eval') log(`#${cur} EVAL`, String(JSON.stringify(await page.evaluate(a.join(' ')))).slice(0, 6000));
+      else if (c === 'shot') { await capped(page.screenshot({ path: `${SHOTS}/${a[0]}.png`, timeout: 90000 }), 95000, 'screenshot'); log(`#${cur} SHOT`, `${SHOTS}/${a[0]}.png`); }
+      else if (c === 'eval') log(`#${cur} EVAL`, String(JSON.stringify(await evalc(a.join(' ')))).slice(0, 6000));
       else if (c === 'counts') log(`#${cur} COUNTS`, JSON.stringify(await countsOf(a.join(' '))).slice(0, 6000));
       else if (c === 'until') { // until KEY_SUBSTRING MINCOUNT TIMEOUT_MS
         const end = Date.now() + +a[2]; let n = 0;
-        while (Date.now() < end) { n = await page.evaluate(k => Object.entries(globalThis.pzGameCounts || {}).filter(([x]) => x.includes(k) && x.endsWith(':returned')).reduce((s, [, v]) => s + v, 0), a[0]).catch(() => 0); if (n >= +a[1]) break; await page.waitForTimeout(2000); }
+        while (Date.now() < end) { n = await evalc(k => Object.entries(globalThis.pzGameCounts || {}).filter(([x]) => x.includes(k) && x.endsWith(':returned')).reduce((s, [, v]) => s + v, 0), a[0], 10000).catch(() => 0); if (n >= +a[1]) break; await new Promise(r => setTimeout(r, 2000)); }
         log(`#${cur} UNTIL`, a[0], n, n >= +a[1] ? 'reached' : 'timeout');
       }
       else if (c === 'reload') {
