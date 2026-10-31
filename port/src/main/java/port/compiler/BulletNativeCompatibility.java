@@ -46,6 +46,11 @@ public final class BulletNativeCompatibility implements ClassHolderTransformer {
         new MethodDescriptor("defineVehicleScript", ValueType.object("java.lang.String"),
             ValueType.arrayOf(ValueType.FLOAT), ValueType.VOID));
 
+    private static final java.util.Set<String> WORLD = java.util.Set.of(
+        "ToBullet(Ljava/nio/ByteBuffer;)V", "isWorldInit()Z", "initWorld(IIIIIIZ)V", "destroyWorld()V",
+        "activateChunkMap(IIII)V", "deactivateChunkMap(I)V", "scrollChunkMap(II)V", "setChunkMinMaxLevel(IIII)V",
+        "stepSimulation(FIF)V", "getVehicleCount()I", "getVehiclePhysics(I[F)I", "getObjectPhysics([F)I");
+
     @Override public void transformClass(ClassHolder cls, ClassHolderTransformerContext context) {
         if (!cls.getName().equals(CLASS)) return;
         for (var method : cls.getMethods()) {
@@ -55,6 +60,9 @@ public final class BulletNativeCompatibility implements ClassHolderTransformer {
             String key = method.getName() + descriptor.signatureToString();
             if (!inventoriedNatives.contains(key)) continue;
             MethodDescriptor target = FORWARDED.get(key);
+            String bridge = BRIDGE;
+            // Round 79: world lifecycle natives answered by port.natives.BulletWorld (same name/descriptor).
+            if (WORLD.contains(key)) { target = MethodDescriptor.parse(key); bridge = "port.natives.BulletWorld"; }
             if (target == null) continue;
             method.getModifiers().remove(ElementModifier.NATIVE);
             var emitter = ProgramEmitter.create(method, context.getHierarchy());
@@ -62,7 +70,7 @@ public final class BulletNativeCompatibility implements ClassHolderTransformer {
             // the game's signature (defineVehicleScript) receives each parameter explicitly.
             var arguments = new org.teavm.model.emit.ValueEmitter[method.parameterCount()];
             for (int i = 0; i < arguments.length; i++) arguments[i] = emitter.var(i + 1, method.parameterType(i));
-            var result = emitter.invoke(new MethodReference(BRIDGE, target), arguments);
+            var result = emitter.invoke(new MethodReference(bridge, target), arguments);
             if (method.getResultType().equals(ValueType.VOID)) emitter.exit(); else result.returnValue();
         }
     }
