@@ -866,3 +866,14 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   Patrón a evitar: validar miembros del juego con `ClassHierarchy.resolve` dentro de la transformación. Mejor enfoque:
   `getHierarchy().getClassSource().get(owner)` y recorrer `getParent()` a mano (como JassimpNativeCompatibility), y
   compilar con javac + un test JVM rápido (stubs vs reescrituras) antes de pedir el build.lock.
+
+## Ronda 80 (frente V, 31/10) — verificación en juego y QUIT
+- Error: tras Esc->QUIT la página quedó con el hilo principal al 100% (última línea `STATE: exit IngameState`) y el
+  `until` de live.mjs quedó esperando un `page.evaluate` que nunca resolvió, ni tras matar el renderer: la cola entera
+  murió y el contexto (incógnito, IndexedDB en memoria) se perdió al hacer `stop`. Patrón a evitar: encolar
+  `until`/`shot` largos justo después de una acción del juego que puede colgar el hilo, y probar persistencia con un
+  QUIT cuyo guardado depende de timers (`vfs.autoFlush`) que no corren mientras el hilo está ocupado. Mejor enfoque:
+  antes del QUIT esperar al autosave y confirmar `pzRuntime.vfs.autoFlushStats.batches` creciente; dar a live.mjs un
+  tope por evaluate (Promise.race) para que la cola sobreviva a un cuelgue.
+- Patrón: a ~3 fps una tecla de 120 ms puede no verse (el juego consulta el estado por frame): Escape necesitó 800 ms;
+  el primer click en "Click to Start" tampoco tomó.
