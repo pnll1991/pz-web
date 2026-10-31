@@ -1044,3 +1044,13 @@ Análisis estático (`javap -c` del jar fijado, volcado en /tmp; `translateShade
 - Secundario (no cuelga, cuesta memoria): cada sentencia SQLite en autocommit llama `BrowserConnection.persist()` ->
   `Sqlite.export` + `vfs.flush()` completo, que copia (`slice`) todos los archivos de /Zomboid y reescribe IndexedDB entero;
   durante el guardado eso es O(tamaño de la partida) por sentencia. Candidato: `flushChanges` con los paths sucios.
+- Seguimiento (20:17, frente V): con malla/esqueleto por jassimp y clips `.txt` el jugador se dibuja aplastado en el
+  piso y el root motion sólo avanza 5 frames: el riesgo previsto. Arreglo: los 240 clips del cierre de locomoción
+  también por jassimp (`stage_jassimp.py --bob-anims locomotion`, perfil `x-anim` = flags de
+  `FileTask_LoadAnimation.loadX`: MAKE_LEFT_HANDED + REMOVE_REDUNDANT_MATERIALS, sin `handlePostProcessFlags`), en la
+  ruta real `media/anims_X/Bob/<Nombre>.x` (lo que lista `loadAnimsFromDir`; `getAnimName` = ruta relativa en minúsculas
+  sin extensión ni `anims_x/`) y en `media/anims_x/bob/<minúsculas>.x` (lo que prueba `checkExtensionType`). Se quitan
+  las 483 entradas `.txt` inalcanzables (anims/bob, anims_X/Bob, anims_x/bob, models/skinned). 240/240 `--verify`
+  idénticos; cachés 38 987 002 B contra 57 093 059 B de `.txt` (un rango compartido por sus alias). Simulado: packs
+  520 168 208 -> 501 046 534 B (margen 16,70 -> 35,82 MB), archivos montados 516 786 274 -> 498 680 217 B. Respaldo:
+  `index.json.before-frontL-anims`.

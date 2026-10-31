@@ -36,6 +36,9 @@ def main():
     ap.add_argument('--stage', required=True, type=Path)
     ap.add_argument('--clean', action='store_true')
     ap.add_argument('--java', default=str(ROOT / '.toolchain/jdk/bin/java'))
+    ap.add_argument('--bob-anims', choices=('none', 'locomotion'), default='none',
+                    help='locomotion = the 240-clip closure of stage_txt.py (AnimSets/player idle/walk/run/'
+                         'sprint/turning + runtime sources), dumped with the anim flags (profile x-anim)')
     ap.add_argument('mesh', nargs='*', help='extra media-relative .x paths (models_X/...)')
     a = ap.parse_args()
     home = Path(a.pz_home).expanduser().resolve()
@@ -53,19 +56,37 @@ def main():
     if a.clean and stage.exists():
         shutil.rmtree(stage)
     real.mkdir(parents=True, exist_ok=True)
-    cmd = [a.java, '--enable-native-access=ALL-UNNAMED', f'-Djava.library.path={home / "natives"}',
-           '-cp', f'{home / "projectzomboid.jar"}{os.pathsep}{ROOT / "port/target/classes"}',
-           str(ROOT / 'tools/jassimp/JassimpCache.java'), '--natives', str(home / 'natives'), '--verify',
-           str(real), str(home / 'media')] + meshes
-    subprocess.run(cmd, check=True)
+    jobs = [('x-mesh', meshes, 'models_X/')]
+    if a.bob_anims == 'locomotion':
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import stage_txt
+        clips, missing = stage_txt.bob_clips(home / 'media', 'locomotion')
+        clips = list(dict.fromkeys(list(stage_txt.ANIMS) + clips))
+        print(f'bob-anims=locomotion: {len(clips)} clips; not in anims_X/Bob: {missing}')
+        jobs.append(('x-anim', clips, 'anims_X/'))
     media = stage / 'media'
-    for rel in meshes:
-        data = (real / rel).read_bytes()
-        for out in (media / rel, media / rel.replace('models_X/', 'models_x/', 1).lower()):
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_bytes(data)
+    for profile, rels, prefix in jobs:
+        listing = stage / f'{profile}.list'
+        listing.write_text('\n'.join(rels) + '\n')
+        cmd = [a.java, '--enable-native-access=ALL-UNNAMED', f'-Djava.library.path={home / "natives"}',
+               '-cp', f'{home / "projectzomboid.jar"}{os.pathsep}{ROOT / "port/target/classes"}',
+               str(ROOT / 'tools/jassimp/JassimpCache.java'), '--natives', str(home / 'natives'),
+               '--profile', profile, '--verify', str(real), str(home / 'media'), f'@{listing}']
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
+        listing.unlink()
+        total = 0
+        for rel in rels:
+            data = (real / rel).read_bytes()
+            total += len(data)
+            # real case (what loadAnimsFromDir / the asset list enumerate) + the lowercase lookup path
+            # checkExtensionType builds ("media/models_x" / "media/anims_x" + lowercase name + ".x")
+            lower = prefix.lower() + rel[len(prefix):].lower()
+            for out in (media / rel, media / lower):
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_bytes(data)
+        print(f'{profile}: {len(rels)} caches, {total} B (each also at its lowercase alias)')
     shutil.rmtree(real)
-    print(f'staged {len(meshes)} jassimp caches (x2 paths) under {media}')
+    print(f'staged jassimp caches under {media}')
 
 
 if __name__ == '__main__':
