@@ -64,7 +64,7 @@ export class CanvasInput {
     this.keys.clear(); this.buttons.clear();
   }
   resize() {
-    const ratio = window.devicePixelRatio || 1;
+    const ratio = 1; // see window.mjs create(): buffer == window size
     this.canvas.width = Math.max(1, Math.round(this.canvas.clientWidth * ratio));
     this.canvas.height = Math.max(1, Math.round(this.canvas.clientHeight * ratio));
     return [this.canvas.width, this.canvas.height];

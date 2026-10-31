@@ -12,7 +12,7 @@ const log = (...a) => { const line = a.map(String).join(' '); try { appendFileSy
 const race = (p, ms) => Promise.race([p, new Promise((_, rj) => setTimeout(() => rj(new Error('timeout')), ms))]);
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome',
   args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-dev-shm-usage'] });
-const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+const page = await browser.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: Number(process.env.PZ_DPR || 1) });
 const cons = []; page.on('console', m => { cons.push(m.text().slice(0, 300)); if (cons.length > 4000) cons.shift(); });
 const errs = []; page.on('pageerror', e => { const s = String(e.stack || e.message).slice(0, 4000); errs.push(s); log('PAGEERROR', s.slice(0, 600).replace(/\n/g, ' | ')); });
 await page.addInitScript((N) => {
@@ -75,7 +75,7 @@ async function profile() { // CPU profile of the main thread, top self-time func
 }
 while (Date.now() - t0 < MAX) {
   await page.waitForTimeout(20000);
-  if (PROFILE_AT && !profiled && Date.now() - t0 > PROFILE_AT * 1000) { profiled = true; try { await race(profile(), 120000); } catch (e) { log('PROFILE_FAIL', String(e)); } }
+  if (PROFILE_AT && !profiled && Date.now() - t0 > PROFILE_AT * 1000) { profiled = true; race(profile(), 120000).catch(e => log('PROFILE_FAIL', String(e))); } // concurrent with clicks
   if (SHOT_AFTER && Date.now() - t0 > SHOT_AFTER * 1000) { try { await race(page.evaluate(() => { globalThis.__pxForce = true; return Object.keys(globalThis.pzGameCounts || {}).filter(k => /State#/.test(k)).join(' '); }).then(k => log('FORCE states:', k)), 60000); } catch (e) {} }
   try { res = await race(page.evaluate(() => { const S = globalThis.__px; return { frames: S.frames, attrs: S.attrs, viewports: S.viewports, canvas: S.canvas && [S.canvas.width, S.canvas.height], winEvents: (globalThis.pzRuntime?.window?.events || []).filter(e => /created|resized|init/.test(e.type)).slice(0, 8), shots: S.shots.length, out: S.shots.length >= 3 ? S.shots : null,
     renders: Object.entries(globalThis.pzGameCounts || {}).filter(([k]) => /MainScreenState#render/.test(k)) }; }), 90000); }

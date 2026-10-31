@@ -666,3 +666,9 @@ llegue a `NativeArena.free`). Sin stubs: los depthmaps se tienen que cargar de v
 - Agregado latch de presión (estilo GLFW_STICKY_MOUSE_BUTTONS) en input.mjs/window.mjs para que un press+release entre dos muestreos no se pierda.
 - r72d: Java recibe el botón 0 en estado presionado (`buttonTrue` 1→4→9 tras los clics), pero ACCEPT (ISTermsOfServiceUI:onButtonAccept → saveOptions → fromLua0("exit")) sigue sin dispararse y no hay errores nuevos en consola. El fallo está del lado Java/Lua (UIManager.updateMouseButtons → ISButton onMouseDown/onMouseUp, o saveOptions), no en el input del navegador.
 - Próximo: traza Java en UIManager.updateMouseButtons / Mouse.isButtonPressed y en el dispatch Lua de onMouseUp (requiere rebuild).
+
+## Ronda 73
+
+- Reporte real de Paolozky (Chrome propio, 8097): aviso de fotosensibilidad dibujado en el cuadrante inferior izquierdo y recortado. Causa: su pantalla es HiDPI; window.mjs multiplicaba el drawing buffer por devicePixelRatio mientras PZ/lwjglx dimensionan glViewport y la UI con el tamaño de ventana (Display.getWidth) → dibujo en 1/4 del canvas y coordenadas de cursor x2.
+- Fix (solo JS): buffer == tamaño de ventana (ratio 1) en create/setWindowSize/input.resize, contentScale 1, foco del canvas al crear la ventana (teclado).
+- Probe r73 con `PZ_DPR=2` (nuevo env en menu_pixels; perfil ahora concurrente con los clics): TOS ocupa todo el canvas y centrado. ACCEPT sigue sin dispararse aunque Java lee el botón presionado (trues 1→4→9) → falta traza Java en UIManager/ISButton (requiere rebuild).

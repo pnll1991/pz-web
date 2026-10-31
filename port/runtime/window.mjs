@@ -141,13 +141,14 @@ export class BrowserWindow {
     return down ? 1 : 0;
   }
   // --- GLFW window lifecycle (browser backend) ---
-  // The requested size is the CSS size; the drawing buffer multiplies by devicePixelRatio,
-  // which is what window/framebuffer size queries report back to the game.
+  // Drawing buffer == window size (ratio 1). PZ/lwjglx size glViewport and the UI from the window
+  // size (Display.getWidth), so a devicePixelRatio-scaled buffer drew the game into the lower-left
+  // quarter and doubled the cursor coordinates on HiDPI screens (Paolozky's Chrome, r73).
   create(width,height,monitor,title) {
     this.requireInit();
     if (monitor !== 0 && monitor !== 2) throw new Error(`Invalid browser monitor handle: ${monitor}`);
     if (width <= 0 || height <= 0) throw new Error(`Invalid browser window size: ${width}x${height}`);
-    const ratio = window.devicePixelRatio || 1;
+    const ratio = 1;
     this.size = [width, height];
     this.canvas.style.width = `${width}px`;
     this.canvas.style.height = `${height}px`;
@@ -159,6 +160,7 @@ export class BrowserWindow {
     this.created = true;
     this.title = title ?? '';
     this.cursor = [width / 2, height / 2];
+    this.canvas.focus?.();
     this.events.push({type:'created',backend:'browser',width,height,
       drawingBufferWidth:this.canvas.width,drawingBufferHeight:this.canvas.height,devicePixelRatio:ratio,
       title:this.title});
@@ -267,7 +269,7 @@ export class BrowserWindow {
   setWindowSize(handle,width,height) {
     this.requireWindow(handle);
     if (width <= 0 || height <= 0) throw new Error(`Invalid browser window size: ${width}x${height}`);
-    const ratio = window.devicePixelRatio || 1;
+    const ratio = 1;
     this.size = [width, height];
     this.canvas.style.width = `${width}px`;
     this.canvas.style.height = `${height}px`;
@@ -285,7 +287,7 @@ export class BrowserWindow {
   // device pixel ratio the canvas uses for its drawing buffer.
   frameMetric(handle,kind) { this.requireWindow(handle); return [0,0,0,0][kind]; }
   cursorMetric(handle,kind) { this.requireWindow(handle); return this.cursor[kind]; }
-  contentScale(handle) { this.requireWindow(handle); return window.devicePixelRatio || 1; }
+  contentScale(handle) { this.requireWindow(handle); return 1; }
   setAttrib(handle,attrib,value) {
     this.requireWindow(handle);
     switch (attrib) {
