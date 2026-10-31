@@ -779,3 +779,69 @@ Objetivo: Nueva partida -> spawn -> personaje -> mundo con jugador WASD. Puerto 
 - Otros pendientes vistos: `Bullet.setVehicleParams` al aparecer vehículos en chunks (no fatal; vehículos sin física),
   `ClipperOffset` en zonas, `CopyFrame` NPE (anims faltantes), avatar 3D invisible en la vista previa, listas sin recorte.
 - Tiempos (SwiftShader): menú ~5,5 min; NEW GAME->spawn ~1 min; carga del mundo 343 s (lotheaders por XHR ~160 s).
+
+## Ronda 80 (Code, 31/10) — Clipper, vehículos y pantalla negra
+Commits en `code/menu`: `acf5ac6` (nativas Clipper), `d80bc78` (`Bullet.setVehicleParams`), `f676527`
+(`glGenerateMipmap` + `glUniformMatrix` con transpose), `0b3f48f` (renombre de built-ins GLSL, `glColor*`,
+`glBlitFramebuffer`, pilas de atributos).
+- **PZClipper64 en Java**: las 13 nativas de `zombie.vehicles.Clipper` (incluida `n_init`) y las 6 de `ClipperOffset` en
+  `port/natives/ClipperEngine.java` y `port/natives/ClipperOffsetEngine.java`, sobre Clipper2-java 2.0.1 (BSL-1.0,
+  jitpack) + earcut4j 2.2.2 (ISC). `scripts/install_clipper_libs.sh` las instala en `.toolchain/m2` con sha256 fijado.
+  El transformer `port/compiler/ClipperNativeCompatibility.java` agrega un campo `port$engine` a las clases del juego y
+  reenvía las natives de instancia.
+  - Semántica tomada del bytecode de los consumidores (`CollideWithObstaclesPoly`, `FBORenderOcclusion`, `Zone`,
+    `WorldMapGeometry`, `IsoMetaGrid`, `VisibilityPolygon2`) y de un objdump local de `libPZClipper64.so` (no versionado):
+    - escala 1000: `floor(v*1000f+0.5f)`;
+    - buffers absolutos desde el índice 0, big-endian, sin tocar `position`; `BufferOverflowException` al pasar la
+      capacidad (`BufferUnderflowException` en la entrada);
+    - `FillRule.Positive` + `PolyTree`; offset con `ClipperOffset(2.0, 0.0)`, cerrados=`Polygon`, abiertos=`Butt`;
+      los resultados abiertos se agregan como polígonos sin agujeros;
+    - `clear()` solo descarta las entradas;
+    - `generateTriangulatePolygons` = celda 8x8 menos los anillos exteriores (EvenOdd);
+    - `triangulate` = (x,y) planos por índice de earcut, devuelve la cantidad de índices; `triangulate2` = `short`
+      vertexCount + vértices + índices `short`.
+  - El orden del enum `JoinType` difiere entre Clipper2-java y C++: se mapea por nombre.
+  - Test JVM `port/src/test/java/port/ClipperEngineTest.java`: 13/13.
+  - Resultado: Clipper ya no aborta `IngameState.enter`.
+- **Siguiente freno: `Bullet.setVehicleParams`** (`BaseVehicle.updateBulletStats`). `libPZBullet64`, para un id de
+  vehículo sin cuerpo, loguea `PZBullet::setVehicleParams> Vehicle not found. VehicleId:%d` y devuelve -1; `BulletWorld`
+  hace lo mismo (el llamador descarta el resultado).
+- **Después: `Bullet.addVehicle`** (`CarController.<init>` vía `BaseVehicle.createPhysics` en
+  `IsoChunk.doLoadGridsquare`). NO implementado: `getVehiclePhysics` devuelve cada frame un registro completo por vehículo
+  (transform de Bullet, velocidad, ruedas); un modelo de vehículo estacionado requeriría conversiones de coordenadas
+  derivadas, así que no se inventó. Para probar: Custom Sandbox con "Vehicles" destildado (opción del jugador en la UI, no
+  un cambio de código). Así `IngameState.enter` completa.
+- **Puente GL**: `glGenerateMipmap(GL_TEXTURE_2D)` -> `generateMipmap` de WebGL2; `glUniformMatrix*fv` con
+  `transpose=true` sube una copia transpuesta en CPU. Test `tests/node/gl-transpose.test.mjs`.
+- **Pantalla negra, causa 1 (GLSL)**: GLSL ES 3.00 prohíbe redeclarar built-ins y `media/shaders/util/math.glsl` del juego
+  define `max/min/clamp`. Log de ANGLE: `'max' : Name of a built-in function cannot be redeclared as function` (visto en
+  Chrome con `pzRuntime.gl.shaderTrail`). `ShaderProgram.compile` destruye el programa en silencio (`DebugType.Shader`
+  apagado), `Shader.onProgramCompiled` nunca corre, `matrixId` queda en 0 y `setMatrixPalette` -> "Unknown uniform
+  location 0". Fix: `glsl.mjs#renameBuiltinOverloads` renombra las sobrecargas del usuario a `pz_user_*` y reescribe las
+  llamadas según tipo; el conjunto de prototipos de `gl.mjs` incluye los nombres renombrados. Afectaba a 21 programas del
+  juego (basicEffect, floorTile, wallTile, fog, screen, blur, shaders de vehículos, ...). Tests
+  `tests/node/glsl-builtin-redeclare.test.mjs`.
+- **Pantalla negra, causa 2 (análisis estático)**: `GL11.glColor3f/4f` sin mapear lanzaba cada frame dentro de
+  `ItemModelRenderer.DoRender` / `IsoObjectModelDrawer.renderModel` después de `glPushAttrib/glPushClientAttrib` sin
+  `finally` -> las pilas se llenaban ("client attribute stack is full at 64"). Fix: color actual en el puente, aplicado con
+  `vertexAttrib4f` a `pzColor` cuando su array está deshabilitado; `GL_CURRENT_BIT` en push/pop; las pilas ahora registran
+  `GL_STACK_OVERFLOW/UNDERFLOW` (0x0503/0x0504) como en escritorio en vez de lanzar; `glBlitFramebuffer` mapeado.
+- Huecos conocidos de la revisión estática: modo inmediato `glBegin/glEnd` (`DeadBodyAtlas`, `WorldItemAtlas`), pila de
+  matrices de función fija (`ModelManager.RenderParticles`), estado de arrays habilitados por VAO; notas de revisión
+  (`typeOf` del tipo de retorno de llamadas a funciones de usuario en `glsl.mjs`; sugerencia de ubicación fija para
+  `pzColor`).
+- Diagnóstico agregado: `StartupProgress` `EXTRA_CLASSES` con `ShaderProgram` + `skinnedmodel.shader.Shader`; contadores
+  `uniformNames` en `gl.mjs`.
+- Tests: Node 68/68, inventario python OK, JVM `ClipperEngineTest` 13/13.
+- Proceso: un solo build de Maven y un solo Chrome a la vez (RAM); planes del driver en `/tmp/pzdNN/plan.txt`; secuencia
+  de clics del sandbox: Custom Sandbox (956,540) -> NEXT -> NEXT -> pestaña Vehicles (58,376) -> destildar (938,127).
+- Resultado de la corrida pzd86 (build e, Custom Sandbox sin vehículos):
+  - La UI de la partida se dibuja: Survival Guide, inventario, panel del personaje y "- Game Paused -"
+    (`~/pzshots/r86-after-d.png`, no versionada).
+  - Al cerrar la guía, el mundo mostró sólo un lavatorio 3D y rectángulos de contorno rojos/verdes sobre negro
+    (`r86-noguide.png`).
+  - `Display.update` quedó congelado en 5963: `glGetInteger(GL_CURRENT_PROGRAM)` usaba 0x8bad en vez de 0x8B8D;
+    `WeatherParticleDrawer` abortaba cada frame. Corregido en `d117493`.
+  - Errores de shaders restantes en esa corrida: `pow/clamp` con argumentos int, identificador `texture` reservado,
+    `ivec2*float`. Corregidos en `421a22d` (conversiones implícitas int->float y renombre de identificadores
+    reservados), sin probar en el juego al momento de esa corrida.

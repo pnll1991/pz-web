@@ -521,3 +521,27 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
   docs/notes-from-code.md, Ronda 79).
 - Simplificaciones documentadas de nativas: Lighting64 (luz ambiental, sin oclusión), PopMan64 (sin población virtual =
   sin zombis), BulletWorld (sin cuerpos), MapCollision64 (sin path tasks), pathfinder Java del juego vía debug-options.ini.
+
+## Ronda 80 (Code, 31/10) — Clipper, vehículos, pantalla negra
+- Fase: menú -> partida; `IngameState.enter` completa (con vehículos desactivados en Custom Sandbox). Commits `acf5ac6`,
+  `d80bc78`, `f676527`, `0b3f48f` en `code/menu`.
+- Evidencia: nativas Clipper (13) y ClipperOffset (6) en Java sobre Clipper2-java 2.0.1 + earcut4j 2.2.2
+  (`port/natives/ClipperEngine.java`, `ClipperOffsetEngine.java`); Clipper ya no aborta `IngameState.enter`.
+  `Bullet.setVehicleParams` responde como la librería ante un vehículo sin cuerpo (aviso y -1). Dos causas de la pantalla
+  negra corregidas en el puente GL: built-ins GLSL redeclarados por `math.glsl` (21 programas no compilaban) y
+  `glColor3f/4f` sin mapear que llenaba las pilas de atributos. Tests: Node 68/68, inventario python OK, JVM
+  `ClipperEngineTest` 13/13. Detalle en docs/notes-from-code.md, Ronda 80.
+- Resultado de la corrida pzd86 (build e, Custom Sandbox sin vehículos): la UI de la partida se dibuja (Survival Guide,
+  inventario, panel del personaje, "- Game Paused -"; `~/pzshots/r86-after-d.png`). Al cerrar la guía el mundo mostró
+  sólo un lavatorio 3D y rectángulos de contorno rojos/verdes sobre negro (`r86-noguide.png`). `Display.update` quedó
+  congelado en 5963: `glGetInteger(GL_CURRENT_PROGRAM)` usaba la constante errónea 0x8bad (corregido en `d117493`,
+  0x8B8D). Errores de shaders restantes: `pow/clamp` con argumentos int, identificador `texture`, `ivec2*float`
+  (corregidos en `421a22d`, sin probar en esa corrida). No se verificó todavía el mundo ni WASD.
+- Faltantes: `Bullet.addVehicle`/`getVehiclePhysics` (física de vehículos; no se inventó un modelo), modo inmediato
+  `glBegin/glEnd` (`DeadBodyAtlas`, `WorldItemAtlas`), pila de matrices de función fija (`ModelManager.RenderParticles`),
+  estado de arrays habilitados por VAO. Siguen las simplificaciones de Ronda 79 (Lighting64, PopMan64, BulletWorld,
+  MapCollision64).
+- Bloqueos: con vehículos activados, `Bullet.addVehicle` (`CarController.<init>` vía `BaseVehicle.createPhysics` en
+  `IsoChunk.doLoadGridsquare`) no está implementada.
+- Pasos manuales: para probar la partida, Custom Sandbox (956,540) -> NEXT -> NEXT -> pestaña Vehicles (58,376) ->
+  destildar "Vehicles" (938,127). Un solo build de Maven y un solo Chrome a la vez (RAM).
