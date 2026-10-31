@@ -686,3 +686,20 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Error de invocación: `unzip` de `projectzomboid.jar` con un patrón inexistente (`zombie/core/utilities/*.class`)
   abortaba la cadena con exit 11 y el `&&` cortaba el resto. Mejor enfoque: separar el `unzip` del
   resto con `;` y verificar `ls` después.
+
+## Ronda 79 (Code, 31/10) — media bajo demanda y camino a la partida
+- Error de proceso: las tareas en segundo plano del harness mueren a los 10 min por defecto; el dev server
+  de 8098 murió a mitad del arranque y el juego vio `XMLHttpRequest ... Failed to load` (parecía un bug
+  del VFS). Mejor enfoque: lanzar server y driver con timeout explícito largo (2 h).
+- Error de proceso: `pkill -f "node tools/diag/drive.mjs"` dentro de un `bash -c` cuyo texto contiene el
+  patrón mata al propio shell (exit 144). Mejor enfoque: `pgrep` + `kill PID` o el comando `quit` del driver.
+- Error de proceso: dos drivers compartiendo `/tmp/pzdrive` se pisan `cmd.txt`/`out.txt` (el viejo seguía
+  en un `until` largo y no leyó `quit`). Mejor enfoque: un directorio por corrida (`/tmp/pzdN`).
+- Error de proceso: `scripts/build.sh` borra `port/target/web/game/boot.wasm` al empezar; las direcciones
+  `fakeMethod(Throwable.java:N)` de una corrida solo se simbolizan con SU wasm. Mejor enfoque: copiar
+  `boot.wasm` a `/tmp/boot-<ronda>.wasm` antes de compilar y usar `tools/diag/wasm_addr.mjs`.
+- Patrón: exponer todo `media/` cambia caminos del juego: con `models_X/*.x|.fbx|.glb` visibles el
+  juego elige jassimp64 (nativa ausente) en vez del `.txt` montado. El manifest remoto excluye
+  `models_X/` y `anims_X/`.
+- Patrón: `children()` lineal sobre todo el VFS es O(N) por llamada; con 60k rutas es inviable.
+  Índice padre->hijos mantenido por subclases de Map/Set (`ChildIndex`).

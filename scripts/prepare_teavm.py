@@ -1088,6 +1088,46 @@ def patch_fiber():
     print("TeaVM: fiber object-stack growth no longer goes through the async Arrays.copyOf(T[],int)")
     print("TeaVM: AsyncCallbackImpl resumes through EventQueue instead of nesting start() in another fiber")
 
+def patch_default_path():
+    """java.nio.file.Path.normalize() must accept relative paths.
+
+    Round 79, measured in Chrome (symbolized with tools/diag/wasm_addr.mjs): the game's
+    LuaManager$GlobalObject.reloadLuaFile -> ZomboidFileSystem.validatePrefix -> normalizeToPath
+    calls Paths.get("media/maps/Muldraugh, KY/spawnpoints.lua").normalize(). Upstream
+    TDefaultPath.normalize copies every kept segment together with its leading separator from
+    start - 1; for the first segment of a relative path start == 0, so String.getChars(-1, ...)
+    throws IndexOutOfBoundsException and the spawn-point list never loads. The JDK returns the
+    relative path unchanged. Absolute paths and ".." handling are unchanged.
+    """
+    archive = ROOT / f".toolchain/downloads/teavm-classlib-{VERSION}-sources.jar"
+    digest = "da6f83c1436c87a9ad683b6143aaa9c172b08c3974c9a7d5741a479d0d60092e"
+    if hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
+        raise RuntimeError("TeaVM path source digest mismatch")
+    path = "org/teavm/classlib/java/nio/file/impl/TDefaultPath.java"
+    with zipfile.ZipFile(archive) as package:
+        source = package.read(path).decode("utf-8")
+    old = """                resultSegments[resultSegmentIndex++] = resultIndex;
+                pathString.getChars(start - 1, end, result, resultIndex);
+                resultIndex += end - start + 1;"""
+    new = """                resultSegments[resultSegmentIndex++] = resultIndex;
+                if (resultIndex == 0 && !abs) {
+                    // First kept segment of a relative path: there is no separator before it.
+                    pathString.getChars(start, end, result, 0);
+                    resultIndex = end - start;
+                } else {
+                    result[resultIndex++] = fs.getSeparatorChar();
+                    pathString.getChars(start, end, result, resultIndex);
+                    resultIndex += end - start;
+                }"""
+    if source.count(old) != 1:
+        raise RuntimeError("Unexpected TeaVM path source shape")
+    source = source.replace(old, new)
+    destination = ROOT / "port/target/generated-sources/teavm" / path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("// Local change: normalize() of relative paths (no separator before the first segment).\n" + source)
+    print(f"TeaVM {VERSION}: Path.normalize accepts relative paths; source SHA-256 {digest}")
+
+
 def main():
     archive = ROOT / f".toolchain/downloads/teavm-core-{VERSION}-sources.jar"
     if not archive.exists():
@@ -1120,6 +1160,7 @@ def main():
     patch_monitor()
     patch_console()
     patch_inflater()
+    patch_default_path()
     patch_fiber()
 
 
