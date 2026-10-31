@@ -740,3 +740,21 @@ Objetivo: Nueva partida -> spawn -> personaje -> mundo con jugador WASD. Puerto 
   - `PopMan64`: entradas in-world aceptadas; **sin población virtual** (no se crean zombis desde la densidad del mapa).
   - Pathfinding: `/Zomboid/debug-options.ini` con `Pathfind.UseNativeCode=false` (lo escribe `game.mjs` si no existe):
     `IsoWorld.init` usa entonces el pathfinder Java del propio juego (`PolygonalMap2`).
+- Más frenos resueltos (en orden de aparición):
+  5. Lecturas remotas devolvían 200 (archivo entero): Chrome revalida su entrada parcial con `If-Range` + ETag débil.
+     URL única por bloque (`?r=a-b`) + `Cache-Control: no-store`. Probado aislado en Chrome.
+  6. `TZipFile` de TeaVM: EOFException al inflar entradas raw; parche `patch_zip_inflater_stream` (byte ficticio
+     final, igual que `java.util.zip.ZipFile`). Con esto **la selección de spawn se ve completa** (mapa de Muldraugh).
+  7. GL del mapa: binding de ELEMENT_ARRAY_BUFFER es por VAO (se consulta a WebGL2), `glEnable/DisableClientState`,
+     `GL_VERTEX_ARRAY`+`glVertexPointer` -> `pzVertex` en ubicación fija 15, `GL_QUADS` emulado con triángulos.
+  8. Profesión/rasgos OK. Avatar: trampa en `AnimationPlayer.updateModelTransformsInternal` por esqueletos `.txt`
+     con 3 raíces; `x_anim_to_txt.py` ahora deja una sola raíz (como `Bob_Sprint.txt`) y `tools/pack/overlay.py`
+     reapunta las entradas del índice de packs a un blob nuevo (índice previo en `index.json.prev`).
+  9. GLSL: inicializadores de uniform con aritmética constante (`1.0 / 64.0`); `glFramebufferTexture2D(...,0,...)`
+     desacopla. Pantalla de personalización OK (el avatar 3D aún no se ve en la vista previa).
+  10. PLAY -> `GameLoadingState` ("THESE ARE THE END-TIMES"). `IsoMetaGrid.Create` tarda ~150 s (4k lotheaders por
+      XHR). `ObjectIDManager.createObjectID` necesitaba constructores reflejables de `ObjectID$*`.
+  11. Trampa wasm por NPE en `InventoryItem.getActualWeightUnmodded` (ítem con `name` nulo creado desde Lua). En la JVM
+      es una excepción capturable; se activa `TeaVMTool.setStrict(true)` para el juego.
+- Pendientes vistos: listas de rasgos sin recorte (scissor/stencil), ropa/pelo sin modelo (`models_X` excluido),
+  `AnimNode` XML con JAXB `NoSuchMethodException`, `options.ini` no se puede guardar (montado de solo lectura).

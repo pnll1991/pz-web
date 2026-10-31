@@ -28,6 +28,28 @@ public final class MapCollision64 {
     public static void setGameState(String key, double value) { publishFloat(key, (float) value, "double"); }
     public static void setGameState(String key, String value) { publishString(key, value, "string"); }
 
+    // ---- Round 79: world-load entry points -------------------------------------------------
+    // The collision grid feeds the C++ library's own zombie path tasks (n_pathTask). This module keeps
+    // the grid geometry and counts the chunk/square updates it receives, has no asynchronous work, and
+    // n_pathTask raises: with no virtual population (PopMan64) nothing in the minimal world asks for it,
+    // and answering without a collision model would invent paths.
+    private static int gridMinX, gridMinY, gridWidth, gridHeight, metaCells, chunkUpdates, squareUpdates;
+    private static boolean stopped;
+    public static void init(int a, int b, int c, int d) { stopped = false; }
+    public static void initMetaGrid(int minX, int minY, int maxX, int maxY) { gridMinX = minX; gridMinY = minY; gridWidth = maxX - minX + 1; gridHeight = maxY - minY + 1; }
+    public static void initMetaCell(int x, int y, String file) { metaCells++; }
+    public static void initMetaChunk(int a, int b, int c, int d, int e) { }
+    public static void chunkUpdateTask(int wx, int wy, byte[] data) { chunkUpdates++; }
+    public static void squareUpdateTask(int count, java.nio.ByteBuffer data) { squareUpdates++; }
+    public static int pathTask(int x1, int y1, int x2, int y2, int[] out) {
+        throw new UnsupportedOperationException("Java_zombie_MapCollisionData_n_1pathTask: collision path tasks are not implemented in the browser");
+    }
+    public static boolean hasDataForThread() { return false; }
+    public static boolean shouldWait() { return false; }
+    public static void update() { }
+    public static void save() { }
+    public static void stop() { stopped = true; }
+
     /** Number of recorded keys, for a Playwright assertion that the settings really arrived. */
     public static int recordedKeys() { return keyCount(); }
 

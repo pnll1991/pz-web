@@ -58,6 +58,11 @@ public final class MapCollisionStateCompatibility implements ClassHolderTransfor
         "n_setGameState(Ljava/lang/String;Ljava/lang/String;)V", new MethodDescriptor("setGameState",
             ValueType.object("java.lang.String"), ValueType.object("java.lang.String"), ValueType.VOID));
 
+    private static final java.util.Set<String> WORLD = java.util.Set.of(
+        "n_init(IIII)V", "n_initMetaGrid(IIII)V", "n_initMetaCell(IILjava/lang/String;)V", "n_initMetaChunk(IIIII)V",
+        "n_chunkUpdateTask(II[B)V", "n_squareUpdateTask(ILjava/nio/ByteBuffer;)V", "n_pathTask(IIII[I)I",
+        "n_hasDataForThread()Z", "n_shouldWait()Z", "n_update()V", "n_save()V", "n_stop()V");
+
     @Override public void transformClass(ClassHolder cls, ClassHolderTransformerContext context) {
         if (!cls.getName().equals(CLASS)) return;
         for (MethodHolder method : cls.getMethods()) {
@@ -65,6 +70,9 @@ public final class MapCollisionStateCompatibility implements ClassHolderTransfor
             String key = method.getName() + descriptor.signatureToString();
             if (!inventoriedNatives.contains(key)) continue;
             MethodDescriptor target = FORWARDED.get(key);
+            // Round 79: world-load entry points, forwarded as n_<name> -> <name> with the same descriptor.
+            if (target == null && WORLD.contains(key))
+                target = MethodDescriptor.parse(key.substring(2));
             if (target == null) continue;
             if (!method.hasModifier(ElementModifier.STATIC))
                 throw new IllegalStateException("MapCollisionData native must be static: " + key);
