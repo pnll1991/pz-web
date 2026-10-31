@@ -30,8 +30,8 @@ public final class PopMan64 {
     private static boolean singlePlayer;
     private static int gridWidth;
     private static int gridHeight;
-    private static int chunkWidth;
-    private static int chunkHeight;
+    private static int gridMinX;
+    private static int gridMinY;
     private static final Map<String, Float> floats = new HashMap<>();
     private static final Map<String, Integer> ints = new HashMap<>();
     private static int[] spawnOrigins;
@@ -43,17 +43,18 @@ public final class PopMan64 {
         NativeRegistry.publish("PZPopMan64", "installed", null);
     }
 
-    public static void init(boolean debugLogging, boolean singlePlayerMode, int width, int height, int chunkW, int chunkH) {
-        if (stopped) throw new IllegalStateException("PZPopMan64.n_init: the module was stopped");
-        if (width <= 0 || height <= 0 || chunkW <= 0 || chunkH <= 0)
-            throw new IllegalArgumentException("PZPopMan64.n_init: grid and chunk sizes must be positive, got "
-                + width + "x" + height + ", chunk " + chunkW + "x" + chunkH);
+    /** Round 79: the real arguments (javap of ZombiePopulationManager.init) are the metagrid cell
+     * bounds minX, minY, width, height; the minimum may be negative (-250 on Muldraugh). */
+    public static void init(boolean debugLogging, boolean singlePlayerMode, int minX, int minY, int width, int height) {
+        if (width <= 0 || height <= 0)
+            throw new IllegalArgumentException("PZPopMan64.n_init: metagrid size must be positive, got " + width + "x" + height);
+        stopped = false;
         debugZombies = debugLogging;
         singlePlayer = singlePlayerMode;
         gridWidth = width;
         gridHeight = height;
-        chunkWidth = chunkW;
-        chunkHeight = chunkH;
+        gridMinX = minX;
+        gridMinY = minY;
         initialized = true;
         NativeRegistry.publish("PZPopMan64", "initialized", "init");
     }
@@ -187,8 +188,8 @@ public final class PopMan64 {
     public static boolean isStopped() { return stopped; }
     public static int gridWidth() { return gridWidth; }
     public static int gridHeight() { return gridHeight; }
-    public static int chunkWidth() { return chunkWidth; }
-    public static int chunkHeight() { return chunkHeight; }
+    public static int gridMinX() { return gridMinX; }
+    public static int gridMinY() { return gridMinY; }
     public static int spawnOriginCount() { return spawnOrigins == null ? 0 : spawnOrigins.length / 2; }
     public static int outfitNameCount() { return outfitNames == null ? 0 : outfitNames.length; }
     public static Float floatConfig(String name) { return floats.get(name); }
