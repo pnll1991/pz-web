@@ -85,6 +85,10 @@ public final class ReflectionConfiguration extends SimpleReflectionPolicy {
             // names filter hid them ("missing no-arg constructor"); the factories reach every subclass.
             selectClasses(cls -> cls != null && extendsAny(cls, COMPONENT_BASES))
                 .reflectableMethods(method -> method.isConstructor() && method.parameters().isEmpty());
+            // Round 79: ObjectIDManager.createObjectID does ObjectIDType.type.getDeclaredConstructor(ObjectIDType.class)
+            // for ObjectID$ObjectIDShort/ObjectIDInteger (IsoZombie.registerECSComponents during IsoWorld.init).
+            selectClasses(cls -> cls != null && extendsAny(cls, java.util.Set.of("zombie.network.id.ObjectID")))
+                .reflectableMethods(method -> method.isConstructor());
         } catch (IOException error) {
             throw new IllegalStateException("Cannot read reflection configuration", error);
         }
