@@ -24,6 +24,19 @@ function constant(node) {
     if (node.operator.literal === '-') return -value;
     if (node.operator.literal === '+') return value;
   }
+  if (node.type === 'group') return constant(node.expression);
+  if (node.type === 'binary') {
+    // Round 79: constant arithmetic in desktop uniform initializers (e.g. 1.0/255.0); scalars and
+    // vectors combine component-wise like GLSL.
+    const a = constant(node.left), b = constant(node.right), op = node.operator.literal;
+    const f = { '+': (x, y) => x + y, '-': (x, y) => x - y, '*': (x, y) => x * y, '/': (x, y) => x / y }[op];
+    if (f) {
+      if (Array.isArray(a) && Array.isArray(b) && a.length === b.length) return a.map((x, i) => f(x, b[i]));
+      if (Array.isArray(a) && !Array.isArray(b)) return a.map(x => f(x, b));
+      if (!Array.isArray(a) && Array.isArray(b)) return b.map(y => f(a, y));
+      if (!Array.isArray(a) && !Array.isArray(b)) return f(a, b);
+    }
+  }
   if (node.type === 'function_call') {
     const type = node.identifier.specifier?.token ?? node.identifier.identifier;
     const args = node.args.filter(n=>n.type !== 'literal' || n.literal !== ',').map(constant).flat();

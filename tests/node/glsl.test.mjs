@@ -81,3 +81,10 @@ test('non-constant global initializers move into main() (GLSL ES 3.00 forbids th
   assert.equal(lib.hasMain, false);
   assert.deepEqual(lib.globalInits, ['p = Uniform[0].xy;']);
 });
+
+// Round 79: SmartTexture's shader has `uniform float maskPaddingRadius = 1.0 / 64.0;`.
+test('constant arithmetic in uniform initializers is folded', () => {
+  const result = translateShader('#version 120\nuniform float r = 1.0 / 64.0;\nuniform vec2 v = vec2(1.0, 2.0) * (2.0 - 1.0);\nvoid main(){gl_FragColor=vec4(r,v,1.0);}', 'fragment');
+  assert.deepEqual(result.uniformDefaults.find(u => u.name === 'r').value, 1 / 64);
+  assert.deepEqual(result.uniformDefaults.find(u => u.name === 'v').value, [1, 2]);
+});
