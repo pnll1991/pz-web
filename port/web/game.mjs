@@ -51,6 +51,18 @@ try {
   canvas.hidden = false;
   const vfs = await new VirtualFileSystem().open();
   await preloadPacks(vfs);
+  // Round 79: the rest of PZ_HOME/media (maps are 4.3 GB) is read on demand from the local dev
+  // server; the manifest only lists names and sizes. '?remote=0' keeps the packs-only behaviour.
+  if (new URLSearchParams(location.search).get('remote') !== '0') {
+    const manifest = await fetch('/media-manifest.json');
+    if (!manifest.ok) throw new Error(`media manifest HTTP ${manifest.status}`);
+    const listed = await manifest.json();
+    if (listed.schema_version !== 1 || !Array.isArray(listed.files)) throw new Error('Unsupported media manifest');
+    // models_X/anims_X hold .x/.fbx/.glb meshes that only the jassimp64 native can read; the boot
+    // packs carry the game's own .txt mesh/anim format instead (round 60), so those trees stay hidden.
+    const assimpOnly = /^(models_X|anims_X)\//;
+    globalThis.pzRemoteMedia = vfs.attachRemote(listed.files.filter(([name]) => !assimpOnly.test(name)));
+  }
   // Round 43: KahluaUtil.setupLibraryText opens new FileInputStream(new File("stdlib.lua")
   // .getAbsoluteFile()), which resolves to the VFS root "/stdlib.lua". Those bytes are the pinned
   // classpath resource the dev server already serves from PZ_HOME (sha256 583c2949...31eb for

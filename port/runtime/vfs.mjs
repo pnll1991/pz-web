@@ -37,6 +37,33 @@ const ringTrace = (label) => {
   if (t.length > 400) t.splice(0, t.length - 400);
 };
 
+// Round 79: parent -> child names, kept in step with every file/directory mutation, so children()
+// no longer scans the whole tree (with the on-demand media manifest that is ~60k paths per call).
+class ChildIndex {
+  constructor(owner) { this.owner = owner; this.map = new Map(); }
+  link(path) {
+    if (path === '/') return;
+    const dir = parent(path); let set = this.map.get(dir);
+    if (!set) this.map.set(dir, set = new Set());
+    set.add(path.slice(path.lastIndexOf('/') + 1));
+  }
+  unlink(path) {
+    const o = this.owner;
+    if (path === '/' || o.files.has(path) || o.directories.has(path) || o.remote?.has(path)) return;
+    this.map.get(parent(path))?.delete(path.slice(path.lastIndexOf('/') + 1));
+  }
+}
+class IndexedMap extends Map {
+  constructor(index) { super(); this.index = index; }
+  set(key, value) { const fresh = !this.has(key); super.set(key, value); if (fresh) this.index.link(key); return this; }
+  delete(key) { const removed = super.delete(key); if (removed) this.index.unlink(key); return removed; }
+}
+class IndexedSet extends Set {
+  constructor(index, values) { super(); this.index = index; for (const v of values) this.add(v); }
+  add(value) { const fresh = !this.has(value); super.add(value); if (fresh) this.index.link(value); return this; }
+  delete(value) { const removed = super.delete(value); if (removed) this.index.unlink(value); return removed; }
+}
+
 /** Preloaded synchronous reads, writable /Zomboid, atomic IndexedDB snapshots. */
 export class VirtualFileSystem {
   // Round 52: raised from 256 MB. Verified in the pinned bytecode (javap -p -c zombie.core.Core:
@@ -46,11 +73,83 @@ export class VirtualFileSystem {
   // blob bytes once instead of blob + copies.
   constructor({ name = 'pz-web-saves-v1', maxBytes = 512 * 1024 * 1024 } = {}) {
     this.name = name; this.maxBytes = maxBytes;
-    this.files = new Map(); this.database = null; this.pending = Promise.resolve();
-    this.directories = new Set(['/', '/media', '/Zomboid']);
+    this.childIndex = new ChildIndex(this);
+    this.files = new IndexedMap(this.childIndex); this.database = null; this.pending = Promise.resolve();
+    this.directories = new IndexedSet(this.childIndex, ['/', '/media', '/Zomboid']);
     this.metadata = new Map();
     this.readOnlyMounted = new Set();
     this.listeners = new Set();
+    // Round 79: read-only files of PZ_HOME/media that are not preloaded from a pack. Their bytes are
+    // read on demand with synchronous Range requests (the game's java.io is synchronous) and kept in
+    // a bounded block cache. Paths and sizes come from the dev server's /media-manifest.json.
+    this.remote = new Map(); this.remoteBase = '/media/';
+    this.blockCache = new Map(); this.blockCacheBytes = 0; this.blockCacheMax = 384 * 1024 * 1024;
+    this.remoteStats = { requests:0, bytes:0, ms:0 };
+  }
+  /** Round 79: register the on-demand media files. Pack-mounted files keep priority. */
+  attachRemote(entries, base = '/media/') {
+    this.remoteBase = base;
+    for (const [relative, size] of entries) {
+      const path = normalizePath('/media/' + relative);
+      if (this.files.has(path) || this.directories.has(path) || !Number.isSafeInteger(size) || size < 0) continue;
+      this.remote.set(path, size); this.childIndex.link(path);
+      for (let dir = parent(path); !this.directories.has(dir); dir = parent(dir)) {
+        this.directories.add(dir);
+        this.metadata.set(dir, { directory:true, modified:0, readOnly:true });
+      }
+    }
+    return this.remote.size;
+  }
+  isRemote(path) { return !this.files.has(path) && this.remote.has(path); }
+  /** 0 missing, 1 file, 2 directory (the java.io shim's contract). */
+  kind(path) { return this.directories.has(path) ? 2 : (this.files.has(path) || this.remote.has(path) ? 1 : 0); }
+  size(path) { const b = this.files.get(path); return b ? b.length : (this.remote.get(path) ?? 0); }
+  /** Synchronous Range GET of [start, end) of a remote media file. */
+  fetchRange(path, start, end) {
+    const t0 = performance.now();
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', this.remoteBase + path.slice('/media/'.length).split('/').map(encodeURIComponent).join('/'), false);
+    xhr.overrideMimeType('text/plain; charset=x-user-defined');
+    xhr.setRequestHeader('Range', `bytes=${start}-${end - 1}`);
+    xhr.send();
+    if (xhr.status !== 206 && !(xhr.status === 200 && start === 0)) throw new Error(`EIO: ${path} HTTP ${xhr.status}`);
+    const text = xhr.responseText, n = Math.min(text.length, end - start);
+    if (n !== end - start) throw new Error(`EIO: short read ${path} ${n}/${end - start}`);
+    const out = new Uint8Array(n);
+    for (let i = 0; i < n; i++) out[i] = text.charCodeAt(i) & 0xff;
+    const s = this.remoteStats; s.requests++; s.bytes += n; s.ms += performance.now() - t0;
+    return out;
+  }
+  remoteBlock(path, index) {
+    const BLOCK = 1 << 20, key = path + '#' + index;
+    let block = this.blockCache.get(key);
+    if (block) { this.blockCache.delete(key); this.blockCache.set(key, block); return block; }
+    const size = this.remote.get(path), start = index * BLOCK;
+    block = this.fetchRange(path, start, Math.min(size, start + BLOCK));
+    this.blockCache.set(key, block); this.blockCacheBytes += block.length;
+    for (const [k, b] of this.blockCache) {
+      if (this.blockCacheBytes <= this.blockCacheMax) break;
+      this.blockCache.delete(k); this.blockCacheBytes -= b.length;
+    }
+    return block;
+  }
+  readRemoteInto(path, position, target) {
+    const BLOCK = 1 << 20, size = this.remote.get(path);
+    const count = Math.min(target.length, Math.max(0, size - position));
+    // Large sequential reads skip the cache: one request straight into the caller's buffer.
+    if (count > 4 * BLOCK) { target.set(this.fetchRange(path, position, position + count)); return count; }
+    let done = 0;
+    while (done < count) {
+      const at = position + done, block = this.remoteBlock(path, Math.floor(at / BLOCK)), offset = at % BLOCK;
+      const n = Math.min(count - done, block.length - offset);
+      target.set(block.subarray(offset, offset + n), done); done += n;
+    }
+    return count;
+  }
+  readRemoteFile(path) {
+    const size = this.remote.get(path), out = new Uint8Array(size), CHUNK = 16 << 20;
+    for (let at = 0; at < size; at += CHUNK) out.set(this.fetchRange(path, at, Math.min(size, at + CHUNK)), at);
+    return out;
   }
   onChange(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   changed(path, operation) { for (const listener of [...this.listeners]) listener(path, operation); }
@@ -158,7 +257,7 @@ export class VirtualFileSystem {
     ringTrace(`vfs#mountView ${path} bytes=${length}`);
   }
   isReadOnlyMounted(path) { return this.readOnlyMounted.has(normalizePath(path)); }
-  exists(path) { path = normalizePath(path); return this.files.has(path) || this.directories.has(path); }
+  exists(path) { path = normalizePath(path); return this.files.has(path) || this.directories.has(path) || this.remote.has(path); }
   isDirectory(path) { return this.directories.has(normalizePath(path)); }
   canWrite(path) {
     path = normalizePath(path);
@@ -182,8 +281,7 @@ export class VirtualFileSystem {
   children(path) {
     path = normalizePath(path);
     if (!this.isDirectory(path)) return null;
-    return [...this.directories, ...this.files.keys()].filter(p => p !== path && parent(p) === path)
-      .map(p => p.slice(p.lastIndexOf('/') + 1)).sort();
+    return [...(this.childIndex.map.get(path) ?? [])].sort();
   }
   lastModified(path) { return this.metadata.get(normalizePath(path))?.modified ?? 0; }
   setAttribute(path, key, value) {
@@ -204,12 +302,19 @@ export class VirtualFileSystem {
   }
   readFile(path) {
     path = normalizePath(path);
-    if (!this.files.has(path)) { this.noteMissing(path); throw new Error(`ENOENT: ${path}`); }
+    if (!this.files.has(path)) {
+      if (this.remote.has(path)) return this.readRemoteFile(path);
+      this.noteMissing(path); throw new Error(`ENOENT: ${path}`);
+    }
     return this.files.get(path).slice();
   }
   readInto(path, position, target) {
     path = normalizePath(path);
     const bytes = this.files.get(path);
+    if (!bytes && this.remote.has(path)) {
+      if (!Number.isSafeInteger(position) || position < 0) throw new Error('Invalid file offset');
+      return this.readRemoteInto(path, position, target);
+    }
     if (!bytes) { this.noteMissing(path); throw new Error(`ENOENT: ${path}`); }
     if (!Number.isSafeInteger(position) || position < 0) throw new Error('Invalid file offset');
     const count = Math.min(target.length, Math.max(0, bytes.length - position));

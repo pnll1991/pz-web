@@ -58,11 +58,23 @@ public final class NativeModuleCompatibility implements ClassHolderTransformer {
             Map.entry("n_save()V", new MethodDescriptor("save", ValueType.VOID)),
             Map.entry("n_saveCell(II)V", new MethodDescriptor("saveCell",
                 ValueType.INTEGER, ValueType.INTEGER, ValueType.VOID)),
-            Map.entry("n_stop()V", new MethodDescriptor("stop", ValueType.VOID)))),
+            Map.entry("n_stop()V", new MethodDescriptor("stop", ValueType.VOID)),
+            // Round 79: in-world entry points (n_<name> -> <name>, same descriptor).
+            same("n_updateMain(FD)V"), same("n_updateThread()V"), same("n_addZombie(FFFBIIIII)V"),
+            same("n_registerZombie(FFFBIII)I"), same("n_releaseZombie(I)V"), same("n_aggroTarget(III)V"),
+            same("n_loadChunk(IIZ)V"), same("n_loadedAreas(I[IZ)V"), same("n_updateRealZombies(I[I[F)V"),
+            same("n_spawnHorde(IIIIFFI)V"), same("n_worldSound(IIII)V"), same("n_getAddZombieCount()I"),
+            same("n_getAddZombieData(ILjava/nio/ByteBuffer;)I"), same("n_hasRadarData()Z"),
+            same("n_requestRadarData()V"), same("n_getRadarZombieData([F)I"))),
         CLIPPER, new Spec("port.natives.Clipper2", Map.of(
             "n_init()V", new MethodDescriptor("init", ValueType.VOID))),
         PATHFIND, new Spec("port.natives.PathFind64", Map.of(
             "freeMemoryAtExit()V", new MethodDescriptor("freeMemoryAtExit", ValueType.VOID))));
+
+    private static Map.Entry<String, MethodDescriptor> same(String key) {
+        MethodDescriptor parsed = MethodDescriptor.parse(key);
+        return Map.entry(key, MethodDescriptor.parse(parsed.getName().substring(2) + key.substring(key.indexOf('('))));
+    }
 
     // name+descriptor -> the inventory entries of the classes we forward
     private final Map<String, Set<String>> inventoried = new java.util.HashMap<>();

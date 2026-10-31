@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { classpathResources } from './classpath.mjs';
 import { createHash } from 'node:crypto';
-import { realpath, stat, open, readFile } from 'node:fs/promises';
+import { realpath, stat, open, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
@@ -38,6 +38,19 @@ export function parseRange(value, size) {
   return { start, end };
 }
 
+/** Round 79: [[path relative to media/, size], ...] for every regular file (symlinks followed only inside media). */
+async function buildManifest(mediaRoot) {
+  const out = [];
+  async function walk(dir, rel) {
+    for (const entry of await readdir(dir, { withFileTypes:true })) {
+      const full = path.join(dir, entry.name), name = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) await walk(full, name);
+      else if (entry.isFile()) out.push([name, (await stat(full)).size]);
+    }
+  }
+  await walk(mediaRoot, '');
+  return JSON.stringify({ schema_version:1, files:out });
+}
 function inside(parent, child) {
   const relative = path.relative(parent, child);
   return !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
@@ -67,6 +80,7 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
     if (!inside(home, mediaRoot)) throw new Error('PZ_HOME/media must stay inside the pinned copy');
   }
   const resources = await classpathResources(resourceRoots);
+  let manifest = null;
   const server = http.createServer(async (req, res) => {
     const respond = (status, message = '', extra = {}) => {
       res.writeHead(status, { ...headers, 'Content-Type': 'text/plain; charset=utf-8', ...extra });
@@ -89,6 +103,13 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
         res.writeHead(200, { ...headers, 'Content-Type': 'application/json' });
         res.end(req.method === 'HEAD' ? undefined : JSON.stringify({ mode: 'platform-smoke', gameMounted: !!mediaRoot }));
         return;
+      }
+      if (pathname === '/media-manifest.json') { // Round 79: every PZ_HOME/media file with its size, for on-demand reads
+        if (!mediaRoot) { respond(404, 'PZ_HOME not mounted'); return; }
+        manifest ??= buildManifest(mediaRoot);
+        const body = await manifest;
+        res.writeHead(200, { ...headers, 'Content-Type':'application/json', 'Content-Length':Buffer.byteLength(body) });
+        res.end(req.method === 'HEAD' ? undefined : body); return;
       }
       if (pathname === '/classpath/lookup') {
         const name = new URL(req.url, `http://${authority}`).searchParams.get('name');

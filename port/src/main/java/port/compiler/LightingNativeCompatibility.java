@@ -48,6 +48,21 @@ public final class LightingNativeCompatibility implements ClassHolderTransformer
         "DoLightingUpdateNew(JZ)V", new MethodDescriptor("doLightingUpdate", ValueType.LONG, ValueType.BOOLEAN, ValueType.VOID),
         "destroy()V", new MethodDescriptor("destroy", ValueType.VOID));
 
+    // Round 79: natives forwarded to a Lighting64 method with the identical name and descriptor.
+    private static final Set<String> SAME_NAME = Set.of(
+        "scrollLeft(I)V", "scrollRight(I)V", "scrollUp(I)V", "scrollDown(I)V",
+        "stateBeginUpdate(IIIII)V", "stateEndFrame(FFFFFFFZFI)V", "stateEndUpdate()V", "stateUpdateCounter(I)I",
+        "teleport(III)V", "playerSet(FFFFFZZZZFFF)V", "chunkLightingDone(II)Z", "getChunkDirty(IIII)Z",
+        "chunkBeginUpdate(IIII)V", "chunkEndUpdate()V", "chunkLevelBeginUpdate(I)V", "chunkLevelEndUpdate()V",
+        "squareSetNull(III)V", "squareBeginUpdate(III)V", "squareSet(IZZZIJJIZ)V",
+        "squareSetLightTransmission(FFFFFFFFFFFFFFFFFFFF)V", "squareAddCurtain(IZ)V", "squareAddDoor(ZZZ)V",
+        "squareAddThumpable(ZZZZ)V", "squareAddWindow(ZZZ)V", "squareEndUpdate()V",
+        "getVertLight(IIIII)I", "getLightInfo(IIIII)F", "getDarkMulti(IIII)F", "getTargetDarkMulti(IIII)F",
+        "getSeen(IIII)Z", "getCanSee(IIII)Z", "getCouldSee(IIII)Z", "getSquareLighting(IIII[I)Z", "getSquareDirty(IIII)Z",
+        "addLight(IIIIIFFFIZ)V", "addTempLight(IIIIIFFFI)V", "removeLight(I)V", "setLightActive(IZ)V",
+        "setLightColor(IFFF)V", "addRoomLight(IJJIIIIIZ)V", "removeRoomLight(I)V", "setRoomLightActive(IZ)V",
+        "updateTorch(IFFFFFFFFFFZFI)V", "removeTorch(I)V", "getVisibleRoomCount(I)I", "getVisibleRooms(I[J)I");
+
     @Override public void transformClass(ClassHolder cls, ClassHolderTransformerContext context) {
         if (!cls.getName().equals(CLASS)) return;
         for (var method : cls.getMethods()) {
@@ -55,6 +70,8 @@ public final class LightingNativeCompatibility implements ClassHolderTransformer
             String key = method.getName() + descriptor.signatureToString();
             if (!inventoriedNatives.contains(key)) continue;
             MethodDescriptor target = FORWARDED.get(key);
+            // Round 79: every other native our module implements under its own JNI name and descriptor.
+            if (target == null && SAME_NAME.contains(key)) target = MethodDescriptor.parse(key);
             if (target == null) continue;
             if (!method.hasModifier(ElementModifier.STATIC)) throw new IllegalStateException("LightingJNI native must be static: " + key);
             method.getModifiers().remove(ElementModifier.NATIVE);

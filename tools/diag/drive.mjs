@@ -18,6 +18,17 @@ page.on('console', m => appendFileSync(`${D}/console.txt`, m.text().slice(0, 200
 page.on('pageerror', e => log('PAGEERROR', String(e.stack || e.message).slice(0, 1500).replace(/\n/g, ' | ')));
 await page.goto(`http://127.0.0.1:${PORT}/game.html?maplog=1`, { waitUntil: 'domcontentloaded' });
 log('LOADED');
+// Round 79: heartbeat every 30 s (independent of the command queue) so a stalled boot is visible.
+setInterval(async () => {
+  try {
+    const h = await Promise.race([page.evaluate(() => {
+      const c = globalThis.pzGameCounts || {}, r = globalThis.pzRuntime;
+      const top = Object.entries(c).filter(([k]) => k.endsWith(':returned')).sort((a, b) => b[1] - a[1]).length;
+      return { phase: globalThis.pzGame?.phase, keys: top, remote: r?.vfs?.remoteStats, missing: (r?.missingPaths || []).slice(-3) };
+    }), new Promise(res => setTimeout(() => res('evaluate-timeout'), 20000))]);
+    log('HEARTBEAT', JSON.stringify(h).slice(0, 600));
+  } catch (e) { log('HEARTBEAT-FAIL', String(e).slice(0, 200)); }
+}, 30000);
 let done = 0;
 for (;;) {
   await page.waitForTimeout(1000);

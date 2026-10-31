@@ -117,9 +117,9 @@ public final class BrowserFileSystem implements VirtualFileSystem {
     }
 
     @JSBody(params="path", script="return pzRuntime.normalizePath(path);") private static native String normalize(String path);
-    @JSBody(params="path", script="return pzRuntime.vfs.isDirectory(path)?2:(pzRuntime.vfs.files.has(path)?1:0);") private static native int type(String path);
+    @JSBody(params="path", script="return pzRuntime.vfs.kind(path);") private static native int type(String path);
     @JSBody(params="path", script="return pzRuntime.vfs.canWrite(path);") private static native boolean writable(String path);
-    @JSBody(params="path", script="var b=pzRuntime.vfs.files.get(path);return b?b.length:0;") private static native int size(String path);
+    @JSBody(params="path", script="return pzRuntime.vfs.size(path);") private static native int size(String path);
     @JSBody(params="path", script="return pzRuntime.vfs.lastModified(path);") private static native double modified(String path);
     @JSBody(params={"path","value"}, script="return pzRuntime.vfs.setAttribute(path,'modified',value);") private static native boolean setModified(String path, double value);
     @JSBody(params={"path","value"}, script="return pzRuntime.vfs.setAttribute(path,'readOnly',value);") private static native boolean readOnly(String path, boolean value);

@@ -141,6 +141,48 @@ public final class PopMan64 {
         NativeRegistry.publish("PZPopMan64", "stopped", "stop");
     }
 
+    // ---- Round 79: in-world entry points --------------------------------------------------------
+    // Documented simplification: there is NO virtual population. The original library simulates
+    // map-density zombies per cell and hands new ones to Java through n_getAddZombieData; this module
+    // never creates any, so a world started here has no zombies unless Java spawns them itself.
+    // Real zombies Java registers are tracked (ids are unique and released), the rest is accepted.
+    private static final Map<Integer, float[]> realZombies = new HashMap<>();
+    private static int nextZombieId = 1;
+    private static int loadedChunks;
+
+    public static void updateMain(float dt, double worldAge) { requireInitialized(); }
+    public static void updateThread() { }
+    public static void addZombie(float x, float y, float z, byte dir, int a, int b, int c, int d, int e) {
+        requireInitialized();
+        NativeRegistry.publish("PZPopMan64", "addZombie", "addZombie");
+    }
+    public static int registerZombie(float x, float y, float z, byte dir, int a, int b, int c) {
+        requireInitialized();
+        int id = nextZombieId++;
+        realZombies.put(id, new float[] { x, y, z });
+        return id;
+    }
+    public static void releaseZombie(int id) { realZombies.remove(id); }
+    public static void aggroTarget(int id, int x, int y) { }
+    public static void loadChunk(int wx, int wy, boolean added) { loadedChunks += added ? 1 : -1; }
+    public static void loadedAreas(int count, int[] areas, boolean clear) { }
+    public static void updateRealZombies(int count, int[] ids, float[] positions) {
+        for (int i = 0; i < count && i < ids.length; i++) {
+            float[] p = realZombies.get(ids[i]);
+            if (p != null && positions.length >= (i + 1) * 3) { p[0] = positions[i * 3]; p[1] = positions[i * 3 + 1]; p[2] = positions[i * 3 + 2]; }
+        }
+    }
+    public static void spawnHorde(int x, int y, int w, int h, float a, float b, int count) {
+        NativeRegistry.publish("PZPopMan64", "spawnHordeIgnored", "spawnHorde");
+    }
+    public static void worldSound(int x, int y, int radius, int volume) { }
+    public static int getAddZombieCount() { return 0; }
+    public static int getAddZombieData(int max, java.nio.ByteBuffer out) { return 0; }
+    public static boolean hasRadarData() { return false; }
+    public static void requestRadarData() { }
+    public static int getRadarZombieData(float[] out) { return 0; }
+    public static int realZombieCount() { return realZombies.size(); }
+
     public static boolean isInitialized() { return initialized; }
     public static boolean isStopped() { return stopped; }
     public static int gridWidth() { return gridWidth; }

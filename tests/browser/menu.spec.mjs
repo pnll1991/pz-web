@@ -15,7 +15,8 @@ test('real main menu is drawn after accepting the terms of service', async ({ pa
     { timeout: 600_000, intervals: [5000] }).toBeGreaterThan(20);
   await page.waitForTimeout(15_000); // let ISTermsOfServiceUI finish building its children
   // ACCEPT centre (PZ hit-test is strict x > ui.x, so click the middle, not the edge).
-  await page.mouse.move(660, 515); await page.waitForTimeout(300);
+  // Round 79: the canvas is now fixed at the page origin (it used to start ~50 px right).
+  await page.mouse.move(610, 515); await page.waitForTimeout(300);
   await page.mouse.down(); await page.waitForTimeout(120); await page.mouse.up();
   await expect.poll(() => count(page, 'zombie.gameStates.MainScreenState#enter()V:returned'),
     { timeout: 180_000, intervals: [2000] }).toBe(1);
