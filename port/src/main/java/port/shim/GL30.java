@@ -45,6 +45,12 @@ public final class GL30 {
     public static void glBindFramebuffer(int target, int framebuffer) { bindFramebufferNative(target, framebuffer); }
     /** Round 80: WebGL2 generateMipmap on the texture bound to the active unit. */
     public static void glGenerateMipmap(int target) { generateMipmapNative(target); }
+    /** Round 81: WebGL2 blitFramebuffer between the bound READ/DRAW framebuffers (gl.mjs validates
+     * mask and filter and queues the desktop GL error instead of drawing, as desktop GL does). */
+    public static void glBlitFramebuffer(int srcX0, int srcY0, int srcX1, int srcY1,
+            int dstX0, int dstY0, int dstX1, int dstY1, int mask, int filter) {
+        blitFramebufferNative(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
+    }
     public static int glCheckFramebufferStatus(int target) { return checkFramebufferStatusNative(target); }
     public static void glFramebufferTexture2D(int target, int attachment, int textarget, int texture, int level) {
         framebufferTexture2DNative(target, attachment, textarget, texture, level);
@@ -85,6 +91,10 @@ public final class GL30 {
     private static native int isFramebufferNative(int framebuffer);
     @JSBody(params="target", script="globalThis.pzRuntime.gl.generateMipmap(target);")
     private static native void generateMipmapNative(int target);
+    @JSBody(params={"sx0","sy0","sx1","sy1","dx0","dy0","dx1","dy1","mask","filter"},
+        script="globalThis.pzRuntime.gl.blitFramebuffer(sx0,sy0,sx1,sy1,dx0,dy0,dx1,dy1,mask,filter);")
+    private static native void blitFramebufferNative(int sx0, int sy0, int sx1, int sy1,
+            int dx0, int dy0, int dx1, int dy1, int mask, int filter);
     @JSBody(params={"target","framebuffer"}, script="globalThis.pzRuntime.gl.bindFramebuffer(target,framebuffer);")
     private static native void bindFramebufferNative(int target, int framebuffer);
     @JSBody(params="target", script="return globalThis.pzRuntime.gl.checkFramebufferStatus(target);")

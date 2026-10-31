@@ -50,6 +50,7 @@ function fakeContext() {
       ? { __loc: name } : null),
     uniform1i: (loc, v) => calls.push(['uniform1i', loc && loc.__loc, v]),
     uniform1f: (loc, v) => calls.push(['uniform1f', loc && loc.__loc, v]),
+    getAttribLocation: () => -1, // no program reads gl_Color (pzColor) unless a test says so
     getError: () => 0, getSupportedExtensions: () => [],
   };
   context.activeTexture = (unit) => calls.push(['activeTexture', unit]);
@@ -219,7 +220,7 @@ test('glPushAttrib(GL_ENABLE_BIT|GL_COLOR_BUFFER_BIT) restores capabilities and 
   assert.equal(gl.capabilityState().applied.be2.enabled, true);
 });
 
-test('attribute bits this backend cannot restore are counted, and an empty stack raises', () => {
+test('attribute bits this backend cannot restore are counted, and an empty stack queues GL_STACK_UNDERFLOW', () => {
   const gl = bridge(attribContext());
   gl.pushAttrib(262144); // GL_TEXTURE_BIT: the desktop texture environment does not exist in WebGL2
   assert.deepEqual(gl.attribState().gaps, { GL_TEXTURE_BIT: 1 });
@@ -227,8 +228,16 @@ test('attribute bits this backend cannot restore are counted, and an empty stack
   assert.deepEqual(gl.attribState().gaps, { GL_TEXTURE_BIT: 1, GL_TRANSFORM_BIT: 1 });
   gl.popAttrib();
   gl.popAttrib();
-  assert.throws(() => gl.popAttrib(), /the attribute stack is empty/);
-  assert.throws(() => gl.popClientAttrib(), /the client attribute stack is empty/);
+  // Desktop GL never raises here: the pop is ignored and GL_STACK_UNDERFLOW (0x0504) is queued.
+  assert.equal(gl.getError(), 0);
+  assert.doesNotThrow(() => gl.popAttrib());
+  assert.doesNotThrow(() => gl.popClientAttrib());
+  assert.equal(gl.attribState().depth, 0);
+  assert.equal(gl.attribState().underflow, 1);
+  assert.equal(gl.clientAttribState().underflow, 1);
+  assert.equal(gl.getError(), 0x0504);
+  assert.equal(gl.getError(), 0x0504);
+  assert.equal(gl.getError(), 0);
 });
 
 test('the client attribute stack restores pixelStorei and enabled vertex attrib arrays', () => {
@@ -244,15 +253,132 @@ test('the client attribute stack restores pixelStorei and enabled vertex attrib 
   assert.equal(gl.clientAttribState().depth, 0);
 });
 
-test('the stack depth and limit are answered from this backend state, and overflow raises', () => {
+test('the stack depth and limit are answered from this backend state, and overflow queues GL_STACK_OVERFLOW', () => {
   const gl = bridge(attribContext());
   assert.deepEqual(gl.intParameter(0x0bb0, 0), 0); // GL_ATTRIB_STACK_DEPTH
   assert.deepEqual(gl.intParameter(0x0d35, 0), 64); // GL_MAX_ATTRIB_STACK_DEPTH
   for (let i = 0; i < 64; i++) gl.pushAttrib(2048);
   assert.equal(gl.attribState().depth, 64);
   assert.deepEqual(gl.intParameter(0x0bb0, 0), 64);
-  assert.throws(() => gl.pushAttrib(2048), /attribute stack is full/);
+  gl.viewport(0, 0, 32, 32);
+  // Desktop GL ignores the push and queues GL_STACK_OVERFLOW (0x0503); nothing is thrown.
+  assert.doesNotThrow(() => gl.pushAttrib(2048));
+  assert.equal(gl.attribState().depth, 64);
+  assert.equal(gl.attribState().overflow, 1);
+  assert.equal(gl.getError(), 0x0503);
+  assert.equal(gl.getError(), 0);
+  for (let i = 0; i < 64; i++) gl.pushClientAttrib(1);
+  assert.doesNotThrow(() => gl.pushClientAttrib(1));
+  assert.deepEqual(gl.clientAttribState(), { depth: 64, limit: 64, overflow: 1, underflow: 0 });
+  assert.equal(gl.getError(), 0x0503);
+  // The ignored push left no snapshot behind: the matching pop restores the 64th push, not 32x32.
+  gl.popAttrib();
+  assert.equal(gl.attribState().depth, 63);
+  assert.equal(gl.getError(), 0);
   assert.ok(gl.hasEntrypoint('glPushAttrib') && gl.hasEntrypoint('glPopAttrib'));
+});
+
+/** Program whose vertex shader reads gl_Color; the fake linker places pzColor at location 3. */
+function colorContext() {
+  const context = attribContext();
+  Object.assign(context, {
+    getAttribLocation: (_p, name) => (name === 'pzColor' ? 3 : -1),
+    vertexAttrib4f: (...a) => context.calls.push(['vertexAttrib4f', ...a]),
+    drawArrays: (...a) => context.calls.push(['drawArrays', ...a]),
+  });
+  return context;
+}
+function colorProgram(gl) {
+  const src = new TextEncoder().encode('#version 120\nvoid main(){gl_Position=gl_Vertex*gl_Color.a;}');
+  const vertex = gl.createShader(35632);
+  gl.shaderSourceJoined(vertex, [src.length], src);
+  const program = gl.createProgram();
+  gl.attachShader(program, vertex);
+  gl.linkProgram(program);
+  return program;
+}
+
+// Round 81: ItemModelRenderer.DoRender / IsoObjectModelDrawer.renderModel call glColor4f/glColor3f.
+test('glColor is the pzColor constant while its array is disabled, and is not applied when enabled', () => {
+  const context = colorContext();
+  const gl = bridge(context);
+  const constants = () => context.calls.filter((c) => c[0] === 'vertexAttrib4f');
+  gl.color(0.5, 0.25, 0.125, 0.75); // no program yet: recorded only
+  assert.deepEqual(constants(), []);
+  const program = colorProgram(gl);
+  gl.useProgram(program);           // the current colour follows the program that reads gl_Color
+  assert.deepEqual(constants(), [['vertexAttrib4f', 3, 0.5, 0.25, 0.125, 0.75]]);
+  gl.color(1, 0, 0);                // glColor3f: alpha 1
+  assert.deepEqual(constants().at(-1), ['vertexAttrib4f', 3, 1, 0, 0, 1]);
+  gl.drawArrays(4, 0, 3);           // unchanged colour: no redundant upload before the draw
+  assert.equal(constants().length, 2);
+  gl.call('vertexAttrib4f', 3, 0, 0, 0, 0); // the game overwrote the constant itself
+  gl.drawArrays(4, 0, 3);           // so the draw re-applies the current colour
+  assert.deepEqual(constants().at(-1), ['vertexAttrib4f', 3, 1, 0, 0, 1]);
+  const before = constants().length;
+  gl.enableAttrib(3);               // colour array enabled: the array wins, the constant is not set
+  gl.color(0, 1, 0, 1);
+  gl.drawArrays(4, 0, 3);
+  assert.equal(constants().length, before);
+  assert.ok(gl.colorState().arrayEnabled >= 2);
+  gl.disableAttrib(3);              // disabled again: the next draw feeds the current colour
+  gl.drawArrays(4, 0, 3);
+  assert.deepEqual(constants().at(-1), ['vertexAttrib4f', 3, 0, 1, 0, 1]);
+  gl.colorUnsignedBytes(255, 0, 51); // glColor3ub
+  assert.deepEqual(constants().at(-1), ['vertexAttrib4f', 3, 1, 0, 0.2, 1]);
+  assert.ok(gl.hasEntrypoint('glColor4f') && gl.hasEntrypoint('glColor3f'));
+});
+
+test('a program without gl_Color keeps the current colour without uploading it', () => {
+  const context = colorContext();
+  context.getAttribLocation = () => -1;
+  const gl = bridge(context);
+  gl.useProgram(colorProgram(gl));
+  gl.color(0.2, 0.4, 0.6, 0.8);
+  gl.drawArrays(4, 0, 3);
+  assert.deepEqual(context.calls.filter((c) => c[0] === 'vertexAttrib4f'), []);
+  assert.deepEqual(gl.colorState().current, [0.2, 0.4, 0.6, 0.8]);
+  assert.ok(gl.colorState().noAttribute >= 1);
+});
+
+test('glPushAttrib(GL_CURRENT_BIT) snapshots the current colour and glPopAttrib restores it', () => {
+  const context = colorContext();
+  const gl = bridge(context);
+  gl.useProgram(colorProgram(gl));
+  gl.color(0.1, 0.2, 0.3, 0.4);
+  gl.pushAttrib(1); // GL_CURRENT_BIT
+  assert.deepEqual(gl.attribState().top, ['CURRENT']);
+  assert.deepEqual(gl.attribState().gaps, {}, 'the current colour is real bridge state, not a gap');
+  gl.color(1, 1, 1, 1);
+  gl.popAttrib();
+  assert.deepEqual(gl.colorState().current, [0.1, 0.2, 0.3, 0.4]);
+  assert.deepEqual(context.calls.filter((c) => c[0] === 'vertexAttrib4f').at(-1), ['vertexAttrib4f', 3, 0.1, 0.2, 0.3, 0.4]);
+  gl.pushAttrib(2048); // GL_VIEWPORT_BIT does not cover the colour
+  gl.color(0.9, 0.9, 0.9, 0.9);
+  gl.popAttrib();
+  assert.deepEqual(gl.colorState().current, [0.9, 0.9, 0.9, 0.9]);
+});
+
+test('glBlitFramebuffer is forwarded to WebGL2 and invalid masks/filters queue the desktop error', () => {
+  const context = fakeContext();
+  Object.assign(context, { COLOR_BUFFER_BIT: 0x4000, DEPTH_BUFFER_BIT: 0x100, STENCIL_BUFFER_BIT: 0x400,
+    blitFramebuffer: (...a) => context.calls.push(['blitFramebuffer', ...a]) });
+  const gl = bridge(context);
+  const blits = () => context.calls.filter((c) => c[0] === 'blitFramebuffer');
+  gl.blitFramebuffer(0, 0, 64, 32, 0, 0, 128, 64, 0x4000, 0x2601); // COLOR, GL_LINEAR
+  assert.deepEqual(blits(), [['blitFramebuffer', 0, 0, 64, 32, 0, 0, 128, 64, 0x4000, 0x2601]]);
+  gl.blitFramebuffer(0, 0, 8, 8, 0, 0, 8, 8, 0x4500, 0x2600);       // COLOR|DEPTH|STENCIL, GL_NEAREST
+  assert.deepEqual(blits().at(-1), ['blitFramebuffer', 0, 0, 8, 8, 0, 0, 8, 8, 0x4500, 0x2600]);
+  assert.equal(gl.getError(), 0);
+  gl.blitFramebuffer(0, 0, 8, 8, 0, 0, 8, 8, 0x4001, 0x2600);       // unknown bit
+  gl.blitFramebuffer(0, 0, 8, 8, 0, 0, 8, 8, 0x4000, 0x1234);       // bad filter
+  gl.blitFramebuffer(0, 0, 8, 8, 0, 0, 8, 8, 0x0100, 0x2601);       // LINEAR with depth
+  assert.equal(blits().length, 2, 'rejected blits never reach WebGL2');
+  assert.equal(gl.getError(), 0x0501);
+  assert.equal(gl.getError(), 0x0500);
+  assert.equal(gl.getError(), 0x0502);
+  assert.equal(gl.getError(), 0);
+  assert.ok(gl.hasEntrypoint('glBlitFramebuffer'));
 });
 
 // Round 79: ELEMENT_ARRAY_BUFFER is VAO state; drawElements must see the binding of the bound VAO.

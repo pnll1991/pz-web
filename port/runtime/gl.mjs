@@ -38,6 +38,8 @@ const PORT_PROVIDED = new Set([
   'glGenFramebuffers', 'glDeleteFramebuffers', 'glIsFramebuffer', 'glBindFramebuffer', 'glIsVertexArray',
   // Round 80: GL30 glGenerateMipmap (FBORenderChunk textures) -> WebGL2 generateMipmap.
   'glGenerateMipmap',
+  // Round 81: current colour (fed to gl_Color/pzColor while its array is off) and framebuffer blit.
+  'glColor3f', 'glColor4f', 'glColor3ub', 'glColor4ub', 'glBlitFramebuffer',
   'glCheckFramebufferStatus', 'glFramebufferTexture2D', 'glFramebufferRenderbuffer',
   'glGenRenderbuffers', 'glDeleteRenderbuffers', 'glIsRenderbuffer', 'glBindRenderbuffer',
   'glRenderbufferStorage',
@@ -168,6 +170,14 @@ export class GLBridge {
     // through the pzAlphaTestFunc/pzAlphaTestRef uniforms of every program that got the injection.
     this.alphaTestState = { enabled: false, func: -1, ref: 0, gaps: 0, uniformGaps: 0 };
     this.currentProgram = null; // program entry set by useProgram (needed to refresh uniforms)
+    // Desktop current colour (glColor*, GL_CURRENT_BIT). Desktop GL feeds it to gl_Color whenever the
+    // colour array is off; here gl_Color is the pzColor attribute (port/runtime/glsl.mjs), so the
+    // colour becomes that attribute's constant value (vertexAttrib4f) when its array is disabled.
+    this.currentColor = [1, 1, 1, 1];
+    this.appliedColor = null; // {location, r, g, b, a} last constant uploaded by applyColor
+    this.colorStats = { sets: 0, applied: 0, arrayEnabled: 0, noAttribute: 0 };
+    // Desktop GL_STACK_OVERFLOW/GL_STACK_UNDERFLOW events on the attribute stacks (diagnostics).
+    this.attribStackErrors = { overflow: 0, underflow: 0, clientOverflow: 0, clientUnderflow: 0 };
     // Desktop attribute stack (glPushAttrib/glPopAttrib). WebGL2 has none, so this backend keeps
     // real snapshots of the state it actually owns and restores them (see pushAttrib/popAttrib).
     canvas.addEventListener('webglcontextlost', event => { event.preventDefault(); this.lost = true; });
@@ -194,9 +204,26 @@ export class GLBridge {
     const eager = this.eagerErrors || EAGER_ERROR_CALLS.has(name);
     if (eager) this.flushErrors();
     const result = method.apply(this.context, args);
+    // A generic-attribute constant set by anyone (the game's glVertexAttrib*f or applyColor itself)
+    // invalidates the colour applyColor last uploaded; applyColor re-records it after its own call.
+    if (name.charCodeAt(0) === 118 && GLBridge.ATTRIB_CONSTANT_SETTERS.test(name)) this.appliedColor = null;
     this.recordAttrib(name, args);
     if (eager) this.drainQueue(name, this.callSeq); else this.unchecked = { seq: this.callSeq, name };
     return result;
+  }
+  // WebGL2 generic-attribute constant setters (vertexAttrib1f..4fv, vertexAttribI4i/ui[v]).
+  static ATTRIB_CONSTANT_SETTERS = /^vertexAttribI?[1-4]/;
+  /**
+   * Record a desktop GL error this bridge raises itself (state WebGL2 does not own, such as the
+   * attribute stacks): queued in order with the real WebGL2 errors, so glGetError reports it once.
+   */
+  recordError(name, code) {
+    this.flushErrors();
+    this.callSeq++;
+    this.callLog.push({ seq: this.callSeq, name });
+    if (this.callLog.length > 160) this.callLog.shift();
+    this.pendingErrors.push({ seq: this.callSeq, name, code });
+    if (this.pendingErrors.length > 512) this.pendingErrors.shift();
   }
   /** Move whatever WebGL2 queued for the call just made into the emulated desktop queue. */
   /** Move errors left by unchecked calls into the queue before anyone reads or marks it. */
@@ -435,24 +462,35 @@ export class GLBridge {
     ['COLOR_BUFFER', ['clearColor', 'colorMask', 'blendFunc', 'blendFuncSeparate', 'blendEquation']],
     ['SCISSOR', ['scissor']],
     // Bits whose state lives in this bridge rather than in a WebGL2 setter: the snapshot captures
-    // them through state.caps/state.texture/state.pixelStorei, so they carry an empty key list
-    // instead of being counted as gaps.
-    ['ENABLE', []], ['PIXEL_MODE', []],
+    // them through state.caps/state.texture/state.pixelStorei/state.current, so they carry an empty
+    // key list instead of being counted as gaps. GL_CURRENT_BIT holds the current colour (glColor*);
+    // the other current values it covers (normal, texture coordinates, raster position) have no
+    // entrypoint in this backend (their natives raise), so there is no state of theirs to lose.
+    ['ENABLE', []], ['PIXEL_MODE', []], ['CURRENT', []],
     // GL_TEXTURE_BIT covers the desktop texture environment (glTexEnvi, env colour/modes), which
     // WebGL2 has no equivalent for, so it is a counted gap. The unit bindings are still snapshotted
     // below because losing them across a push/pop would mis-bind textures.
     ['TEXTURE', null],
     // Bits whose desktop state WebGL2 does not expose at all: lighting, fog, accumulation, the
-    // matrix stack, hints, eval/list, current and polygon stipple. Pushing one is counted in
+    // matrix stack, hints, eval/list and polygon stipple. Pushing one is counted in
     // attribGaps so the Chrome evidence shows what this backend cannot reproduce.
-    ['CURRENT', null], ['POLYGON_STIPPLE', null], ['LIGHTING', null], ['FOG', null],
+    ['POLYGON_STIPPLE', null], ['LIGHTING', null], ['FOG', null],
     ['ACCUM_BUFFER', null], ['TRANSFORM', null], ['HINT', null], ['EVAL', null], ['LIST', null],
   ]);
-  /** Snapshot the state this bridge owns for the requested mask, then push it. */
+  // Desktop error codes (`javap -constants` on the pinned GL11): GL_STACK_OVERFLOW/UNDERFLOW.
+  static GL_STACK_OVERFLOW = 0x0503;
+  static GL_STACK_UNDERFLOW = 0x0504;
+  /**
+   * Snapshot the state this bridge owns for the requested mask, then push it. A full stack behaves
+   * as desktop GL: GL_STACK_OVERFLOW is queued for glGetError and the push is ignored.
+   */
   pushAttrib(mask) {
     const bits = Number(mask) >>> 0;
-    if (this.attribStack.length >= this.attribLimit)
-      throw new Error(`glPushAttrib: attribute stack is full at ${this.attribLimit} entries (GL_MAX_ATTRIB_STACK_DEPTH)`);
+    if (this.attribStack.length >= this.attribLimit) {
+      this.attribStackErrors.overflow++;
+      this.recordError('glPushAttrib', GLBridge.GL_STACK_OVERFLOW);
+      return;
+    }
     const names = [];
     for (const [bit, name] of GLBridge.ATTRIB_BITS) if (bits & bit) names.push(name);
     if (bits === 0xffffffff) names.push('ALL');
@@ -475,12 +513,19 @@ export class GLBridge {
     if (names.includes('PIXEL_MODE')) state.pixelStorei = new Map(this.attribRecords.pixelStorei);
     if (names.includes('VIEWPORT')) state.viewport = this.viewportBox.slice();
     if (names.includes('SCISSOR')) state.scissor = this.scissorBox.slice();
+    if (names.includes('CURRENT')) state.current = this.currentColor.slice();
     this.attribStack.push({ mask: bits, names, state });
   }
-  /** Restore the topmost snapshot; an empty stack raises like a GL error rather than doing nothing. */
+  /**
+   * Restore the topmost snapshot. An empty stack behaves as desktop GL: GL_STACK_UNDERFLOW is
+   * queued for glGetError and the pop is ignored (returns null).
+   */
   popAttrib() {
-    if (this.attribStack.length === 0)
-      throw new Error('glPopAttrib: the attribute stack is empty (this backend raises where desktop GL reports an error)');
+    if (this.attribStack.length === 0) {
+      this.attribStackErrors.underflow++;
+      this.recordError('glPopAttrib', GLBridge.GL_STACK_UNDERFLOW);
+      return null;
+    }
     const top = this.attribStack.pop();
     const st = top.state;
     for (const key of Object.keys(st)) {
@@ -499,6 +544,7 @@ export class GLBridge {
     if (st.pixelStorei) { this.attribRecords.pixelStorei = new Map(st.pixelStorei); for (const [, v] of st.pixelStorei) this.call('pixelStorei', v[0], v[1]); }
     if (st.viewport) this.call('viewport', ...st.viewport);
     if (st.scissor) this.call('scissor', ...st.scissor);
+    if (st.current) { this.currentColor = st.current.slice(); this.applyColor(); }
     return top.names;
   }
   /* --- Desktop client attribute stack (glPushClientAttrib/glPopClientAttrib) -------------
@@ -508,8 +554,11 @@ export class GLBridge {
    */
   pushClientAttrib(mask) {
     const bits = Number(mask) >>> 0;
-    if (this.clientAttribStack.length >= this.attribLimit)
-      throw new Error(`glPushClientAttrib: client attribute stack is full at ${this.attribLimit} entries`);
+    if (this.clientAttribStack.length >= this.attribLimit) {
+      this.attribStackErrors.clientOverflow++;
+      this.recordError('glPushClientAttrib', GLBridge.GL_STACK_OVERFLOW);
+      return;
+    }
     const state = {};
     if (bits & 1) state.pixelStorei = new Map(this.attribRecords.pixelStorei); // GL_CLIENT_PIXEL_STORE_BIT
     if (bits & 2) state.attribs = new Map([...this.attribs].map(([k, v]) => [k, { ...v }])); // GL_CLIENT_VERTEX_ARRAY_BIT
@@ -517,8 +566,11 @@ export class GLBridge {
     this.clientAttribStack.push({ mask: bits, state });
   }
   popClientAttrib() {
-    if (this.clientAttribStack.length === 0)
-      throw new Error('glPopClientAttrib: the client attribute stack is empty (this backend raises where desktop GL reports an error)');
+    if (this.clientAttribStack.length === 0) {
+      this.attribStackErrors.clientUnderflow++;
+      this.recordError('glPopClientAttrib', GLBridge.GL_STACK_UNDERFLOW);
+      return null;
+    }
     const top = this.clientAttribStack.pop();
     if (top.state.pixelStorei) {
       this.attribRecords.pixelStorei = new Map(top.state.pixelStorei);
@@ -532,12 +584,16 @@ export class GLBridge {
     }
     return top.mask;
   }
-  clientAttribState() { return { depth: this.clientAttribStack.length, limit: this.attribLimit }; }
+  clientAttribState() {
+    return { depth: this.clientAttribStack.length, limit: this.attribLimit,
+      overflow: this.attribStackErrors.clientOverflow, underflow: this.attribStackErrors.clientUnderflow };
+  }
   /** Count a bit this backend cannot restore, keeping the name for the Chrome evidence. */
   attribGap(name) { this.attribGaps[name] = (this.attribGaps[name] || 0) + 1; }
   attribState() {
     return { depth: this.attribStack.length, limit: this.attribLimit, gaps: { ...this.attribGaps },
-      top: this.attribStack.length ? this.attribStack[this.attribStack.length - 1].names : null };
+      top: this.attribStack.length ? this.attribStack[this.attribStack.length - 1].names : null,
+      overflow: this.attribStackErrors.overflow, underflow: this.attribStackErrors.underflow };
   }
   /** Upload the recorded alpha test to the program that is current, when it carries the injection. */
   applyAlphaTest(entry) {
@@ -561,6 +617,46 @@ export class GLBridge {
     this.call('uniform1i', func, this.alphaTestState.enabled ? this.alphaTestState.func : -1);
     this.call('uniform1f', ref, this.alphaTestState.ref);
   }
+  /**
+   * Desktop glColor4f/glColor3f (alpha 1): sets the current colour. Desktop GL does not clamp the
+   * current colour (GL 3.0+ compatibility), so the values are stored as given.
+   */
+  color(r, g, b, a = 1) {
+    this.currentColor = [Number(r), Number(g), Number(b), Number(a)];
+    this.colorStats.sets++;
+    this.applyColor();
+  }
+  /** glColor3ub/glColor4ub: unsigned bytes (0..255, already masked by the shim) map to [0,1]. */
+  colorUnsignedBytes(r, g, b, a = 255) {
+    this.color((r & 0xff) / 255, (g & 0xff) / 255, (b & 0xff) / 255, (a & 0xff) / 255);
+  }
+  /** Location of gl_Color (pzColor) in a linked program, -1 when its vertex shader has none. */
+  colorLocation(entry) {
+    if (entry.colorLocation !== undefined) return entry.colorLocation;
+    if (!entry.linked) return -1; // an unlinked program would queue INVALID_OPERATION for the game
+    const location = Number(this.call('getAttribLocation', entry.program, 'pzColor'));
+    entry.colorLocation = Number.isInteger(location) ? location : -1;
+    return entry.colorLocation;
+  }
+  /**
+   * Feed the current colour to gl_Color as desktop GL does: when the program in use reads pzColor
+   * and its array is disabled, the attribute's constant value is the current colour. With the array
+   * enabled the array wins (desktop leaves the current colour unused), so nothing is uploaded.
+   * Called on glColor*, glUseProgram, glPopAttrib(GL_CURRENT_BIT) and before every draw.
+   */
+  applyColor() {
+    const entry = this.currentProgram;
+    if (entry === null) return;
+    const location = this.colorLocation(entry);
+    if (location < 0) { this.colorStats.noAttribute++; return; }
+    if (this.attribs.get(location)?.enabled) { this.colorStats.arrayEnabled++; return; }
+    const [r, g, b, a] = this.currentColor, last = this.appliedColor;
+    if (last !== null && last.location === location && last.r === r && last.g === g && last.b === b && last.a === a) return;
+    this.call('vertexAttrib4f', location, r, g, b, a);
+    this.appliedColor = { location, r, g, b, a };
+    this.colorStats.applied++;
+  }
+  colorState() { return { current: this.currentColor.slice(), applied: this.appliedColor, ...this.colorStats }; }
   /** State the Java/runtime report exposes: applied WebGL2 caps plus recorded desktop-only caps. */
   capabilityState() {
     const applied = {};
@@ -1317,6 +1413,9 @@ export class GLBridge {
     entry.hasMain = translated.hasMain === true;
     entry.globalInits = translated.globalInits ?? [];
     entry.prototypes = declaredOnlyFunctions(entry.raw);
+    // Round 80: built-in-named user functions are renamed (glsl.mjs renameBuiltinOverloads); the
+    // compile log of a prototype-only unit names the renamed function.
+    for (const n of translated.builtinOverloads ?? []) if (entry.prototypes.has(n)) entry.prototypes.add('pz_user_' + n);
     this.invalidateMerged(handle);
     entry.replacements = translated.replacements;
     entry.uniformDefaults = translated.uniformDefaults;
@@ -1444,6 +1543,8 @@ export class GLBridge {
   linkProgram(handle) {
     const program = this.programEntry(handle, 'linkProgram');
     const stageError = this.buildStages(program);
+    program.colorLocation = undefined; // relinking can move (or drop) the pzColor attribute
+    if (this.currentProgram === program) this.appliedColor = null;
     if (stageError) { program.linked = false; program.log = stageError; }
     else {
       // Round 79: the desktop conventional vertex array (gl_Vertex, translated to pzVertex by
@@ -1470,6 +1571,8 @@ export class GLBridge {
     // Desktop GL keeps alpha-test state globally; WebGL2 can only reproduce it per program, so the
     // recorded state is uploaded to whatever program just became current.
     this.applyAlphaTest(entry);
+    // The current colour is global on desktop; the program decides where gl_Color lives.
+    this.applyColor();
   }
   validateProgram(handle) {
     const program = this.programEntry(handle, 'validateProgram');
@@ -1582,6 +1685,10 @@ export class GLBridge {
   uniformLocation(programHandle, name) {
     const program = this.programEntry(programHandle, 'getUniformLocation');
     const location = this.call('getUniformLocation', program.program, name);
+    // Round 80 diagnostics: which names the game asks for and how many resolve.
+    const seen = this.uniformNames || (this.uniformNames = {});
+    const key = `${name}:${location === null ? 'missing' : 'found'}`;
+    seen[key] = (seen[key] || 0) + 1;
     if (location === null) return -1;
     const handle = this.nextHandle++;
     this.locations.set(handle, { location, program: program.program });
@@ -1766,6 +1873,30 @@ export class GLBridge {
     if (fbo === undefined)
       throw new Error(`Framebuffer ${handle} does not exist for glBindFramebuffer`);
     this.call('bindFramebuffer', glTarget, fbo);
+  }
+  /**
+   * GL30 glBlitFramebuffer -> WebGL2 blitFramebuffer between the bound READ/DRAW framebuffers.
+   * Mask and filter are checked first, as desktop GL and WebGL2 both require: a bit other than
+   * COLOR/DEPTH/STENCIL queues GL_INVALID_VALUE, a filter other than NEAREST/LINEAR queues
+   * GL_INVALID_ENUM, and LINEAR with depth or stencil queues GL_INVALID_OPERATION; in each case
+   * nothing is drawn. Everything else (incompatible formats, incomplete framebuffers, overlapping
+   * rectangles) is left to WebGL2, whose errors reach glGetError through the emulated queue.
+   */
+  blitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter) {
+    const gl = this.context, bits = Number(mask) >>> 0;
+    let token = 0, unknown = bits;
+    for (const [bit, name] of GLBridge.CLEAR_BITS) {
+      if ((bits & bit) === 0) continue;
+      if (gl[name] === undefined) throw new Error(`WebGL2 has no ${name} for glBlitFramebuffer mask 0x${bits.toString(16)}`);
+      token |= gl[name]; unknown &= ~bit;
+    }
+    if (unknown !== 0) { this.recordError('glBlitFramebuffer', 0x0501); return; } // GL_INVALID_VALUE
+    const f = Number(filter);
+    if (f !== 0x2600 && f !== 0x2601) { this.recordError('glBlitFramebuffer', 0x0500); return; } // GL_INVALID_ENUM
+    if (f === 0x2601 && (bits & 0x500) !== 0) { this.recordError('glBlitFramebuffer', 0x0502); return; } // GL_INVALID_OPERATION
+    // GL_NEAREST/GL_LINEAR are the same numbers in WebGL2.
+    this.call('blitFramebuffer', srcX0 | 0, srcY0 | 0, srcX1 | 0, srcY1 | 0, dstX0 | 0, dstY0 | 0, dstX1 | 0, dstY1 | 0, token, f);
+    this.blitCount = (this.blitCount || 0) + 1;
   }
   /** Desktop status tokens are identical to WebGL2's, so the WebGL2 answer is returned unchanged. */
   checkFramebufferStatus(target) { return Number(this.call('checkFramebufferStatus', this.fbTarget(target, 'glCheckFramebufferStatus'))); }
@@ -1963,6 +2094,7 @@ export class GLBridge {
   }
   drawElements(mode, count, type, indices) {
     GLBridge.checkMode(mode);
+    this.applyColor();
     if (mode === 7 && this.hasElementBuffer()) { this.quadsFromBoundElements(count, GLBridge.indexType(type), indices); return; }
     if (!this.hasElementBuffer())
       throw new Error('glDrawElements needs a bound ELEMENT_ARRAY_BUFFER');
@@ -1975,6 +2107,7 @@ export class GLBridge {
   }
   drawRangeElements(mode, start, end, count, type, indices) {
     GLBridge.checkMode(mode);
+    this.applyColor();
     if (mode === 7 && this.hasElementBuffer()) { this.quadsFromBoundElements(count, GLBridge.indexType(type), indices); return; }
     if (!this.hasElementBuffer())
       throw new Error('glDrawRangeElements needs a bound ELEMENT_ARRAY_BUFFER');
@@ -2012,6 +2145,7 @@ export class GLBridge {
   drawElementsClient(mode, start, end, count, type, data) {
     if (this.hasElementBuffer()) throw new Error('drawElementsClient with an ELEMENT_ARRAY_BUFFER bound');
     const gl = this.context, webglType = GLBridge.indexType(type);
+    this.applyColor();
     const scratch = this.clientIndexBuffer ?? (this.clientIndexBuffer = gl.createBuffer());
     this.call('bindBuffer', gl.ELEMENT_ARRAY_BUFFER, scratch);
     try {
@@ -2030,6 +2164,7 @@ export class GLBridge {
   }
   drawArrays(mode, first, count) {
     GLBridge.checkMode(mode);
+    this.applyColor();
     if (mode === 7) {
       const idx = new Uint32Array(count);
       for (let i = 0; i < count; i++) idx[i] = first + i;

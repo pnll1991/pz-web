@@ -90,7 +90,10 @@ public final class StartupProgress implements ClassHolderTransformer {
     // (LWJGL/ GLFW is port territory), the render-queue handoff, and TeaVM's own monitor wait/
     // notify (java.lang.Object is TeaVM's classlib, so observing it is not touching the game).
     private static final Set<String> EXTRA_CLASSES = Set.of(
-        "org.lwjglx.opengl.Sync");
+        "org.lwjglx.opengl.Sync",
+        // Round 80: in-game Shader.matrixId stays 0 (setMatrixPalette -> "Unknown uniform location 0"),
+        // so onProgramCompiled never ran: count the compile -> listener chain.
+        "zombie.core.opengl.ShaderProgram", "zombie.core.skinnedmodel.shader.Shader");
     // Round 60: GameWindow#enter() never returns and the DebugLog stops at UI_Loading_ModelsAnimations
     // with the page alive (4427 swaps). ModelManager#initAnimationMeshes() loops while
     // isLoadingAnimationMeshes(), and ModelMesh#isReady() also needs the VBO, so the question is which

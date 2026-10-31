@@ -73,6 +73,15 @@ public final class GL11 {
     // org.lwjgl.opengl.GL11's own native: the alpha-test state lives in port/runtime/gl.mjs and is
     // reproduced inside the generated fragment shaders (see ALPHA_TEST_FUNCTION in port/runtime/glsl.mjs).
     public static void glAlphaFunc(int func, float ref) { alphaTestNative(func, ref); }
+    // Round 81: desktop current colour (ItemModelRenderer/IsoObjectModelDrawer set it after
+    // glPushAttrib). port/runtime/gl.mjs keeps it, includes it in GL_CURRENT_BIT snapshots and feeds
+    // it to gl_Color (pzColor) as the attribute's constant value while its array is disabled.
+    public static void glColor3f(float red, float green, float blue) { colorNative(red, green, blue, 1.0f); }
+    public static void glColor4f(float red, float green, float blue, float alpha) { colorNative(red, green, blue, alpha); }
+    public static void glColor3ub(byte red, byte green, byte blue) { colorUbNative(red & 0xFF, green & 0xFF, blue & 0xFF, 0xFF); }
+    public static void glColor4ub(byte red, byte green, byte blue, byte alpha) {
+        colorUbNative(red & 0xFF, green & 0xFF, blue & 0xFF, alpha & 0xFF);
+    }
     // GL13C/GL14C natives the game reaches from RenderThread and the GLState wrapper classes.
     public static void glActiveTexture(int texture) { activeTextureNative(texture); }
     public static void glBlendEquation(int mode) { blendEquationNative(mode); }
@@ -161,6 +170,10 @@ public final class GL11 {
     private static native void stencilOpNative(int fail, int zfail, int zpass);
     @JSBody(params={"func","ref"}, script="globalThis.pzRuntime.gl.alphaTest(func,ref);")
     private static native void alphaTestNative(int func, float ref);
+    @JSBody(params={"r","g","b","a"}, script="globalThis.pzRuntime.gl.color(r,g,b,a);")
+    private static native void colorNative(float r, float g, float b, float a);
+    @JSBody(params={"r","g","b","a"}, script="globalThis.pzRuntime.gl.colorUnsignedBytes(r,g,b,a);")
+    private static native void colorUbNative(int r, int g, int b, int a);
     @JSBody(params="texture", script="globalThis.pzRuntime.gl.activeTexture(texture);")
     private static native void activeTextureNative(int texture);
     @JSBody(params="mode", script="globalThis.pzRuntime.gl.blendEquation(mode);")

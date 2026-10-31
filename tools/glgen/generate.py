@@ -38,6 +38,9 @@ SCALAR_DIRECT = {('glClearColor','(FFFF)V'), ('glClear','(I)V'), ('glViewport','
     ('glPopClientAttrib','()V'),
     # Round 79: WorldMapRenderer sets GL_FILL every frame; WebGL2 only rasterizes filled polygons.
     ('glPolygonMode','(II)V'), ('glTexEnvi','(III)V'),
+    # Round 81: ItemModelRenderer.DoRender / IsoObjectModelDrawer.renderModel set the current colour
+    # every frame; gl.mjs feeds it to gl_Color (pzColor) while the colour array is off.
+    ('glColor3f','(FFF)V'), ('glColor4f','(FFFF)V'), ('glColor3ub','(BBB)V'), ('glColor4ub','(BBBB)V'),
     # Round 79: VBORenderer.flush disables the conventional VERTEX/COLOR/TEXTURE_COORD arrays.
     ('glEnableClientState','(I)V'), ('glDisableClientState','(I)V'), ('glVertexPointer','(IIIJ)V'),
     ('glGetString','(I)Ljava/lang/String;'), ('glGetStringi','(II)Ljava/lang/String;'),
@@ -89,7 +92,7 @@ GL20_DIRECT = {('glCreateProgram','()I'), ('glDeleteProgram','(I)V'), ('glIsProg
 
 
 # Only the natives on GL30C: vertex array objects, framebuffers and renderbuffers, all implemented
-# in port.shim.GL30 over WebGL2. Desktop-only ones (glBlitFramebuffer, glFramebufferTexture1D/3D,
+# in port.shim.GL30 over WebGL2 (glBlitFramebuffer since round 81). Desktop-only ones (glFramebufferTexture1D/3D,
 # glRenderbufferStorageMultisample, the *Parameteriv queries) stay unmapped and keep the fail-fast raise.
 GL30_DIRECT = {('nglGenVertexArrays','(IJ)V'), ('nglDeleteVertexArrays','(IJ)V'),
     ('glIsVertexArray','(I)Z'), ('glBindVertexArray','(I)V'),
@@ -98,7 +101,7 @@ GL30_DIRECT = {('nglGenVertexArrays','(IJ)V'), ('nglDeleteVertexArrays','(IJ)V')
     ('glFramebufferTexture2D','(IIIII)V'), ('glFramebufferRenderbuffer','(IIII)V'),
     ('nglGenRenderbuffers','(IJ)V'), ('nglDeleteRenderbuffers','(IJ)V'),
     ('glIsRenderbuffer','(I)Z'), ('glBindRenderbuffer','(II)V'), ('glRenderbufferStorage','(IIII)V'),
-    ('glGenerateMipmap','(I)V')}
+    ('glGenerateMipmap','(I)V'), ('glBlitFramebuffer','(IIIIIIIIII)V')}
 
 # Draw calls the game reaches (VBORenderer, IsoPuddles, IsoWater, WorldMapVBOs, VertexBufferObject,
 # VisibilityPolygon2). port.shim.GL11 forwards them to gl.mjs; offsets into the bound element buffer only.
