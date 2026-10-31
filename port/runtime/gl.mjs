@@ -1871,10 +1871,18 @@ export class GLBridge {
     this.locations.set(handle, { location, program: program.program });
     return handle;
   }
+  /**
+   * Desktop glUniform*(location, ...) semantics: location -1 is silently ignored (no error, no
+   * effect; WeatherShader sets uniforms screen.frag does not declare, e.g. TimeOfDay/FogMod, every
+   * frame), and any other unknown location records GL_INVALID_OPERATION and has no effect. Both
+   * map to a null WebGL2 location, which WebGL2 ignores silently, so the setter call stays a no-op.
+   * A location of another program is left to WebGL2, which raises INVALID_OPERATION itself.
+   */
   locationOf(handle, what) {
     const entry = this.locations.get(handle);
-    if (entry === undefined) throw new Error(`Unknown uniform location ${handle} for ${what}`);
-    return entry.location;
+    if (entry !== undefined) return entry.location;
+    if (handle !== -1) this.recordError(`gl${what[0].toUpperCase()}${what.slice(1)}`, 0x0502); // GL_INVALID_OPERATION
+    return null;
   }
   attribLocation(programHandle, name) {
     const program = this.programEntry(programHandle, 'getAttribLocation');

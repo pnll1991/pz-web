@@ -131,11 +131,14 @@ test('uniformLocation answers -1 for missing uniforms like desktop glGetUniformL
   assert.equal(gl.uniformLocation(program, 'AlsoMissing'), -1);
 
   // A real handle reaches WebGL2 through port.shim.GL20's dispatcher (gl.call + locationOf);
-  // a -1 handle raises instead of silently drawing to location 0.
+  // -1 is a silent no-op and an unknown handle records GL_INVALID_OPERATION (desktop semantics);
+  // neither reaches location 0.
   gl.call('uniform1i', gl.locationOf(gl.uniformLocation(program, 'WaterGroundTex'), 'uniform1i'), 0);
   assert.deepEqual(context.calls.find(([n]) => n === 'uniform1i'), ['uniform1i', 'WaterGroundTex', 0]);
-  assert.throws(() => gl.locationOf(-1, 'uniform1i'), /Unknown uniform location -1/);
-  assert.throws(() => gl.locationOf(999, 'uniform1i'), /Unknown uniform location 999/);
+  assert.equal(gl.locationOf(-1, 'uniform1i'), null);
+  assert.equal(gl.locationOf(999, 'uniform1i'), null);
+  assert.equal(gl.getError(), 0x0502);
+  assert.equal(gl.getError(), context.NO_ERROR); // only the 999 call queued an error
 });
 
 /**
