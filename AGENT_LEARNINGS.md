@@ -809,3 +809,12 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Error de proceso: `git commit -- <archivo nuevo>` falla con "pathspec did not match" si el archivo no está
   agregado; el board quedó con el hash anterior. Mejor enfoque: `git add` del archivo nuevo dentro del mismo flock y
   anotar el hash recién después de verificar `git log -1`.
+
+## Ronda 80 (frente D) — server y Chrome persistentes
+- Error: reinicié el dev server desde un shell envuelto en `flock chrome.lock ...`; `node server.mjs` heredó el fd
+  del candado y retuvo chrome.lock para siempre (deadlock de todos los frentes). Patrón a evitar: lanzar procesos
+  desacoplados (setsid/nohup/&) desde dentro de un `flock`. Mejor enfoque: cerrar los fds > 2 en el subshell antes
+  del `exec` (`scripts/dev_server_8098.sh`, `scripts/live_chrome.sh`) y que `restart` tome el candado él mismo con
+  `flock -n` sobre un fd propio, sin envolverlo.
+- Error: `stop` encolaba `quit` detrás de un `until` largo y terminaba en kill forzado. Mejor enfoque: SIGTERM
+  directo al node propio (live.mjs cierra el navegador en el handler).
