@@ -42,8 +42,15 @@ public final class GL11 {
     private static native void texEnviNative(int target, int pname, int param);
     /** Round 79: conventional client arrays (GL_VERTEX_ARRAY 0x8074, GL_NORMAL_ARRAY 0x8075,
      * GL_COLOR_ARRAY 0x8076, GL_TEXTURE_COORD_ARRAY 0x8078) do not exist in WebGL2; the game's draws
-     * use generic attributes. The enable state is recorded only; glVertexPointer & co. still raise. */
+     * use generic attributes. GL_VERTEX_ARRAY feeds gl_Vertex (gl.mjs VERTEX_ARRAY_LOCATION); the
+     * other arrays are recorded only and their pointer functions still raise. */
     public static void glEnableClientState(int array) { clientStateNative(array, true); }
+    /** Round 79: WorldMapVBOs feeds gl_Vertex from its bound VBO; `pointer` is the buffer offset. */
+    public static void glVertexPointer(int size, int type, int stride, long pointer) {
+        vertexPointerNative(size, type, stride, offset(pointer, "org.lwjgl.opengl.GL11#glVertexPointer(IIIJ)V"));
+    }
+    @JSBody(params={"size","type","stride","offset"}, script="globalThis.pzRuntime.gl.vertexPointer(size,type,stride,offset);")
+    private static native void vertexPointerNative(int size, int type, int stride, int offset);
     public static void glDisableClientState(int array) { clientStateNative(array, false); }
     @JSBody(params={"array","on"}, script="globalThis.pzRuntime.gl.clientState(array,on);")
     private static native void clientStateNative(int array, boolean on);

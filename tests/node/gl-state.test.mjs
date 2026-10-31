@@ -44,7 +44,7 @@ function fakeContext() {
     createShader: (type) => ({ __shader: ++id, type }), shaderSource: () => {}, compileShader: () => {},
     getShaderParameter: () => true, getShaderInfoLog: () => '', deleteShader: () => {},
     createProgram: () => ({ __program: ++id }), attachShader: (...a) => calls.push(['attachShader', ...a]),
-    linkProgram: () => {}, getProgramParameter: () => true, getProgramInfoLog: () => '',
+    linkProgram: () => {}, bindAttribLocation: (...a) => calls.push(["bindAttribLocation", ...a]), getProgramParameter: () => true, getProgramInfoLog: () => '',
     deleteProgram: () => {}, useProgram: (p) => calls.push(['useProgram', p]),
     getUniformLocation: (program, name) => (name === 'pzAlphaTestFunc' || name === 'pzAlphaTestRef'
       ? { __loc: name } : null),

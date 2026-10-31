@@ -1434,6 +1434,9 @@ export class GLBridge {
     const stageError = this.buildStages(program);
     if (stageError) { program.linked = false; program.log = stageError; }
     else {
+      // Round 79: the desktop conventional vertex array (gl_Vertex, translated to pzVertex by
+      // glsl.mjs) gets a fixed generic location so glVertexPointer/GL_VERTEX_ARRAY can feed it.
+      this.call('bindAttribLocation', program.program, GLBridge.VERTEX_ARRAY_LOCATION, 'pzVertex');
       this.call('linkProgram', program.program);
       program.linked = this.call('getProgramParameter', program.program, this.context.LINK_STATUS) ? true : false;
       program.log = String(this.call('getProgramInfoLog', program.program) ?? '');
@@ -1916,11 +1919,19 @@ export class GLBridge {
       throw new Error(`Index offset ${indices} is not a multiple of the ${elementBytes}-byte index size`);
     this.call('drawRangeElements', mode, start >>> 0, end >>> 0, count, webglType, indices);
   }
-  /** Round 79: glEnable/DisableClientState for the conventional arrays; recorded, no WebGL2 state. */
+  static VERTEX_ARRAY_LOCATION = 15;
+  /** Round 79: glEnable/DisableClientState. GL_VERTEX_ARRAY (0x8074) drives the pzVertex attribute
+   * (gl_Vertex) at VERTEX_ARRAY_LOCATION; the other conventional arrays are recorded only, and
+   * their pointer functions are not mapped (they raise). */
   clientState(array, on) {
     if (![0x8074, 0x8075, 0x8076, 0x8078].includes(array))
       throw new Error(`gl${on ? 'Enable' : 'Disable'}ClientState: unsupported array 0x${array.toString(16)}`);
     (this.clientArrays ?? (this.clientArrays = {}))[array.toString(16)] = !!on;
+    if (array === 0x8074) { if (on) this.enableAttrib(GLBridge.VERTEX_ARRAY_LOCATION); else this.disableAttrib(GLBridge.VERTEX_ARRAY_LOCATION); }
+  }
+  /** Round 79: glVertexPointer(size, type, stride, offset in the bound ARRAY_BUFFER) -> pzVertex. */
+  vertexPointer(size, type, stride, offset) {
+    this.vertexAttribPointer(GLBridge.VERTEX_ARRAY_LOCATION, size, type, false, stride, offset);
   }
   /** Round 79: glTexEnvi has no WebGL2 state; recorded per unit (shaders do the combining). */
   texEnvi(target, pname, param) {
