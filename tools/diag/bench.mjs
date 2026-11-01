@@ -137,8 +137,11 @@ const snap = () => evalc(([du, tos, menu]) => {
 }, [DU, TOS, MENU]).catch(e => ({ error: String(e).slice(0, 120) }));
 const remote = async (label) => { // pedido de front 4: XHR síncronos de /media (vfs.remoteStats)
   const r = await evalc(() => { const s = globalThis.pzRuntime?.vfs?.remoteStats; return s ? { ...s } : null; }).catch(() => null);
-  if (!r) return; summary[`remote_${label}`] = r;
-  metric(`remote_req_${label}`, r.requests, 0); metric(`remote_mb_${label}`, r.bytes / 1048576, 1); metric(`remote_ms_${label}`, r.ms, 0);
+  if (r) { summary[`remote_${label}`] = r;
+    metric(`remote_req_${label}`, r.requests, 0); metric(`remote_mb_${label}`, r.bytes / 1048576, 1); metric(`remote_ms_${label}`, r.ms, 0); }
+  // pedido de front 2: estadísticas de la caché de texturas (?texcache=1)
+  const t = await evalc(() => { const s = globalThis.pzRuntime?.texCache?.stats; return s ? JSON.parse(JSON.stringify(s)) : null; }).catch(() => null);
+  if (t) { summary[`texcache_${label}`] = t; if (t.hit != null) metric(`texcache_hit_${label}`, t.hit, 0); if (t.miss != null) metric(`texcache_miss_${label}`, t.miss, 0); }
 };
 const firstPulse = labels => evalc(ls => ls.map(l => { const p = (globalThis.pzGameProgress || []).find(x => x.label === l); return p ? p.time : null; }), labels).catch(() => labels.map(() => null));
 async function waitFor(what, pred, timeoutMs, everyMs = 2000) {
