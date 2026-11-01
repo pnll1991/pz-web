@@ -1054,3 +1054,45 @@ Análisis estático (`javap -c` del jar fijado, volcado en /tmp; `translateShade
   idénticos; cachés 38 987 002 B contra 57 093 059 B de `.txt` (un rango compartido por sus alias). Simulado: packs
   520 168 208 -> 501 046 534 B (margen 16,70 -> 35,82 MB), archivos montados 516 786 274 -> 498 680 217 B. Respaldo:
   `index.json.before-frontL-anims`.
+
+## Ronda 80 — frente P (31/10): pose aplastada/invertida y root motion de 5 frames
+- Evidencia (frente V, sesiones 2 y 3): con malla y clips por jassimp el jugador se dibuja tumbado (idle) o cabeza abajo
+  (tras W); con W, `defaultWalk` w=1 y `animUpdatingThisFrame=true` pero `deferredLen>0` sólo en 5 frames. En la
+  sonda, `multiplier` 2,5-4 (no hay reloj parado en `GameTime`).
+- Reloj (javap): `AnimationPlayer.Update()` usa `GameTime.getTimeDelta()` = `getMultiplier()/0.8/multiplierBias/60`;
+  `IsoGameCharacter.getAnimationTimeDelta()` = eso x `animationTimeScale`. `fpsMultiplier` lo escribe
+  `FPSTracking.frameStep` con `System.nanoTime` (60/fps, tope 5: a 5 fps el juego avanza como a 12 fps). Con
+  multiplier 4 el delta es ~0,083 s por frame: no es cero.
+- Avance de la pista (`AnimationTrack.tickCurrentTimeInternal`): `cur += delta*speedDelta` (0 si `!isPlaying`); en bucle
+  `cur = cur % dur` (`frem`). TeaVM Wasm GC compila `frem` a `WasmRuntime.remainder(a,b) = a - (float)(int)(a/b)*b`
+  (no es fmod exacto: puede dar ~-1e-7 o ~b por redondeo; `x%0` da `x` en vez de NaN). Es el único `frem` en
+  `zombie/core/skinnedmodel/animation`; un error de ese tamaño no explica la pose.
+- FMA descartado: `FusedMath.fma` (float y double) coincide bit a bit con `Math.fma` en 3 M casos aleatorios (JVM), y en
+  el camino de animación nadie llama `Math.fma`: `zombie/core/skinnedmodel` y `org/lwjgl/util/vector` no lo usan, y
+  JOML sólo lo usa con `joml.useMathFma` (no se define). `org.joml.Math.sin/acos` (lo que usa `PZMath.slerp`) va a
+  `java.lang.Math` (sin `joml.fastmath`).
+- Datos jassimp: el orden de `AiAnimation(name,duration,ticksPerSecond)`, `AiNodeAnim(name,nPos,nRot,nScale,pre,post)`,
+  `AiBoneWeight(vertexId,weight)` y las matrices (`m_data` crudo de la .so) coincide entre dumper, lector y reescritura
+  TeaVM; `ByteOrder.nativeOrder()` de TeaVM es LITTLE_ENDIAN (como los bytes copiados de la .so). El juego no instala
+  un `AiWrapperProvider` propio. La malla `MaleBody` trae un nodo `$dummy_root` de assimp (una sola raíz).
+- Camino de dibujo: `Model.DrawSolid` usa `Shader.startCharacter` -> `setMatrixPalette(ModelInstanceRenderData.matrixPalette)`
+  (llenado en `AnimatedModelInstanceRenderData.initMatrixPalette` con `getSkinTransforms` + `Matrix4f.store` + `flip`);
+  si el shader es instanciado va por `RenderList` + `ShaderPropertyBlock("MatrixPalette", Matrix4f[60])`, cuyo `init()`
+  copia sólo `limit()/64` matrices del FloatBuffer (código del juego, igual en escritorio). `paletteProbe.count`
+  distingue los dos caminos (27 huesos vs 60).
+- Diagnóstico nuevo, mismo flag que la sonda (`?probe=1` / `PZ_PLAYER_PROBE=true`):
+  - JS (`24ae27c`): `pzRuntime.gl.paletteProbe` = última subida a un uniform `MatrixPalette*` tal como la ve el shader
+    (tras la transpuesta): `count`, `nan`, `inf`, `identity`, `zero`, `detMin/detMax`, `first[0..3]` con `det`, `scale`
+    (largo de columnas 3x3), `translation`, `m`; `uploads`. Test `tests/node/gl-palette-probe.test.mjs`.
+  - Java (`f60ba64`, build dev): `pzRuntime.playerProbe` suma `timeDelta`, `fpsMultiplier`, `perObjectMultiplier`,
+    `multiplierBias`, `slomo`, `averageFPS`, `animTimeDelta`, `nanoTime/nanoDeltaMs`, `currentTimeMillis/millisDelta`;
+    `tracks[]` (clip, `cur/prev/dur/acc`, `playing/looping/reverse/finished`, `speed`, `weight`, `layer`,
+    `deferredBone`, `useDeferred`, `clipDur`, `clipKeyframes`, `deferredFrames`/`bone0Frames` {n,t0,tLast,rot0,pos0,posLast});
+    `track0AdvancedFrames/StuckFrames/Wraps`; `skeletonBones/Roots/parents`; `modelTransforms`, `modelNaN`,
+    `modelDegenerate`, `modelDetMin/Max`; `bones[]` (Dummy01, Translation_Data, Bip01, Bip01_Pelvis, Bip01_Spine:
+    índice, matrices `model`, `local`, `bindPose`, `boneOffset`, col-major como `Matrix4f.store`). El AnimationPlayer
+    sale de `getModelInstance().animPlayer` (público): `getAnimationPlayer()` puede alocar y no se usa.
+- Lectura esperada: `cur` sin avanzar con `timeDelta>0` -> `isPlaying`/`speedDelta`; `cur` mayor que `deferredFrames.tLast`
+  sin wrap (`dur` >> `tLast`) -> unidades de tiempo del clip (ticks vs s) -> root motion 0 y pose congelada; `modelNaN>0`
+  o `modelDegenerate>0` -> cálculo de huesos en CPU; matrices de modelo sanas pero `paletteProbe` degenerada ->
+  `getSkinTransforms`/`boneOffset` o la subida; todo sano -> shader/atributos.
