@@ -6,7 +6,7 @@
 //     Arranca con ?persist=1 en un perfil de Chrome persistente (--userdir, el de la partida guardada),
 //     ToS -> menú -> CONTINUE (clic en --continue X,Y) -> "Click to Start" -> calentamiento, y perfila
 //     la carga (CONTINUE -> "game loading took", --load-profile 0 la omite) y dos ventanas: quieto (--idle s)
-//     y caminando con W apretada (--walk s).
+//     y caminando (--walk s, teclas rotando S,D,A,W cada 4 s; --keys). Build: --query 'build=release-minpulse&persist=1&texcache=1'.
 //   node tools/diag/profile.mjs report ARCHIVO.cpuprofile [--top 15] [--wasm port/target/web/game/boot.wasm]
 //     Self/total por función, por archivo JS y por categoría (Java del juego por paquete, shims port.*,
 //     gl.mjs, vfs.mjs, runtime TeaVM/GC/fibras, frontera wasm<->JS, nativas del navegador).
@@ -87,7 +87,7 @@ async function stopProfile(phase, extra) {
     await capped(cdp.send('Debugger.disable'), 10000);
   } catch (e) { note(`scripts: ${String(e).slice(0, 200)}`); }
   writeFileSync(`${D}/${phase}.scripts.json`, JSON.stringify(src));
-  const wasm = await capped(page.evaluate(() => fetch('/game/boot.wasm', { method: 'HEAD' }).then(r => `${r.headers.get('etag')} ${r.headers.get('last-modified')}`)), 15000, '?');
+  const wasm = await capped(page.evaluate(() => fetch(`/${new URLSearchParams(location.search).get('build') || ''}/game/boot.wasm`.replace('//', '/'), { method: 'HEAD' }).then(r => `${r.headers.get('etag')} ${r.headers.get('last-modified')}`)), 15000, '?');
   const meta = { phase, us: US, wasm, durationS: (profile.endTime - profile.startTime) / 1e6, samples: profile.samples.length, stopMs: Date.now() - t1, ...extra };
   writeFileSync(`${D}/${phase}.json`, JSON.stringify(meta, null, 1));
   note(`PROFILE ${phase} ${JSON.stringify(meta)}`);
@@ -140,7 +140,14 @@ try {
       await stopProfile(phase, { wallS: wall, frames: f1 - f0, fps: +((f1 - f0) / wall).toFixed(2) });
     };
     await win('idle', +opt('idle', 30), s => page.waitForTimeout(s * 1000));
-    await win('walk', +opt('walk', 30), async s => { await page.keyboard.down('w'); await page.waitForTimeout(s * 1000); await page.keyboard.up('w'); });
+    // El jugador de /tmp/pz81/profile queda pegado a una pared (frente 0): rotar S,D,A,W cada 4 s para que
+    // alguna dirección avance. --keys cambia el orden.
+    const keys = opt('keys', 's,d,a,w').split(',');
+    await win('walk', +opt('walk', 30), async s => {
+      const end = Date.now() + s * 1000;
+      for (let i = 0; Date.now() < end; i++) { const k = keys[i % keys.length];
+        await page.keyboard.down(k); await page.waitForTimeout(Math.min(4000, Math.max(0, end - Date.now()))); await page.keyboard.up(k); await page.waitForTimeout(300); }
+    });
     await capped(page.screenshot({ path: `${D}/ingame-end.png` }), 60000);
   }
 } catch (e) { note(`FAIL ${String(e).slice(0, 300)}`); process.exitCode = 1; }

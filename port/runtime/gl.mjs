@@ -212,7 +212,7 @@ export class GLBridge {
     // ordered calls and lastErrorDrainSeq marks where the game last drained the queue, so a
     // failing glTexImage2D can be attributed to a real call instead of guessing.
     this.callSeq = 0;
-    this.callLog = [];       // [{seq, name}] last 160 WebGL2 calls actually reached
+    this.callRing = []; this.callRingPos = 0; this.callRingCount = 0; // last 160 WebGL2 calls actually reached (callLog getter)
     this.errorDrains = [];   // [{seq, code, fromSeq, fromCall}] last 32 glGetError with an error
     this.lastErrorDrainSeq = 0;
     // Emulated desktop error queue. WebGL2's queue is FIFO and glGetError pops it, so the bridge
@@ -266,12 +266,20 @@ export class GLBridge {
       this.lost = true;
     });
   }
-  /** Ring of the last 160 calls (callLog order oldest -> newest); recycles the evicted entry (round 81: no per-call allocation). */
+  /** Circular log of the last 160 calls; entries are recycled (round 81: no allocation, no shift() per call). */
   logCall(name) {
-    const log = this.callLog;
-    let e;
-    if (log.length >= 160) { e = log.shift(); e.seq = this.callSeq; e.name = name; } else e = { seq: this.callSeq, name };
-    log.push(e);
+    const ring = this.callRing;
+    let e = ring[this.callRingPos];
+    if (e === undefined) e = ring[this.callRingPos] = { seq: 0, name: '' };
+    e.seq = this.callSeq; e.name = name;
+    this.callRingPos = (this.callRingPos + 1) % 160;
+    if (this.callRingCount < 160) this.callRingCount++;
+  }
+  /** [{seq, name}] oldest -> newest (diagnostic read path; the hot path only writes the ring). */
+  get callLog() {
+    const n = this.callRingCount, out = new Array(n), start = (this.callRingPos - n + 160) % 160;
+    for (let i = 0; i < n; i++) out[i] = this.callRing[(start + i) % 160];
+    return out;
   }
   call(name, ...args) {
     if (this.lost) throw new Error('WebGL context lost: reload required');

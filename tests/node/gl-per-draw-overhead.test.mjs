@@ -47,3 +47,13 @@ test('matrix uploads reuse one scratch array and still send the right values', (
   assert.ok(gl.matrixScratch instanceof Float32Array);
   assert.equal(calls.filter((c) => c[0] === 'uniformMatrix4fv').length, 3);
 });
+
+test('callLog getter: fewer than 160 calls come back oldest to newest', () => {
+  const { gl } = make();
+  assert.deepEqual(gl.callLog, []);
+  for (let i = 0; i < 5; i++) gl.call('useProgram', null);
+  const log = gl.callLog;
+  assert.equal(log.length, 5);
+  assert.deepEqual(log.map((e) => e.seq), [1, 2, 3, 4, 5]);
+  assert.ok(log.every((e) => e.name === 'useProgram'));
+});
