@@ -7,6 +7,7 @@
 //   --page game.html  --query persist=1  --extra probe=1  (o --url URL completa; base http://127.0.0.1:8098)
 //   --profile /tmp/pz81/profile   perfil PERSISTENTE (IndexedDB con la partida y caché HTTP sobreviven entre corridas)
 //   --front 0 --change baseline-dev --notes "..."   columnas de /tmp/pz81/bench.tsv (front, change, metric, value, notes)
+//   ingame: idle_diff/walk_diff/walk_moved = diferencia de pantalla (sin sonda); walk_dist sólo con --extra probe=1 (correr aparte: la sonda cuesta fps)
 //   --fps-seconds 30 --walk-seconds 10 --menu-fps-seconds 10 --no-shots --force (create-save aunque ya haya partida)
 // Tiempos T_* en segundos desde la navegación (performance.now() de la página); los de pzGameProgress son el
 // primer pulso de cada etiqueta. fps_display = delta de Display#update / segundos; fps_raf = requestAnimationFrame.
@@ -268,6 +269,9 @@ try {
       for (let i = 0; i < 3 && st && st.gtp; i++) { await key('Escape', 800); await sleep(4000); st = await pstate(); log('cerrar guía', i + 1, st); }
       if (st && st.gtp) throw new Error(`la guía no se cerró: ${JSON.stringify(st)}`);
     }
+    if (MODE === 'ingame') { // la ventana Info del personaje queda abierta en el centro tras Esc (ronda 81): cerrarla y dar foco al canvas
+      await click(310, 110); await sleep(3000); await click(640, 360); await sleep(3000);
+    }
     const sIn = await snap(); ev('ingame', { du: sIn.du, probe: st });
     metric('T_ingame_wall_s', (Date.now() - tStart) / 1000, 1);
     await shot('ingame');
@@ -275,9 +279,32 @@ try {
 
     if (MODE === 'ingame') {
       await rate(FPS_S, 'idle');
+      // Movimiento sin sonda: diferencia de pantalla completa antes/después de W (la cámara sigue al jugador).
+      // Las capturas se toman >= 4 s después de la última tecla/clic (artefacto de la esfera azul tras soltar una tecla).
+      // idle_diff (dos capturas de la página quieta) calibra el ruido (reloj, animaciones, luz).
+      const diffPage = await context.newPage(); // página aparte: no toca el hilo del juego
+      const shotB64 = async () => (await capped(page.screenshot({ timeout: 90000 }), 95000, 'screenshot')).toString('base64');
+      const diffRatio = (a, b) => capped(diffPage.evaluate(async ([a, b]) => {
+        const load = async x => { const bm = await createImageBitmap(await (await fetch('data:image/png;base64,' + x)).blob());
+          const c = new OffscreenCanvas(bm.width, bm.height), g = c.getContext('2d'); g.drawImage(bm, 0, 0); return g.getImageData(0, 0, bm.width, bm.height).data; };
+        const [da, db] = await Promise.all([load(a), load(b)]); let n = 0;
+        for (let i = 0; i < da.length; i += 4) if (Math.abs(da[i] - db[i]) + Math.abs(da[i + 1] - db[i + 1]) + Math.abs(da[i + 2] - db[i + 2]) > 60) n++;
+        return n / (da.length / 4);
+      }, [a, b]), 60000, 'diff').catch(e => { log('diff falló', String(e).slice(0, 100)); return null; });
+      await sleep(4000);
+      const i0 = await shotB64(); await sleep(5000); const i1 = await shotB64();
+      const idleDiff = await diffRatio(i0, i1); metric('idle_diff', idleDiff, 4);
+      await rate(FPS_S, 'idle');
+      await sleep(4000);
+      const w0 = await shotB64();
       const probe = async () => { await setProbe(true); await sleep(2500); const p = await pstate(); await setProbe(false); await sleep(1500); return p; };
       const p0 = await probe(); log('antes de W', p0);
       await rate(WALK_S, 'walk', async s => { await key('w', s * 1000); });
+      await sleep(5000); // pasa el artefacto de la esfera
+      const w1 = await shotB64();
+      const walkDiff = await diffRatio(w0, w1); metric('walk_diff', walkDiff, 4);
+      if (walkDiff != null && idleDiff != null) metric('walk_moved', walkDiff > Math.max(0.02, 3 * idleDiff) ? 1 : 0, 0);
+      await diffPage.close().catch(() => {});
       const p1 = await probe(); log('después de W', p1);
       if (p0 && p1 && p0.x != null) { summary.walk = { p0, p1 }; metric('walk_dist', Math.hypot(p1.x - p0.x, p1.y - p0.y)); }
       await shot('after-walk');
