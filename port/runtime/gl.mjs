@@ -104,6 +104,68 @@ export function transposeMatrices(values, size, count) {
   return out;
 }
 
+/**
+ * Round 80 (front P): summary of a column-major mat4 palette (as the shader sees it) for
+ * `pzRuntime.gl.paletteProbe`: NaN/Inf over every matrix, identity/zero counts, determinant range,
+ * and the first `keep` matrices with determinant, column lengths of the 3x3 (scale) and translation.
+ */
+export function paletteSummary(data, count, keep = 4) {
+  const det = (m, b) => {
+    const a = (r, c) => m[b + c * 4 + r];
+    let d = 0;
+    for (let c = 0; c < 4; c++) {
+      const cols = [0, 1, 2, 3].filter((x) => x !== c);
+      const minor = a(1, cols[0]) * (a(2, cols[1]) * a(3, cols[2]) - a(2, cols[2]) * a(3, cols[1]))
+        - a(1, cols[1]) * (a(2, cols[0]) * a(3, cols[2]) - a(2, cols[2]) * a(3, cols[0]))
+        + a(1, cols[2]) * (a(2, cols[0]) * a(3, cols[1]) - a(2, cols[1]) * a(3, cols[0]));
+      d += (c % 2 ? -1 : 1) * a(0, c) * minor;
+    }
+    return d;
+  };
+  const round = (x) => (Number.isFinite(x) ? Math.round(x * 1e5) / 1e5 : String(x));
+  const out = { count, nan: 0, inf: 0, identity: 0, zero: 0, detMin: null, detMax: null, first: [] };
+  for (let m = 0; m < count; m++) {
+    const b = m * 16;
+    let identity = true, zero = true;
+    for (let i = 0; i < 16; i++) {
+      const v = data[b + i];
+      if (Number.isNaN(v)) out.nan++;
+      else if (!Number.isFinite(v)) out.inf++;
+      if (v !== 0) zero = false;
+      if (Math.abs(v - (i % 5 === 0 ? 1 : 0)) > 1e-6) identity = false;
+    }
+    if (identity) out.identity++;
+    if (zero) out.zero++;
+    const d = det(data, b);
+    if (Number.isFinite(d)) {
+      out.detMin = out.detMin === null ? d : Math.min(out.detMin, d);
+      out.detMax = out.detMax === null ? d : Math.max(out.detMax, d);
+    }
+    if (m < keep) {
+      const len = (o) => Math.hypot(data[b + o], data[b + o + 1], data[b + o + 2]);
+      out.first.push({
+        det: round(d),
+        scale: [round(len(0)), round(len(4)), round(len(8))],
+        translation: [round(data[b + 12]), round(data[b + 13]), round(data[b + 14])],
+        m: Array.from(data.subarray(b, b + 16), round),
+      });
+    }
+  }
+  if (out.detMin !== null) { out.detMin = round(out.detMin); out.detMax = round(out.detMax); }
+  return out;
+}
+
+/** Same opt-in flag as port.runtime.PlayerProbe (globalThis.PZ_PLAYER_PROBE or ?probe=1), reread at most once a second. */
+function playerProbeEnabled() {
+  const g = globalThis, s = g.__pzPlayerProbeFlag || (g.__pzPlayerProbeFlag = { t: 0, v: false });
+  const n = performance.now();
+  if (n < s.t) return s.v;
+  s.t = n + 1000;
+  s.v = g.PZ_PLAYER_PROBE === true
+    || (typeof location !== 'undefined' && new URLSearchParams(location.search || '').get('probe') === '1');
+  return s.v;
+}
+
 /** WebGL2 context and object handles; unsupported entrypoints must throw. */
 
 export class GLBridge {
@@ -1899,7 +1961,7 @@ export class GLBridge {
     seen[key] = (seen[key] || 0) + 1;
     if (location === null) return -1;
     const handle = this.nextHandle++;
-    this.locations.set(handle, { location, program: program.program });
+    this.locations.set(handle, { location, program: program.program, name });
     return handle;
   }
   /**
@@ -1952,6 +2014,17 @@ export class GLBridge {
     // uploading their transpose with false gives the shader the same matrix.
     if (transpose) data = transposeMatrices(data, size, count);
     this.call(name, this.locationOf(handle, name), false, data);
+    // Round 80 (front P), opt-in with the player probe flag: last MatrixPalette upload as the shader sees it.
+    if (size === 4 && playerProbeEnabled()) {
+      const uniform = this.locations.get(handle)?.name;
+      if (uniform !== undefined && uniform.startsWith('MatrixPalette')) {
+        const previous = this.paletteProbe;
+        this.paletteProbe = {
+          ...paletteSummary(data, count), uniform, transpose: !!transpose,
+          uploads: (previous?.uploads ?? 0) + 1, time: performance.now() | 0,
+        };
+      }
+    }
   }
   /* --- Vertex attributes -------------------------------------------------------------
    * glEnable/DisableVertexAttribArray track the attribute index; glVertexAttribPointer needs
