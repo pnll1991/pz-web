@@ -266,11 +266,17 @@ export class GLBridge {
       this.lost = true;
     });
   }
+  /** Ring of the last 160 calls (callLog order oldest -> newest); recycles the evicted entry (round 81: no per-call allocation). */
+  logCall(name) {
+    const log = this.callLog;
+    let e;
+    if (log.length >= 160) { e = log.shift(); e.seq = this.callSeq; e.name = name; } else e = { seq: this.callSeq, name };
+    log.push(e);
+  }
   call(name, ...args) {
     if (this.lost) throw new Error('WebGL context lost: reload required');
     this.callSeq++;
-    this.callLog.push({ seq: this.callSeq, name });
-    if (this.callLog.length > 160) this.callLog.shift();
+    this.logCall(name);
     this.calls[name] = (this.calls[name] || 0) + 1;
     if (name === 'viewport') this.viewportBox = args.slice(0, 4).map(Number);
     if (name === 'scissor') this.scissorBox = args.slice(0, 4).map(Number);
@@ -300,8 +306,7 @@ export class GLBridge {
   recordError(name, code) {
     this.flushErrors();
     this.callSeq++;
-    this.callLog.push({ seq: this.callSeq, name });
-    if (this.callLog.length > 160) this.callLog.shift();
+    this.logCall(name);
     this.pendingErrors.push({ seq: this.callSeq, name, code });
     if (this.pendingErrors.length > 512) this.pendingErrors.shift();
   }
@@ -404,8 +409,7 @@ export class GLBridge {
    */
   getError() {
     this.callSeq++;
-    this.callLog.push({ seq: this.callSeq, name: 'getError' });
-    if (this.callLog.length > 160) this.callLog.shift();
+    this.logCall('getError');
     this.calls.getError = (this.calls.getError || 0) + 1;
     this.flushErrors();
     this.lastErrorDrainSeq = this.callSeq;
@@ -691,8 +695,15 @@ export class GLBridge {
       if (this.alphaTestState.enabled) this.alphaTestState.gaps += 1;
       return;
     }
-    const func = this.call('getUniformLocation', entry.program, 'pzAlphaTestFunc');
-    const ref = this.call('getUniformLocation', entry.program, 'pzAlphaTestRef');
+    // Round 81: locations are fixed until the next link (reset in linkProgram) and the uniform values persist
+    // per program, so an unchanged state is not uploaded again (applyAlphaTest runs on every useProgram).
+    let locs = entry.alphaLocations;
+    if (locs === undefined) {
+      locs = entry.alphaLocations = { func: this.call('getUniformLocation', entry.program, 'pzAlphaTestFunc'),
+        ref: this.call('getUniformLocation', entry.program, 'pzAlphaTestRef') };
+      entry.alphaApplied = undefined;
+    }
+    const func = locs.func, ref = locs.ref;
     if (func === null || ref === null) {
       // The shader compiler dropped the gating uniforms (it may constant-fold the discard). The
       // alpha test then cannot be reproduced for this program: counted and logged, never hidden.
@@ -702,8 +713,12 @@ export class GLBridge {
         this.alphaTestState.uniformGapPrograms.push({ func: func === null, ref: ref === null });
       return;
     }
-    this.call('uniform1i', func, this.alphaTestState.enabled ? this.alphaTestState.func : -1);
-    this.call('uniform1f', ref, this.alphaTestState.ref);
+    const wantFunc = this.alphaTestState.enabled ? this.alphaTestState.func : -1, wantRef = this.alphaTestState.ref;
+    const done = entry.alphaApplied;
+    if (done !== undefined && done.func === wantFunc && done.ref === wantRef) return;
+    this.call('uniform1i', func, wantFunc);
+    this.call('uniform1f', ref, wantRef);
+    entry.alphaApplied = { func: wantFunc, ref: wantRef };
   }
   /**
    * Desktop glColor4f/glColor3f (alpha 1): sets the current colour. Desktop GL does not clamp the
@@ -768,10 +783,12 @@ export class GLBridge {
       }
       entry.activeAttribs = list;
     }
-    for (const { name, location } of entry.activeAttribs) {
+    for (const item of entry.activeAttribs) {
+      const name = item.name, location = item.location;
       if (this.attribs.get(location)?.enabled) continue;
       const draws = this.disabledAttribDraws ?? (this.disabledAttribDraws = {});
-      const key = `${entry.handle}:${name}@${location}`;
+      const key = (item.key !== undefined && item.keyHandle === entry.handle) ? item.key
+        : (item.keyHandle = entry.handle, item.key = `${entry.handle}:${name}@${location}`);
       draws[key] = (draws[key] ?? 0) + 1;
     }
   }
@@ -1792,7 +1809,7 @@ export class GLBridge {
       // Round 80 (front F): gl_Color (pzColor) gets its own fixed location next to it, so GL_COLOR_ARRAY
       // drives it and the linker never places it on an index the game enabled for its own attribute.
       this.call('bindAttribLocation', program.program, GLBridge.COLOR_ARRAY_LOCATION, 'pzColor');
-      program.matrixLocations = undefined; program.matrixSerial = -1; program.immediateLocations = undefined; program.activeAttribs = undefined;
+      program.alphaLocations = undefined; program.alphaApplied = undefined; program.matrixLocations = undefined; program.matrixSerial = -1; program.immediateLocations = undefined; program.activeAttribs = undefined;
       this.call('linkProgram', program.program);
       program.linked = this.call('getProgramParameter', program.program, this.context.LINK_STATUS) ? true : false;
       program.log = String(this.call('getProgramInfoLog', program.program) ?? '');
@@ -2064,10 +2081,9 @@ export class GLBridge {
   }
   // WebGL2 reuses the desktop tokens for these data types, so the mapping is the identity
   // restricted to the subset WebGL2 actually accepts.
+  static ATTRIB_TYPES = new Set([0x1400, 0x1401, 0x1402, 0x1403, 0x1404, 0x1405, 0x1406]);
   static attribType(type) {
-    const map = new Map([[0x1400, 0x1400], [0x1401, 0x1401], [0x1402, 0x1402], [0x1403, 0x1403],
-      [0x1404, 0x1404], [0x1405, 0x1405], [0x1406, 0x1406]]);
-    const value = map.get(type);
+    const value = GLBridge.ATTRIB_TYPES.has(type) ? type : undefined;
     if (value === undefined) throw new Error(`Unsupported WebGL2 attribute type: 0x${type.toString(16)}`);
     return value;
   }
@@ -2642,9 +2658,11 @@ export class GLBridge {
     if (L.mv === null && L.p === null && L.mvp === null && L.normal === null) return;
     if (entry.matrixSerial === this.matrixSerial) return;
     const mv = this.matrixTop('MODELVIEW'), p = this.matrixTop('PROJECTION');
-    if (L.mv !== null) this.call('uniformMatrix4fv', L.mv, false, new Float32Array(mv));
-    if (L.p !== null) this.call('uniformMatrix4fv', L.p, false, new Float32Array(p));
-    if (L.mvp !== null) this.call('uniformMatrix4fv', L.mvp, false, new Float32Array(GLBridge.multiply(p, mv)));
+    // Round 81: one scratch Float32Array (the uniform call copies the data), not one allocation per upload.
+    const scratch = this.matrixScratch ?? (this.matrixScratch = new Float32Array(16));
+    if (L.mv !== null) { scratch.set(mv); this.call('uniformMatrix4fv', L.mv, false, scratch); }
+    if (L.p !== null) { scratch.set(p); this.call('uniformMatrix4fv', L.p, false, scratch); }
+    if (L.mvp !== null) { scratch.set(GLBridge.multiply(p, mv)); this.call('uniformMatrix4fv', L.mvp, false, scratch); }
     if (L.normal !== null) this.call('uniformMatrix3fv', L.normal, false, GLBridge.normalMatrix(mv));
     entry.matrixSerial = this.matrixSerial;
     this.matrixStats.uploads++;
