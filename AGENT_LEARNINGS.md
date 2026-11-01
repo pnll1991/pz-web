@@ -906,3 +906,8 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   su semántica. Mejor enfoque: ante un reemplazo de biblioteca, `grep -la` de cada anotación soportada sobre las
   clases del jar y un test por anotación; ante "peso 0"/"valor por defecto" del juego, seguir con `javap -c` la
   cadena de cálculo hasta una comparación por identidad o un dato leído del XML.
+- Error (frente V): tras `reload` esperé `until MainScreenState` y venció a los 15 min: el ToS vuelve a pedirse en
+  cada carga de página y anoté "reload lento". Mejor enfoque: después de cada reload esperar `TermsOfServiceState`,
+  hacer ACCEPT y recién ahí esperar el menú; leer `UNTIL ... reached|timeout` antes de sacar tiempos.
+- Patrón (frente V): una sesión larga no puede usar rutas relativas si el repo se mueve; hacer `cd` a la ruta
+  absoluta actual en cada comando y no dejar tareas en segundo plano con cwd del árbol viejo.
