@@ -3,6 +3,7 @@ import { classpathResources } from './classpath.mjs';
 import { attachBridge } from './ws-bridge.mjs';
 import { createPublicGate } from './public-mode.mjs';
 import { createWarmList } from './warm-list.mjs';
+import { appendFile } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { realpath, stat, open, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -71,6 +72,14 @@ function inside(parent, child) {
   return !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
 }
 
+// Round 85: one line per public request (never the key, never an IP): enough to see which request a remote browser failed on.
+const ACCESS_LOG = process.env.PZWEB_ACCESS_LOG || '/tmp/pzweb-access.log';
+function accessLog(req, status) {
+  const url = req.url.replace(/([?&])k=[^&]*/, '$1k=*'), cookie = /(?:^|;\s*)pzweb_k=/.test(req.headers.cookie || '') ? 'cookie' : 'nocookie';
+  const line = `${new Date().toISOString()} ${status} ${req.method} ${url.slice(0, 160)} ${cookie} ${req.headers['sec-fetch-dest'] || '-'} "${String(req.headers['user-agent'] || '').slice(0, 90)}"\n`;
+  appendFile(ACCESS_LOG, line, () => {});
+}
+
 export async function createDevServer({ webRoot = path.join(root, 'port/target/web'),
   resourceRoots = [], pzHome = process.env.PZ_HOME, packsRoot = process.env.PZ_PACKS || path.join(root, 'packs'),
   publicKey = process.env.PZWEB_PUBLIC_KEY || '', warmFile = process.env.PZWEB_WARM_FILE || '/tmp/pzweb-warm.json' } = {}) {
@@ -108,7 +117,9 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
     try {
       // Round 84: public (tunnel) requests are authenticated by the key gate first; their same-origin rules use the tunnel host and https.
       const publicRequest = gate.isPublic(req);
+      if (publicRequest) res.on('finish', () => accessLog(req, res.statusCode));
       if (gate.handle(req, res, headers)) return;
+      if (new URL(req.url, 'http://x').pathname === '/favicon.ico') { res.writeHead(204, { ...headers }); res.end(); return; }
       const authority = publicRequest ? req.headers.host : `127.0.0.1:${server.address().port}`;
       const scheme = publicRequest ? 'https' : 'http';
       // a cross-site *navigation* (a link opened from a chat app) is fine; cross-site subresources are not

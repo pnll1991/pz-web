@@ -49,7 +49,7 @@ export function attachBridge(server, { command = path.join(ROOT, 'scripts/mp-bri
     const url = new URL(req.url, 'http://x');
     let origin = '';
     try { origin = req.headers.origin ? new URL(req.headers.origin).hostname : '127.0.0.1'; } catch { /* junk Origin: refused below */ }
-    const fail = (code, msg) => { socket.end(`HTTP/1.1 ${code} ${msg}\r\nConnection: close\r\n\r\n`); };
+    const fail = (code, msg) => { log(`ws refused ${code} host=${req.headers.host} origin=${req.headers.origin || '-'} cookie=${/pzweb_k=/.test(req.headers.cookie || '') ? 'y' : 'n'} k=${url.searchParams.has('k') ? 'y' : 'n'}`); socket.end(`HTTP/1.1 ${code} ${msg}\r\nConnection: close\r\n\r\n`); };
     if (url.pathname !== '/ws') return fail(404, 'Not Found');
     if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(socket.remoteAddress)) return fail(403, 'Forbidden'); // the tunnel connects from loopback too
     // Round 84: a public (tunnel) upgrade needs the key cookie and its own https Origin; everything else keeps the loopback rules.

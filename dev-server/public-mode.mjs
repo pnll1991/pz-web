@@ -25,9 +25,16 @@ export function createPublicGate({ key = process.env.PZWEB_PUBLIC_KEY || '' } = 
     return false;
   };
 
+  // Our own code and the page chrome carry nothing private, and the browser fetches them with no way to add the key
+  // (module imports, favicon): public. The game's files (wasm, packs, media) and the pages themselves stay behind the key.
+  const PUBLIC_STATIC = /^\/(favicon\.ico|style\.css|boot\.wasm-runtime\.js|support\.js|keyshim\.js|[A-Za-z0-9_.-]+\.mjs|runtime\/[A-Za-z0-9_.-]+\.mjs|vendor\/.+\.m?js)$/;
+  const keyInQuery = url => sameKey(url.searchParams.get('k'));
+  const cookieHeader = () => `${COOKIE}=${encodeURIComponent(key)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000`;
+
   /**
-   * HTTP gate. Returns false when the request may continue (local, or public with a valid cookie); true when this function already
-   * answered (403, or the 302 that turns ?k= into the cookie).
+   * HTTP gate. Returns false when the request may continue (local, a public static file, or public with a valid credential);
+   * true when this function already answered (403). The credential is the cookie OR ?k=<key> (a fallback for browsers that
+   * refuse cookies); a valid ?k= also sets the cookie, on whatever page it arrives, and the request is served as usual.
    */
   function handle(req, res, headers) {
     if (!isPublic(req)) return false;
@@ -36,22 +43,21 @@ export function createPublicGate({ key = process.env.PZWEB_PUBLIC_KEY || '' } = 
     if (!hostAllowed(req)) return deny('Forbidden');
     let url;
     try { url = new URL(req.url, `https://${req.headers.host}`); } catch { return deny('Forbidden'); }
-    const k = url.searchParams.get('k');
-    if (k !== null) {
-      if (!sameKey(k)) return deny('Forbidden');
-      url.searchParams.delete('k');
-      res.writeHead(302, { ...headers, 'Cache-Control': 'no-store', Location: url.pathname + url.search,
-        'Set-Cookie': `${COOKIE}=${encodeURIComponent(key)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000` });
-      res.end();
-      return true;
+    if (url.searchParams.has('k')) {
+      if (!keyInQuery(url)) return deny('Forbidden');
+      if (!cookieValid(req)) res.setHeader('Set-Cookie', cookieHeader());
+      return false;
     }
-    return cookieValid(req) ? false : deny('Forbidden');
+    if (cookieValid(req) || PUBLIC_STATIC.test(url.pathname)) return false;
+    return deny('Forbidden');
   }
 
-  /** WebSocket upgrade: public ones need the cookie and an Origin equal to https://<their own tunnel host>. */
+  /** WebSocket upgrade: public ones need the cookie (or ?k=) and an Origin equal to https://<their own tunnel host>. */
   function wsAllowed(req) {
     if (!isPublic(req)) return null; // not public: the caller applies its normal loopback rules
-    if (!enabled || !hostAllowed(req) || !cookieValid(req)) return false;
+    if (!enabled || !hostAllowed(req)) return false;
+    let url; try { url = new URL(req.url, `https://${req.headers.host}`); } catch { return false; }
+    if (!cookieValid(req) && !keyInQuery(url)) return false;
     return req.headers.origin === `https://${req.headers.host}`;
   }
 

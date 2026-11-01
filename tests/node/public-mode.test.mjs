@@ -43,14 +43,24 @@ test('a public request without key or cookie is 403', async () => {
   assert.equal((await request('/play.html', { Host: 'evil.example.com' })).status, 403, 'unknown host');
 });
 
-test('the right key becomes an HttpOnly cookie and redirects without k', async () => {
-  const r = await request('/play.html?x=1&k=' + KEY, tunnel());
-  assert.equal(r.status, 302); assert.equal(r.headers.location, '/play.html?x=1');
-  const cookie = r.headers['set-cookie'][0];
-  assert.match(cookie, new RegExp(`^${COOKIE}=`)); for (const flag of ['HttpOnly', 'Secure', 'SameSite=Lax']) assert.ok(cookie.includes(flag), flag);
-  assert.equal(r.headers['cross-origin-opener-policy'], 'same-origin');
-  const ok = await request('/play.html', tunnel({ Cookie: cookie.split(';')[0], 'sec-fetch-site': 'same-origin' }));
-  assert.equal(ok.status, 200); assert.equal(ok.body, 'play page'); assert.equal(ok.headers['cross-origin-embedder-policy'], 'require-corp');
+test('the right key on ANY page sets the cookie and serves it, keeping k (cookie-less browsers can still use it)', async () => {
+  for (const p of ['/play.html', '/boot.wasm']) {
+    const r = await request(`${p}?x=1&k=${KEY}`, tunnel());
+    assert.equal(r.status, 200, p);
+    const cookie = r.headers['set-cookie'][0];
+    assert.match(cookie, new RegExp(`^${COOKIE}=`)); for (const flag of ['HttpOnly', 'Secure', 'SameSite=Lax']) assert.ok(cookie.includes(flag), flag);
+    assert.equal(r.headers['cross-origin-opener-policy'], 'same-origin'); assert.equal(r.headers['cross-origin-embedder-policy'], 'require-corp');
+  }
+  const again = await request('/play.html', tunnel({ Cookie: `${COOKIE}=${KEY}`, 'sec-fetch-site': 'same-origin' }));
+  assert.equal(again.status, 200); assert.equal(again.body, 'play page'); assert.equal(again.headers['set-cookie'], undefined);
+  assert.equal((await request('/play.html?k=wrong-key-0123456789abcdef', tunnel({ Cookie: `${COOKIE}=${KEY}` }))).status, 403, 'a wrong k is refused even with a good cookie');
+});
+
+test('public static code and the favicon need no key; the game files and pages still do', async () => {
+  assert.equal((await request('/favicon.ico', tunnel())).status, 204);
+  assert.equal((await request('/style.css', tunnel())).status, 404, 'allowed through the gate (the file does not exist in this fixture)');
+  assert.equal((await request('/runtime/gl.mjs', tunnel())).status, 404);
+  for (const p of ['/play.html', '/boot.wasm', '/media/x.bin', '/warm-media.json', '/packs/a.pack']) assert.equal((await request(p, tunnel())).status, 403, p);
 });
 
 test('a valid cookie does not open cross-site subresources', async () => {
@@ -60,8 +70,9 @@ test('a valid cookie does not open cross-site subresources', async () => {
 });
 
 test('websocket upgrades: 403 without the cookie or with a foreign Origin, local rules untouched', async () => {
-  const upgrade = headers => request('/ws', { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==', ...headers });
+  const upgrade = (headers, url = '/ws') => request(url, { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==', ...headers });
   assert.equal((await upgrade(tunnel({ Origin: `https://${HOST}` }))).status, 403);
+  assert.equal((await upgrade(tunnel({ Origin: `https://${HOST}` }), '/ws?k=wrong-key-0123456789abcdef')).status, 403);
   assert.equal((await upgrade(tunnel({ Origin: 'https://other.trycloudflare.com', Cookie: `${COOKIE}=${KEY}` }))).status, 403);
   assert.equal((await upgrade({ Origin: 'http://evil.example.com' })).status, 403);
 });
@@ -72,6 +83,8 @@ test('gate unit: verdicts and a missing/short key', () => {
   assert.equal(gate.wsAllowed(req({ host: '127.0.0.1:8098' })), null);
   assert.equal(gate.wsAllowed(req({ host: HOST, origin: `https://${HOST}`, cookie: `a=b; ${COOKIE}=${KEY}` })), true);
   assert.equal(gate.wsAllowed(req({ host: HOST, origin: `https://${HOST}`, cookie: `${COOKIE}=x` })), false);
+  assert.equal(gate.wsAllowed({ headers: { host: HOST, origin: `https://${HOST}` }, url: `/ws?k=${KEY}` }), true, 'the key in the query works without a cookie');
+  assert.equal(gate.wsAllowed({ headers: { host: HOST, origin: `https://${HOST}` }, url: '/ws?k=nope' }), false);
   assert.equal(gate.wsAllowed(req({ host: HOST, cookie: `${COOKIE}=${KEY}` })), false, 'Origin is required');
   const off = createPublicGate({ key: 'short' });
   assert.equal(off.enabled, false); assert.equal(off.wsAllowed(req({ host: HOST, origin: `https://${HOST}`, cookie: `${COOKIE}=short` })), false);

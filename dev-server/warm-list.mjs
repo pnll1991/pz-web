@@ -3,6 +3,9 @@
 // list is only paths and byte ranges the game itself asked for (no file contents) and lives under /tmp, not in the repository.
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 
+// The access key must never be stored: it travels as ?k= on requests made by cookie-less browsers.
+export const stripKey = url => url.replace(/([?&])k=[^&]*&?/, '$1').replace(/[?&]$/, '');
+
 export function createWarmList({ file = process.env.PZWEB_WARM_FILE || '/tmp/pzweb-warm.json', max = 20000 } = {}) {
   const entries = new Map();
   try { for (const [url, range] of JSON.parse(readFileSync(file, 'utf8'))) entries.set(`${url}|${range}`, [url, range]); } catch { /* none yet */ }
@@ -13,6 +16,7 @@ export function createWarmList({ file = process.env.PZWEB_WARM_FILE || '/tmp/pzw
   };
   return {
     record(url, range = '') {
+      url = stripKey(url);
       const key = `${url}|${range}`;
       if (entries.has(key) || entries.size >= max) return false;
       entries.set(key, [url, range]);
