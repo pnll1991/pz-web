@@ -250,17 +250,22 @@ try {
     await setProbe(true);
     let st = null;
     const tClick = Date.now();
-    for (let i = 0; i < 12; i++) { // "Click to Start": a ~3 fps un clic puede no tomar; hasta que la guía pause el juego
+    // La sonda puede no publicar nunca (visto 01/11 en el build 00:15: playerProbe=null aun con la guía abierta);
+    // en ese caso se sigue a ciegas con la receta de la ronda 80 (3 clics, 35 s, Esc 800 ms) y se avisa en el resumen.
+    let blind = false;
+    for (let i = 0; i < 4; i++) { // "Click to Start": a ~3 fps un clic puede no tomar
       await click(640, 400); await sleep(5000); st = await pstate(); log('click-to-start', i + 1, st);
       if (st && st.gtp) break;
     }
-    for (const end = Date.now() + 90000; !(st && st.gtp) && Date.now() < end; await sleep(3000)) st = await pstate();
+    for (const end = Date.now() + 60000; !(st && st.gtp) && Date.now() < end; await sleep(3000)) st = await pstate();
+    if (!st) { blind = true; summary.blind = true; await sleep(30000); }
     ev('started', st || {}); metric('click_to_guide_s', (Date.now() - tClick) / 1000, 1);
     await shot('guide');
-    if (st && st.gtp) { // Survival Guide abierta (pausa el juego): Esc 800 ms la cierra
+    if (blind) { await key('Escape', 800); await sleep(5000); log('modo a ciegas: Esc enviado (verificar con ingame.png)'); }
+    else if (st && st.gtp) { // Survival Guide abierta (pausa el juego): Esc 800 ms la cierra
       for (let i = 0; i < 3 && st && st.gtp; i++) { await key('Escape', 800); await sleep(4000); st = await pstate(); log('cerrar guía', i + 1, st); }
+      if (st && st.gtp) throw new Error(`la guía no se cerró: ${JSON.stringify(st)}`);
     }
-    if (!st || st.gtp) throw new Error(`no pude entrar al juego sin pausa: ${JSON.stringify(st)}`);
     const sIn = await snap(); ev('ingame', { du: sIn.du, probe: st });
     metric('T_ingame_wall_s', (Date.now() - tStart) / 1000, 1);
     await shot('ingame');
@@ -278,9 +283,9 @@ try {
       await sleep(30000);
       const f0 = await snap(); log('autoFlush antes de QUIT', f0.flush);
       await setProbe(true);
-      for (let i = 0; i < 3; i++) { await key('Escape', 800); await sleep(5000); st = await pstate(); log('Esc -> pausa', i + 1, st); if (st && st.gtp) break; }
+      for (let i = 0; i < 3; i++) { await key('Escape', 800); await sleep(5000); st = await pstate(); log('Esc -> pausa', i + 1, st); if (blind || (st && st.gtp)) break; }
       await shot('pause');
-      if (!st || !st.gtp) throw new Error('Esc no abrió el menú de pausa');
+      if (!blind && (!st || !st.gtp)) throw new Error('Esc no abrió el menú de pausa');
       const menuBefore = (await snap()).menu;
       await click(175, 524, 20 * 60000); ev('quit-click'); // QUIT
       await waitFor('menú tras QUIT', s => s.menu > menuBefore + 50, 20 * 60000);
