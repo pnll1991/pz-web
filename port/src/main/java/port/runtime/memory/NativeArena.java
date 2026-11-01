@@ -95,9 +95,13 @@ public final class NativeArena {
     public static synchronized long address(Buffer buffer, int position) {
         Objects.requireNonNull(buffer);
         if (position < 0 || position > buffer.capacity()) throw new IndexOutOfBoundsException("Buffer position");
-        for(var iterator=retired.iterator();iterator.hasNext();){Buffer old=iterator.next().get();if(old==null)iterator.remove();else if(old==buffer)throw new IllegalStateException("Buffer allocation was freed");}
         View view = views.get(buffer);
         if (view == null) {
+            // Round 81 (front 3): the use-after-free scan only matters for a buffer without a view: free()
+            // removes the view of every buffer it retires and nothing re-tracks an old Buffer object (track
+            // only sees fresh slices/duplicates). Scanning up to RETIRED_CAP WeakReferences on EVERY call cost
+            // one JS deref per entry (teavm.deref): ~25 s of 900 s on the ToS screen (boot profile r81).
+            for(var iterator=retired.iterator();iterator.hasNext();){Buffer old=iterator.next().get();if(old==null)iterator.remove();else if(old==buffer)throw new IllegalStateException("Buffer allocation was freed");}
             if (!(buffer instanceof ByteBuffer bytes) || !bytes.isDirect())
                 throw new UnsupportedOperationException("Arena address requires a registered/direct ByteBuffer view");
             long address = Math.addExact(next, 15) & -16L; next = Math.addExact(address, Math.max(1, bytes.capacity()) + 16);
