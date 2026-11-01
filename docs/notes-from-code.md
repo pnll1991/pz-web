@@ -1209,7 +1209,7 @@ candidato barato mueve más de ~4 % del tiempo medido. Sonda nueva: `tools/diag/
   (b) leer resultados ya publicados en un SAB (`Atomics.load`), (c) suspender **una fibra** con `@Async` hasta un
   `postMessage`/`Atomics.waitAsync` (no bloquea al resto, pero contagia la corrutina a todos los llamadores y toca el
   gate de `Thread.currentThread` de `scripts/build.sh`).
-- Latencia de una llamada síncrona Worker->Worker por SAB+Atomics: PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) µs ida y vuelta (20 000 llamadas). Sirve
+- Latencia de una llamada síncrona Worker->Worker por SAB+Atomics: 7,8 µs ida y vuelta (20 000 llamadas). Sirve
   de cota si algún día el juego entero corre en un Worker y llama a otro.
 - **OffscreenCanvas + WebGL2 + rAF en un Worker funcionan** en este Chrome (`transferControlToOffscreen` + `getContext('webgl2')` = "WebGL 2.0 (OpenGL ES 3.0 Chromium)", `requestAnimationFrame` disponible en el Worker). Pero mover el juego entero
   a un Worker no es barato: `port/shim/BrowserDom.java` usa `DOMParser`, `XMLSerializer` y
@@ -1259,11 +1259,15 @@ candidato barato mueve más de ~4 % del tiempo medido. Sonda nueva: `tools/diag/
   184,2 MB, **15,2 s** (2,25 ms por pedido, 4 % de la carga). Un prefetcher en Worker que llene un caché SAB ahorraría
   como mucho esos 15 s y sólo si adivina qué se lee; los 4112 lotheaders (32,5 MB) se leen todos al crear el
   IsoMetaGrid: un único rango/paquete para todos los ahorra sin Worker (front 2, cachés). Sonda (1 MiB por pedido):
-  hilo principal texto+`charCodeAt` PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms/MB (decodificación sola PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms/MB), Worker arraybuffer
-  PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms/MB, Worker 48 fetch en paralelo PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms/MB; 64 KiB: principal PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms, Worker PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms.
+  hilo principal texto+`charCodeAt` 16,9 ms/MB (decodificación sola 6,2 ms/MB), Worker arraybuffer
+  6,6 ms/MB, Worker 48 fetch en paralelo 4,6 ms/MB; 64 KiB: principal 1,11 ms, Worker 0,88 ms.
 - SHA-256 de los packs (packs.mjs verifica cada blob y cada rango, en serie): 256 MiB en trozos de 4 MiB, en serie
-  PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms, en paralelo PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms, en paralelo con el hilo principal ocupado PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms.
-- En partida: pendiente: el perfil en partida de front 3 y el bench ingame de front 0 aún no existen (create-save falló dos veces). Hasta que haya perfil, ninguna porción del frame en partida está medida; no se prototipa nada sobre números que no tenemos.
+  290 ms, en paralelo 268 ms, en paralelo con el hilo principal ocupado 288 ms.
+- Compilación de `boot.wasm` con `compileStreaming` (sonda): 640 ms y el hilo principal tuvo un hueco máximo de 621 ms (6 turnos): compila fuera del hilo pero la instanciación/validación lo ocupa; solaparlo con los packs ahorra < 1 s.
+- Lectura remota (sonda, 48 bloques de 1 MiB de `/media/binary.dat`): XHR síncrono de texto en el principal 16,9 ms/MB (6,2 de ellos son el `charCodeAt` byte a byte de `fetchRange`), arraybuffer síncrono en Worker 6,6 ms/MB, 48 fetch en paralelo 4,6 ms/MB. Con 64 KiB: 1,11 ms (principal) contra 0,88 ms (Worker). Cambiar `responseType` a arraybuffer en un Worker o evitar el `charCodeAt` ahorra ~60 % por MB, pero ya son sólo 15 s de 365 s.
+- SHA-256: 290 ms en serie contra 268 ms en paralelo por 256 MiB: `crypto.subtle` ya corre fuera del hilo y la verificación de packs no gana nada con Workers.
+- En partida (front 3, perfil ingame release-minpulse, 32,9 fps quieto / 26,2 caminando): el hilo principal está **ocioso 31-37 % entre frames**; `frameStep` Java 38 % (render 23 %, Lua 11 %, `zombie.iso` 11 % al caminar), `gl.mjs` ~4 %, frontera wasm<->JS ~14 %. Nada de eso se puede pipelinear a un Worker con ganancia medible: Java render/Lua/iso son del heap WasmGC; `gl.mjs` (~4 %) tendría que ejecutarse en el hilo del contexto y cada `getError`/consulta de estado exige esperar, cosa que el hilo principal no puede (Atomics.wait prohibido). El 31-37 % ocioso es espera de frame (rAF/timers), no trabajo trasladable.
+- **Veredicto: ninguna porción movible justifica `?worker=1`**; no se prototipa. Techo agregado de lo movible: ~4 % (XHR) + ~4 % (gl.mjs, sólo con el juego ya en un Worker) y a costa de reescribir `BrowserDom`.
 
 ### Opciones, de más a menos viable
 1. **Nativas propias como Workers wasm32** (cuando Lighting64/PopMan64/MapCollision64 dejen de ser simplificaciones):
@@ -1278,7 +1282,7 @@ candidato barato mueve más de ~4 % del tiempo medido. Sonda nueva: `tools/diag/
    lo sumo el self de gl.mjs + bindings WebGL; cada `getError`/`getParameter`/`readPixels`/estado de compilación de
    shader obliga a esperar y el hilo principal no puede esperar. Sólo viable con el juego ya en un Worker (opción 3).
 5. **Hilos Java del juego en Workers**: imposible con WasmGC hoy (ver hechos).
-- Estado del frente 4 al 01/11 02:35: sonda Chrome parcial (WasmGC->Worker, Atomics, OffscreenCanvas medidos; latencia SAB, lectura remota y SHA pendientes: bug de handshake corregido, vuelve a esperar turno). Veredicto: no hay prototipo `?worker=1` justificado.
+- Cierre del frente 4 (01/11): sonda Chrome completa (`/tmp/pz81/f4/probe5.json`), sin prototipo `?worker=1`.
 
 ## Ronda 81 — versión rápida (frente 1)
 - Lanzar: `scripts/fast.sh` (levanta 8098, comprueba el build) y abrir `http://127.0.0.1:8098/fast.html` (redirige a

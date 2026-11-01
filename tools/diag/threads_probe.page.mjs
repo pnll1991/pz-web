@@ -20,7 +20,7 @@ function syncTextRange(start, end) { // igual que vfs.mjs fetchRange en el hilo 
   return out;
 }
 const workerSrc = `
-const FILE=${JSON.stringify(FILE)};
+const FILE=${JSON.stringify(location.origin + FILE)};
 onmessage = async (e) => {
   const m = e.data;
   if (m.op === 'xhr') { const t0 = performance.now(); let sum = 0;
