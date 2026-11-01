@@ -199,6 +199,48 @@ class TransformerPatchTest {
     }
 
 
+    /** Cuenta las lecturas del campo `GLCapabilities.<field>` en todos los métodos de la clase. */
+    private static int countCapabilityReads(ClassHolder cls, String field) {
+        int n = 0;
+        for (var method : cls.getMethods()) {
+            if (method.getProgram() == null) continue;
+            for (var block : method.getProgram().getBasicBlocks())
+                for (var instruction : block)
+                    if (instruction instanceof org.teavm.model.instructions.GetFieldInstruction get
+                        && get.getField().getClassName().equals("org.lwjgl.opengl.GLCapabilities")
+                        && get.getField().getFieldName().equals(field)) n++;
+        }
+        return n;
+    }
+
+    /** Ronda 81b: SkyBox, IsoPuddles e IsoWater derivan apiId de GLCapabilities.OpenGL30; con apiId 0 el skybox se dibuja en la pantalla. */
+    @Test void fboApiIdGatesUseTheRealFboProbe() {
+        var source = source(gameJar());
+        var hierarchy = new org.teavm.model.ClassHierarchy(source);
+        for (var target : java.util.List.of("zombie.iso.sprite.SkyBox", "zombie.iso.IsoPuddles", "zombie.iso.IsoWater")) {
+            ClassHolder cls = source.get(target);
+            assertNotNull(cls, target);
+            assertTrue(countCapabilityReads(cls, "OpenGL30") > 0, target + " must read OpenGL30 before the patch");
+            int arb = countCapabilityReads(cls, "GL_ARB_framebuffer_object"), ext = countCapabilityReads(cls, "GL_EXT_framebuffer_object");
+            new port.compiler.FBOSupportCompatibility().transformClass(cls, new TestContext(hierarchy));
+            assertEquals(0, countCapabilityReads(cls, "OpenGL30"), target + " still reads GLCapabilities.OpenGL30");
+            assertEquals(arb, countCapabilityReads(cls, "GL_ARB_framebuffer_object"), target + ": the ARB gate must stay as the game wrote it");
+            assertEquals(ext, countCapabilityReads(cls, "GL_EXT_framebuffer_object"), target + ": the EXT gate must stay as the game wrote it");
+            int probes = 0;
+            for (var method : cls.getMethods()) probes += method.getProgram() == null ? 0 : countInvokes(method, "port.shim.BrowserGL", "fboProbeComplete");
+            assertTrue(probes > 0, target + " does not ask the FBO probe");
+        }
+        // Control: the original texture gates keep working, and a class without the read still fails the build.
+        for (var target : java.util.List.of("zombie.core.textures.TextureFBO", "zombie.core.textures.TextureFBODepth")) {
+            ClassHolder cls = source.get(target);
+            assertTrue(countCapabilityReads(cls, "OpenGL30") > 0, target);
+            new port.compiler.FBOSupportCompatibility().transformClass(cls, new TestContext(hierarchy));
+            assertEquals(0, countCapabilityReads(cls, "OpenGL30"), target);
+        }
+        var empty = new ClassHolder("zombie.iso.sprite.SkyBox"); empty.setParent("java.lang.Object");
+        assertThrows(IllegalStateException.class, () -> new port.compiler.FBOSupportCompatibility().transformClass(empty, new TestContext(hierarchy)));
+    }
+
     /** Ronda 80 (frente O): las tres esperas activas de IngameState.exit ceden mientras esperan. */
     @Test void spinWaitsOnThreadIsAliveYield() {
         var source = source(gameJar());

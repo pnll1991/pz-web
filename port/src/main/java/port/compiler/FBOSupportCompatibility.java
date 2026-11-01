@@ -50,14 +50,33 @@ public final class FBOSupportCompatibility implements ClassHolderTransformer {
         new MethodReference("port.shim.BrowserGL", "fboProbeComplete", ValueType.BOOLEAN);
     private static final MethodDescriptor CHECK = new MethodDescriptor("checkFBOSupport", ValueType.BOOLEAN);
 
+    /** Classes whose constructor lambda derives {@code apiId} from {@code GLCapabilities.OpenGL30} (round 81b). */
+    private static final java.util.Set<String> FBO_API_ID_CLASSES = java.util.Set.of(
+        "zombie.iso.sprite.SkyBox", "zombie.iso.IsoPuddles", "zombie.iso.IsoWater");
+
     @Override public void transformClass(ClassHolder cls, ClassHolderTransformerContext context) {
+        if (FBO_API_ID_CLASSES.contains(cls.getName())) {
+            int patched = 0;
+            for (MethodHolder method : cls.getMethods())
+                if (method.getProgram() != null) patched += patchOpenGL30Reads(cls, method);
+            if (patched == 0) throw new IllegalStateException(
+                cls.getName() + " has no GLCapabilities.OpenGL30 read - the apiId gate changed, refusing to patch blindly");
+            return;
+        }
         if (!cls.getName().equals(TEXTURE_FBO) && !cls.getName().equals(TEXTURE_FBO_DEPTH)) return;
         MethodHolder check = cls.getMethod(CHECK);
         if (check == null) throw new IllegalStateException(
             "Inventoried " + cls.getName() + ".checkFBOSupport()Z is missing");
-        var program = check.getProgram();
-        if (program == null) throw new IllegalStateException(
+        if (check.getProgram() == null) throw new IllegalStateException(
             cls.getName() + ".checkFBOSupport has no program to patch");
+        if (patchOpenGL30Reads(cls, check) == 0) throw new IllegalStateException(
+            cls.getName() + " has no GLCapabilities.OpenGL30 read - the inventoried FBO gate changed, "
+                + "refusing to patch blindly");
+    }
+
+    /** Replaces each {@code GLCapabilities.OpenGL30} read of the method by the real FBO probe; returns how many. */
+    private static int patchOpenGL30Reads(ClassHolder cls, MethodHolder method) {
+        var program = method.getProgram();
         List<GetFieldInstruction> gates = new ArrayList<>();
         for (int b = 0; b < program.basicBlockCount(); b++) {
             for (Instruction instruction = program.basicBlockAt(b).getFirstInstruction();
@@ -67,9 +86,6 @@ public final class FBOSupportCompatibility implements ClassHolderTransformer {
                     && get.getField().getFieldName().equals("OpenGL30")) gates.add(get);
             }
         }
-        if (gates.isEmpty()) throw new IllegalStateException(
-            cls.getName() + " has no GLCapabilities.OpenGL30 read - the inventoried FBO gate changed, "
-                + "refusing to patch blindly");
         for (GetFieldInstruction gate : gates) {
             Variable produced = gate.getReceiver();
             if (produced == null) throw new IllegalStateException(
@@ -82,5 +98,6 @@ public final class FBOSupportCompatibility implements ClassHolderTransformer {
             probe.setLocation(gate.getLocation());
             gate.replace(probe);
         }
+        return gates.size();
     }
 }

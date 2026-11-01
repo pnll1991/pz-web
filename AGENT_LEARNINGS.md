@@ -928,3 +928,7 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Proceso: `flock` no es FIFO; con varias corridas largas encoladas una corta puede esperar mucho. Encolar las cortas primero o avisar en el tablero.
 - Patrón: un bench "a ciegas" (sin sonda) tiene que decidir el estado por señales robustas (tamaño del PNG, contadores del juego) y probar varias direcciones: la partida
   guardada dejó al jugador contra una pared y `W` no se movía aunque todo funcionaba (colisión correcta).
+
+## R81b: esfera azul/parpadeo negro en partida
+- Causa: puertas `apiId` (SkyBox/IsoPuddles/IsoWater) leen GLCapabilities.OpenGL30/ARB/EXT, falsas en el port → RenderSkyBox no enlaza su FBO y limpia/dibuja en pantalla. No era release, texcache ni timers.
+- Patrón a evitar: parchear solo el chequeo de soporte (TextureFBO) y olvidar otras lecturas de capacidades; listar con bytecode todas las lecturas de la capacidad. Detectar por capturas (1/60 cuadros) es débil: usar el contador `screenSmallClears` de gl.mjs (clear en framebuffer por defecto con viewport menor al canvas; 28 de arranque son normales, no deben crecer).

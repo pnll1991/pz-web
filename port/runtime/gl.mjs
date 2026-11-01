@@ -181,6 +181,10 @@ export class GLBridge {
     this.attribGaps = {};        // attribute-bit name -> pushes whose desktop state this backend lacks
     this.attribLimit = 64;       // answered as GL_MAX_(CLIENT_)ATTRIB_STACK_DEPTH
     this.viewportBox = [0, 0, canvas.width, canvas.height];
+    // Round 81b diagnostic: glClear on the DEFAULT framebuffer with a viewport smaller than the drawing buffer. The game's
+    // render-to-texture helpers (sky box, puddles, water) clear and draw after binding their own FBO and set a small
+    // viewport; if the bind is skipped (apiId 0, see FBOSupportCompatibility) the clear wipes the screen instead.
+    this.screenSmallClears = 0; this.screenSmallClearInfo = null;
     this.scissorBox = [0, 0, canvas.width, canvas.height];
     this.buffers = new Map(); // GL handle -> {buffer,size,target}
     this.queries = new Map(); // GL handle -> {query,target}
@@ -401,6 +405,14 @@ export class GLBridge {
     return { token, unmapped };
   }
   clear(...args) {
+    if (!this.drawFramebufferHandle) { // default framebuffer
+      const v = this.viewportBox, gl = this.context;
+      if (v[0] !== 0 || v[1] !== 0 || v[2] < gl.drawingBufferWidth || v[3] < gl.drawingBufferHeight) {
+        this.screenSmallClears++;
+        const k = v.join(','); (this.screenSmallClearByViewport ??= {})[k] = (this.screenSmallClearByViewport[k] || 0) + 1;
+        if (this.screenSmallClearInfo === null) this.screenSmallClearInfo = { viewport: v.slice(), buffer: [gl.drawingBufferWidth, gl.drawingBufferHeight], seq: this.callSeq };
+      }
+    }
     const mapped = this.clearMask(args[0]);
     this.call('clear', mapped.token);
     if (mapped.unmapped !== 0) {

@@ -278,6 +278,38 @@ try {
     await shot('ingame');
     await setProbe(false); await sleep(2500);
 
+    if (MODE === 'ingame' && A['sphere-scan']) {
+      // Ronda 81b: cuenta fotogramas con la esfera azul del skybox sobre el mundo negro (RenderSkyBox sin framebuffer propio).
+      // Cada captura se clasifica en una página aparte: negro = píxeles casi negros; azul = píxeles de cielo (B dominante) en la
+      // mitad izquierda. 'esfera' = muy negra y con un bloque azul grande. Una captura cada 700 ms.
+      const scanPage = await context.newPage();
+      const classify = b64 => scanPage.evaluate(async x => {
+        const bm = await createImageBitmap(await (await fetch('data:image/png;base64,' + x)).blob());
+        const c = new OffscreenCanvas(bm.width, bm.height), g = c.getContext('2d'); g.drawImage(bm, 0, 0);
+        const d = g.getImageData(0, 0, bm.width, bm.height).data; let black = 0, blue = 0, n = 0;
+        for (let y = 0; y < bm.height; y += 3) for (let xx = 0; xx < bm.width; xx += 3) {
+          const i = (y * bm.width + xx) * 4, r = d[i], gg = d[i + 1], bb = d[i + 2]; n++;
+          if (r + gg + bb < 36) black++;
+          if (xx < bm.width * 0.6 && bb > 130 && bb > r + 35 && bb > gg + 5) blue++;
+        }
+        return { black: black / n, blue: blue / n };
+      }, b64);
+      const N = +A['sphere-scan'], frames = [];
+      for (let i = 0; i < N; i++) {
+        const b64 = (await capped(page.screenshot({ timeout: 90000 }), 95000, 'screenshot')).toString('base64');
+        const c = await capped(classify(b64), 60000, 'classify').catch(() => null);
+        if (c) frames.push({ i, ...c, sphere: c.black > 0.45 && c.blue > 0.04 });
+        await sleep(700);
+      }
+      await scanPage.close().catch(() => {});
+      const sph = frames.filter(f => f.sphere).length;
+      metric('sphere_frames', sph, 0); metric('sphere_total', frames.length, 0);
+      const sc = await evalc(() => { const g = globalThis.pzRuntime?.gl; return g ? { n: g.screenSmallClears, info: g.screenSmallClearInfo, by: g.screenSmallClearByViewport } : null; }).catch(() => null);
+      if (sc) { metric('screen_small_clears', sc.n, 0); summary.screenSmallClear = sc; log('screen-small-clear', sc); }
+      metric('black_frames', frames.filter(f => f.black > 0.9).length, 0);
+      summary.sphere = frames;
+      log('sphere-scan', sph, '/', frames.length);
+    }
     if (MODE === 'ingame') {
       await rate(FPS_S, 'idle');
       // Movimiento sin sonda: diferencia de pantalla completa antes/después de W (la cámara sigue al jugador).
