@@ -911,3 +911,20 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   hacer ACCEPT y recién ahí esperar el menú; leer `UNTIL ... reached|timeout` antes de sacar tiempos.
 - Patrón (frente V): una sesión larga no puede usar rutas relativas si el repo se mueve; hacer `cd` a la ruta
   absoluta actual en cada comando y no dejar tareas en segundo plano con cwd del árbol viejo.
+
+## Ronda 81 (Code, 01/11) — velocidad
+- Patrón: medir antes de optimizar. Un perfil de CPU de 6 min mostró que el 44 % del arranque era un diagnóstico nuestro (`BrowserMonitor`, `new Error().stack`
+  por `notifyAll`) y el 17,6 % un `StringBuilder.delete` O(n²) de TeaVM; ninguno aparecía a simple vista. Mejor enfoque: perfil CDP primero, luego tocar.
+- Patrón: `setTimeout(fn, 0)` encadenado queda limitado por el navegador; con el hilo principal ocupado el bucle del juego espera entre frames (31–37 %
+  idle, menú a ~1 fps). `MessageChannel` da el mismo orden FIFO sin el límite: +56/71 % de fps. Medir siempre con un A/B del mismo build y perfil.
+- Error de comparación: el punto de partida se midió con perfil de Chrome frío y los "después" con caché HTTP tibia; no atribuir el cambio a un frente sin una
+  fila fría equivalente (342 s -> 104 s en frío es el efecto de los arreglos de código; el resto son cachés/release).
+- Causa: `wasm-opt -O2` por defecto inlinea sin límite las funciones de un solo llamador (`IsoCell::render` 1 KB -> 235 KB) y TurboFan se queda sin memoria
+  (`V8 process OOM (Zone)`, PAGE-CRASH sin error JS ~100 s dentro del juego). Mejor enfoque: `--one-caller-inline-max-function-size=3000
+  --inline-max-combined-binary-size=30000` y vigilar el tamaño de la mayor función del code section.
+- Error de proceso (otra vez): `pkill -f`/`pgrep -f` con un patrón que también aparece en MI línea de comandos (por ejemplo dentro de un `bash -c` o de un `case`)
+  mata mi propia shell (exit 144). Mejor enfoque: filtrar `ps -eo pid,args | grep -v grep` y matar el pid concreto, o un script aparte.
+- Error de invocado: `scripts/bench.sh --extra a=1 --extra b=2` conserva sólo el último `--extra`; pasar una cadena `--extra "a=1&b=2"`. Verificar la URL que imprime la corrida.
+- Proceso: `flock` no es FIFO; con varias corridas largas encoladas una corta puede esperar mucho. Encolar las cortas primero o avisar en el tablero.
+- Patrón: un bench "a ciegas" (sin sonda) tiene que decidir el estado por señales robustas (tamaño del PNG, contadores del juego) y probar varias direcciones: la partida
+  guardada dejó al jugador contra una pared y `W` no se movía aunque todo funcionaba (colisión correcta).

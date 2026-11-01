@@ -555,3 +555,16 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
   `/media/models_x/` encolado tras el swap (bajo chrome.lock). Respaldo: `build/real-browser/packs/index.json.before-frontL`.
 - Sin verificar en Chrome: que el jugador se vea. Riesgo: clips todavía `.txt` sobre esqueleto jassimp.
 - Faltan: ropa/pelo/otros modelos de `models_X` (sólo 4 .x servidos), FBX/GLB (metadata de nodos no soportada en el caché).
+
+## Ronda 81 (Code, 31/10–01/11) — velocidad
+- **Fase**: arranque y fps. Versión rápida: `scripts/fast.sh` + `http://127.0.0.1:8098/fast.html` (= `game.html?build=release-minpulse&persist=1&texcache=1`).
+- **Evidencia** (bench repetible `scripts/bench.sh`, misma partida, Chrome headless con la RTX 3090): arranque a términos 342 s -> 35 s, menú
+  352 s -> 37 s, entrar a la partida guardada 437 s -> 126 s (carga del mundo 74 s), fps de juego en partida 16–22 (dev) -> 58,8 quieto / 57,6
+  caminando (tope rAF 60), jugador movido 4,4 tiles, QUIT -> menú 17,8 s, segundo CONTINUE 46 s. Tabla y condiciones en `~/pzshots/CLAUDE_REPORT_R81.md`.
+- **Qué lo explica** (por impacto): diagnóstico `BrowserMonitor` (44 % del arranque) y `StringBuilder.delete` O(n²) (17,6 %) corregidos; temporizadores
+  `setTimeout(0)` por `MessageChannel` (+56/71 % de fps); release TeaVM ADVANCED + `wasm-opt -O2` con inlining acotado (el sin acotar crashea el renderer
+  por OOM de TurboFan); caché de texturas en IndexedDB (~945 MB, verificada campo por campo) y lectura en bloque de lotheaders.
+- **Hilos**: no viable en Chrome 156 (Wasm GC no cruza a Workers, sin tipos `shared`); sin prototipo. Detalle en `docs/notes-from-code.md`.
+- **Faltantes**: por qué un menú con partida guardada rinde menos que sin ella (37 vs 16 fps en dev); el segundo CONTINUE rinde 37 fps (el primero 59);
+  no se repitió el perfil en partida después de los temporizadores; vehículos/zombis/pelo siguen pendientes (ronda 80).
+- **Bloqueos**: ninguno. **Pasos manuales**: ninguno (la caché de texturas ocupa ~945 MB del perfil de Chrome; `?nocache=1` la apaga).
