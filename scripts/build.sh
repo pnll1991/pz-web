@@ -19,9 +19,12 @@ cd "$PZ_WEB_ROOT"
 # omite). Staging port/target/web-staging/release/<sub>, publica en port/target/web/release/<sub> (servido como
 # /release/game/; game.html?build=release lo carga). Nunca toca port/target/web/game ni los reportes del dev.
 # Los gates miran la salida de TeaVM, antes de wasm-opt (que preserva la semántica pero puede inlinear).
-DEV=0; GAME=0; REL=0; ARGS=()
+# --pulse=min (sólo con --release): StartupProgress instrumenta apenas las fronteras que usa bench.mjs (Display#update(Z),
+# TermsOfServiceState/MainScreenState#render, GameLoadingState/IngameState enter/exit/update); publica en
+# port/target/web/release-minpulse/game (game.html?build=release-minpulse). Sin la opción el build no cambia.
+DEV=0; GAME=0; REL=0; PULSE=full; ARGS=()
 for arg in "$@"; do
-  case "$arg" in --dev) DEV=1 ;; --release) DEV=1; REL=1 ;; --with-game) GAME=1; ARGS+=("$arg") ;; *) ARGS+=("$arg") ;; esac
+  case "$arg" in --dev) DEV=1 ;; --release) DEV=1; REL=1 ;; --pulse=*) PULSE=${arg#--pulse=} ;; --with-game) GAME=1; ARGS+=("$arg") ;; *) ARGS+=("$arg") ;; esac
 done
 step_t=$(date +%s); build_t=$step_t
 step() { local now; now=$(date +%s); echo "[build.sh] $1: $((now - step_t)) s"; step_t=$now; }
@@ -29,10 +32,12 @@ if [ "$GAME" = 1 ]; then SUB=game; else SUB=.; fi
 REPORTS=port/target/reports; DEST=port/target/web/$SUB; TEAVM_OPT=SIMPLE
 if [ "$REL" = 1 ]; then
   REPORTS=port/target/reports/release; DEST=port/target/web/release/$SUB; TEAVM_OPT=${PZ_TEAVM_OPT:-ADVANCED}
+  if [ "$PULSE" = min ]; then REPORTS=port/target/reports/release-minpulse; DEST=port/target/web/release-minpulse/$SUB; fi
   mkdir -p "$REPORTS"
 fi
 if [ "$DEV" = 1 ]; then
-  if [ "$REL" = 1 ]; then STAGE=port/target/web-staging/release/$SUB; else STAGE=port/target/web-staging/$SUB; fi
+  if [ "$REL" = 1 ] && [ "$PULSE" = min ]; then STAGE=port/target/web-staging/release-minpulse/$SUB
+  elif [ "$REL" = 1 ]; then STAGE=port/target/web-staging/release/$SUB; else STAGE=port/target/web-staging/$SUB; fi
   python3 scripts/prepare_build.py "${ARGS[@]}" --cache-exposure --output-dir "$STAGE"; step prepare_build
   # Generadores que reescriben siempre: conservar el mtime de los archivos cuyo contenido no cambió,
   # para que maven-compiler no recompile el módulo entero por fuentes "nuevas" idénticas.
@@ -46,7 +51,7 @@ if [ "$DEV" = 1 ]; then
   step prepare_teavm+contracts
   # pz.teavm.filterCache: memo de DependencyAnalyzer.filterType (scripts/prepare_teavm.py patch_dependency_filter).
   mvn -B -ntp -o -Dmaven.repo.local="$PZ_WEB_ROOT/.toolchain/m2" -Dmaven.test.skip=true -Dpz.teavm.filterCache=true \
-    -Dpz.teavm.optimization="$TEAVM_OPT" -f port/pom.xml prepare-package
+    -Dpz.teavm.optimization="$TEAVM_OPT" -Dpz.pulse="$PULSE" -f port/pom.xml prepare-package
   step maven
   WASM=$STAGE/boot.wasm
 else

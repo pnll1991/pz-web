@@ -326,6 +326,20 @@ public final class StartupProgress implements ClassHolderTransformer {
     private static final java.util.Map<String,String> PENDING_FLAG = java.util.Map.of(
         "zombie.core.opengl.RenderContextQueueItem#setWaiting()V","true",
         "zombie.core.opengl.RenderContextQueueItem#invoke()V","false");
+    // Ronda 81 (frente 1): -Dpz.pulse=min (build.sh --release --pulse=min). Sólo estas fronteras (entrada y retorno), las que
+    // usan tools/diag/bench.mjs y las sondas de estado; el resto de las ~1000 fronteras cuesta ~23 % del arranque
+    // (un @JSBody por pulso) y cada frame en juego. Las inyecciones funcionales de PENDING_FLAG se conservan.
+    private static final Set<String> MIN_METHODS = Set.of(
+        "org.lwjglx.opengl.Display#update(Z)V",
+        "zombie.gameStates.TermsOfServiceState#render()V",
+        "zombie.gameStates.MainScreenState#render()V",
+        "zombie.gameStates.MainScreenState#enter()V",
+        "zombie.gameStates.GameLoadingState#enter()V",
+        "zombie.gameStates.GameLoadingState#exit()V",
+        "zombie.gameStates.IngameState#enter()V",
+        "zombie.gameStates.IngameState#exit()V",
+        "zombie.gameStates.IngameState#update()Lzombie/gameStates/GameStateMachine$StateAction;");
+    private static final boolean MIN_PULSE = "min".equals(System.getProperty("pz.pulse"));
     @Override public void transformClass(ClassHolder cls,ClassHolderTransformerContext context) {
         // Round 32 A/B: PZ_PULSE_OFF=1 disables the boundary pulses entirely, so the Chrome
         // diagnostics can prove whether the "array element access out of bounds" in
@@ -334,7 +348,9 @@ public final class StartupProgress implements ClassHolderTransformer {
         if(System.getenv("PZ_PULSE_OFF")!=null)return;
         for(var method:cls.getMethods()) {
             String key=cls.getName()+"#"+method.getDescriptor();
-            if(!METHODS.contains(key)&&!EXTRA_METHODS.contains(key)&&!CLASSES.contains(cls.getName())
+            boolean rec=!MIN_PULSE||MIN_METHODS.contains(key);
+            if(MIN_PULSE&&!rec&&!PENDING_FLAG.containsKey(key))continue;
+            if(!MIN_PULSE&&!METHODS.contains(key)&&!EXTRA_METHODS.contains(key)&&!CLASSES.contains(cls.getName())
                 &&!EXTRA_CLASSES.contains(cls.getName())&&!ANIM_CLASSES.contains(cls.getName())
                 &&!FBO_CLASSES_METHODS.contains(key)
                 &&!MENU_CLASSES_METHODS.contains(key)
@@ -352,7 +368,7 @@ public final class StartupProgress implements ClassHolderTransformer {
                 first.insertPrevious(call);
             }
             if(first==null)throw new IllegalStateException("Empty observed entry: "+key);
-            record(program,first,key+":entered");
+            if(rec)record(program,first,key+":entered");
             String flag=PENDING_FLAG.get(key);
             if(flag!=null){
                 for(var block:program.getBasicBlocks()) {
@@ -363,7 +379,7 @@ public final class StartupProgress implements ClassHolderTransformer {
             }
             for(var block:program.getBasicBlocks()) {
                 for(Instruction i=block.getFirstInstruction();i!=null;i=i.getNext()) {
-                    if(i instanceof ExitInstruction)record(program,i,key+":returned");
+                    if(rec&&i instanceof ExitInstruction)record(program,i,key+":returned");
                 }
             }
         }
