@@ -135,6 +135,11 @@ const snap = () => evalc(([du, tos, menu]) => {
   return { now: performance.now(), du: c[du] | 0, tos: c[tos] | 0, menu: c[menu] | 0, raf: globalThis.__bench?.raf | 0,
     flush: f ? { ...f } : null, phase: globalThis.pzGame?.phase || null, runtime: !!globalThis.pzRuntime };
 }, [DU, TOS, MENU]).catch(e => ({ error: String(e).slice(0, 120) }));
+const remote = async (label) => { // pedido de front 4: XHR síncronos de /media (vfs.remoteStats)
+  const r = await evalc(() => { const s = globalThis.pzRuntime?.vfs?.remoteStats; return s ? { ...s } : null; }).catch(() => null);
+  if (!r) return; summary[`remote_${label}`] = r;
+  metric(`remote_req_${label}`, r.requests, 0); metric(`remote_mb_${label}`, r.bytes / 1048576, 1); metric(`remote_ms_${label}`, r.ms, 0);
+};
 const firstPulse = labels => evalc(ls => ls.map(l => { const p = (globalThis.pzGameProgress || []).find(x => x.label === l); return p ? p.time : null; }), labels).catch(() => labels.map(() => null));
 async function waitFor(what, pred, timeoutMs, everyMs = 2000) {
   const end = Date.now() + timeoutMs; let s;
@@ -185,15 +190,15 @@ try {
   ev('domcontentloaded');
   await waitFor('pzRuntime', s => s.runtime, 20 * 60000);
   const saves0 = await savesInfo(); summary.savesBefore = saves0; log('SAVES antes', saves0);
-  const hasSave = saves0 && !saves0.error && Object.keys(saves0.idbDirs || {}).length > 0;
+  const hasSave = saves0 && !saves0.error && saves0.thumbs.length > 0; // thumb.png sólo lo escribe el guardado del QUIT
   if (MODE === 'ingame' && !hasSave) throw new Error('el perfil no tiene partida: correr scripts/bench.sh --mode create-save primero');
   if (MODE === 'create-save' && hasSave && !A.force) log('el perfil ya tiene partida; create-save sigue (NEW GAME agrega otra). Usar un perfil nuevo para empezar de cero');
 
   const sTos = await waitFor('TermsOfServiceState#render>=20', s => s.tos >= 20, 25 * 60000);
   ev('tos-ready', { tos: sTos.tos });
-  const B = await evalc(() => ({ ...globalThis.__bench, res: performance.getEntriesByType('resource').filter(e => /boot\.wasm$|packs\//.test(e.name)).map(e => ({ n: e.name.replace(/^.*\/\/[^/]+/, ''), end: e.responseEnd, start: e.startTime, enc: e.encodedBodySize, tx: e.transferSize })) }));
+  const B = await evalc(() => ({ ...globalThis.__bench, res: performance.getEntriesByType('resource').filter(e => /boot\.wasm$|\/\/[^/]+\/packs\//.test(e.name)).map(e => ({ n: e.name.replace(/^.*\/\/[^/]+/, ''), end: e.responseEnd, start: e.startTime, enc: e.encodedBodySize, tx: e.transferSize })) }));
   const comp = B.compiles.find(c => /boot\.wasm$/.test(c.url)), inst = B.instantiates.find(i => i.teavm);
-  const wasmRes = B.res.find(r => /boot\.wasm$/.test(r.n)), packRes = B.res.filter(r => /packs\//.test(r.n));
+  const wasmRes = B.res.find(r => /boot\.wasm$/.test(r.n)), packRes = B.res.filter(r => r.n.startsWith('/packs/')); // sólo los packs del arranque, no /media/texturepacks (XHR de la VFS)
   summary.wasm = { compile: comp, instantiate: inst, resource: wasmRes, packs: { n: packRes.length, endMax: Math.max(0, ...packRes.map(r => r.end)), tx: packRes.reduce((s, r) => s + (r.tx || 0), 0) } };
   metric('T_packs_s', sec(summary.wasm.packs.endMax));
   metric('pack_transfer_mb', summary.wasm.packs.tx / 1048576, 1);
@@ -211,6 +216,7 @@ try {
   metric('T_menu_s', sec(tMenu));
   metric('menu_after_accept_s', tMenu != null && !sAcc.error ? sec(tMenu - sAcc.now) : null);
   metric('T_menu100_s', sec(sMenu.now));
+  await remote('menu');
   await sleep(3000);
   await shot('menu');
   await rate(MENU_FPS_S, 'menu');
@@ -232,26 +238,46 @@ try {
     metric('game_loading_s', loadingTook, 0);
     metric('enter_to_loaded_s', (loadingAt - tStart) / 1000, 1);
     await enter.catch(() => {});
-    for (let i = 0; i < 3; i++) { await click(640, 400); await sleep(5000); } // "Click to Start" (a veces 2-3 clics)
-    await sleep(35000);
+    await remote('loaded'); // acumulado desde la navegación (incluye el del menú)
+    // Estado del juego por la sonda del jugador (PlayerProbe, IngameState#update): se prende sólo para decidir
+    // y se apaga durante las ventanas de fps (cuesta un JSON por frame). La bandera se relee cada 1 s.
+    const setProbe = on => evalc(v => { globalThis.PZ_PLAYER_PROBE = v; return v; }, on).catch(() => null);
+    const pstate = () => evalc(() => { const p = globalThis.pzRuntime?.playerProbe; return p ? { time: p.time, frames: p.frames, ticks: p.numberTicks,
+      paused: p.ingamePaused, gtp: p.gameTimePaused, msg: p.showPausedMessage, player: p.player0, x: p.x, y: p.y, fps: p.averageFPS } : null; }).catch(() => null);
+    await setProbe(true);
+    let st = null;
+    const tClick = Date.now();
+    for (let i = 0; i < 12; i++) { // "Click to Start": a ~3 fps un clic puede no tomar; hasta que la guía pause el juego
+      await click(640, 400); await sleep(5000); st = await pstate(); log('click-to-start', i + 1, st);
+      if (st && st.gtp) break;
+    }
+    for (const end = Date.now() + 90000; !(st && st.gtp) && Date.now() < end; await sleep(3000)) st = await pstate();
+    ev('started', st || {}); metric('click_to_guide_s', (Date.now() - tClick) / 1000, 1);
     await shot('guide');
-    await click(1181, 674); await sleep(5000); await click(310, 110); await sleep(5000); // cierra la Survival Guide (ronda 80)
-    const sIn = await snap(); ev('ingame', { du: sIn.du });
+    if (st && st.gtp) { // Survival Guide abierta (pausa el juego): Esc 800 ms la cierra
+      for (let i = 0; i < 3 && st && st.gtp; i++) { await key('Escape', 800); await sleep(4000); st = await pstate(); log('cerrar guía', i + 1, st); }
+    }
+    if (!st || st.gtp) throw new Error(`no pude entrar al juego sin pausa: ${JSON.stringify(st)}`);
+    const sIn = await snap(); ev('ingame', { du: sIn.du, probe: st });
     metric('T_ingame_wall_s', (Date.now() - tStart) / 1000, 1);
     await shot('ingame');
+    await setProbe(false); await sleep(2500);
 
     if (MODE === 'ingame') {
       await rate(FPS_S, 'idle');
-      const probe = () => evalc(() => { const p = globalThis.pzRuntime?.playerProbe; return p ? { x: p.x, y: p.y } : null; }).catch(() => null);
-      const p0 = await probe();
+      const probe = async () => { await setProbe(true); await sleep(2500); const p = await pstate(); await setProbe(false); await sleep(1500); return p; };
+      const p0 = await probe(); log('antes de W', p0);
       await rate(WALK_S, 'walk', async s => { await key('w', s * 1000); });
-      const p1 = await probe();
+      const p1 = await probe(); log('después de W', p1);
       if (p0 && p1 && p0.x != null) { summary.walk = { p0, p1 }; metric('walk_dist', Math.hypot(p1.x - p0.x, p1.y - p0.y)); }
       await shot('after-walk');
     } else {
       await sleep(30000);
       const f0 = await snap(); log('autoFlush antes de QUIT', f0.flush);
-      await key('Escape', 800); await sleep(6000); await shot('pause');
+      await setProbe(true);
+      for (let i = 0; i < 3; i++) { await key('Escape', 800); await sleep(5000); st = await pstate(); log('Esc -> pausa', i + 1, st); if (st && st.gtp) break; }
+      await shot('pause');
+      if (!st || !st.gtp) throw new Error('Esc no abrió el menú de pausa');
       const menuBefore = (await snap()).menu;
       await click(175, 524, 20 * 60000); ev('quit-click'); // QUIT
       await waitFor('menú tras QUIT', s => s.menu > menuBefore + 50, 20 * 60000);
