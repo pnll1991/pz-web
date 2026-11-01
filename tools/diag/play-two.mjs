@@ -2,7 +2,7 @@
 // Each must enter the shared world on its own (no menu, no form), and each must see the other. Screenshots go to --out.
 //   node tools/diag/play-two.mjs --out DIR [--page play.html] [--only 1]   (--only 1 = a single client, for a quick check)
 import { chromium } from '@playwright/test';
-import { mkdirSync, appendFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, appendFileSync, rmSync } from 'node:fs';
 import { launchOptions } from './chrome-flags.mjs';
 
 const argv = process.argv.slice(2), A = {};
@@ -16,10 +16,6 @@ const log = (who, ...a) => { const s = `[+${Math.round((Date.now() - t0) / 1000)
 async function open(name) {
   const c = { name, profile: `/tmp/pz83/profile-${name}`, states: [], ingame: false };
   if (!A.keep) rmSync(c.profile, { recursive: true, force: true });
-  if (A.nocookies) { // Round 85: a browser that refuses every cookie (Chrome content setting "block all cookies")
-    mkdirSync(`${c.profile}/Default`, { recursive: true });
-    writeFileSync(`${c.profile}/Default/Preferences`, JSON.stringify({ profile: { default_content_setting_values: { cookies: 2 } } }));
-  }
   c.context = await chromium.launchPersistentContext(c.profile, { ...launchOptions(), viewport: { width: 1280, height: 720 } });
   c.page = c.context.pages()[0] || await c.context.newPage();
   c.page.on('console', m => {

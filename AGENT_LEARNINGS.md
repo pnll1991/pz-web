@@ -942,3 +942,9 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Patrón: un monitor con `grep Exception` cuenta trazas de advertencias del servidor; usar marcas específicas ("SERVER STARTED").
 - Error repetido (R83): `ps | grep "[p]lay-two.mjs" | kill` mata mi propia shell si el nombre aparece en MI línea de comandos (otra parte del mismo `bash -c`). Mejor enfoque: `pgrep -f '^node tools/diag/play-two'` (anclado al inicio del comando) en una llamada aparte, sin el nombre en el resto de la línea.
 - Patrón (R83): un servidor PZ con `DoLuaChecksum=true` expulsa a los clientes cuyo Lua difiere (mi script extra en media/lua/client); y tras conectar, el juego recarga el Lua (el script corre otra vez con isClient()=true): no usar `return` temprano que pierda el resto de la máquina de estados.
+
+## R85: acceso público robusto
+- Patrón: una puerta por cookie sola falla en navegadores que la rechazan (modo privado, bloqueadores, iOS): aceptar también `?k=` y hacer que la página lo propague a TODO pedido del mismo origen (keyshim.js: fetch/XHR/WebSocket). Los `import` de módulos y el favicon no pueden llevar la clave: servir como públicos sólo código propio (js/mjs/css), nunca wasm/packs/media.
+- Error de proceso: probé con la página vieja porque no corrí `sync_web.sh` tras editar JS (la prueba de 10 min fue en vano). Mejor enfoque: `bash scripts/sync_web.sh` y comprobar con `grep` que el archivo servido tiene el cambio ANTES de lanzar una prueba larga.
+- Patrón: el bloqueo de cookies por `Default/Preferences` no se aplicó (`navigator.cookieEnabled` seguía true); para probar el respaldo sin cookies se usa `PZWEB_TEST_NO_COOKIE=1` en el servidor (sólo pruebas).
+- Patrón: "Load failed" de Safari es el TypeError genérico de `fetch` (error de red/recurso); si la página gated se mostró, la cookie sí funcionó y falló un pedido interno. Registrar pedidos públicos (sin clave ni IP) para poder verlo la próxima vez.

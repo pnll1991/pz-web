@@ -22,7 +22,8 @@
     wasmGC: (() => { try { return root.WebAssembly.validate(GC_PROBE); } catch { return false; } })(),
     isSecureContext: root.isSecureContext, crossOriginIsolated: root.crossOriginIsolated,
   };
-  const problem = pzSupportProblem(env);
+  // ?force=1 skips the check (to see what really fails on a phone; the server's access log then shows the failing request).
+  const problem = new URLSearchParams(root.location.search).get('force') === '1' ? null : pzSupportProblem(env);
   root.pzUnsupported = problem;
   if (problem) {
     try { root.stop(); } catch { /* nothing left to stop */ }

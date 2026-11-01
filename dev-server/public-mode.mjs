@@ -9,7 +9,8 @@ export const COOKIE = 'pzweb_k';
 const LOCAL_HOST = /^(127\.0\.0\.1|localhost)(:\d+)?$/i;
 const TUNNEL_HOST = /^[a-z0-9-]+\.trycloudflare\.com$/i;
 
-export function createPublicGate({ key = process.env.PZWEB_PUBLIC_KEY || '' } = {}) {
+// ignoreCookie (PZWEB_TEST_NO_COOKIE=1) exists only to test the ?k= fallback: it behaves like a browser that refuses cookies.
+export function createPublicGate({ key = process.env.PZWEB_PUBLIC_KEY || '', ignoreCookie = process.env.PZWEB_TEST_NO_COOKIE === '1' } = {}) {
   const enabled = typeof key === 'string' && key.length >= 16;
   const digest = value => createHash('sha256').update(String(value)).digest();
   const keyDigest = enabled ? digest(key) : null;
@@ -18,6 +19,7 @@ export function createPublicGate({ key = process.env.PZWEB_PUBLIC_KEY || '' } = 
   const isPublic = req => Boolean(req.headers['cf-connecting-ip']) || !LOCAL_HOST.test(req.headers.host || '');
   const hostAllowed = req => TUNNEL_HOST.test(req.headers.host || '');
   const cookieValid = req => {
+    if (ignoreCookie) return false;
     for (const part of String(req.headers.cookie || '').split(';')) {
       const i = part.indexOf('=');
       if (i > 0 && part.slice(0, i).trim() === COOKIE) return sameKey(decodeURIComponent(part.slice(i + 1).trim()));
