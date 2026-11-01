@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { classpathResources } from './classpath.mjs';
+import { attachBridge } from './ws-bridge.mjs';
 import { createHash } from 'node:crypto';
 import { realpath, stat, open, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -199,6 +200,7 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
       else { console.error('dev-server:', error.message); respond(500, 'Local server error'); }
     }
   });
+  attachBridge(server, { log: message => console.log('mp-bridge:', message) });
   return server;
 }
 
