@@ -1308,3 +1308,42 @@ candidato barato mueve más de ~4 % del tiempo medido. Sonda nueva: `tools/diag/
   WorldStreamer/LightingThread/IsoRegionWorker.stop, `teavm.deref` (sin `stringDeref`).
 - Descartado/pendiente: `-O3`/`--converge` no probados (el límite es memoria de TurboFan, no velocidad de wasm-opt); `--js-flags` no hacen
   falta (no se pueden fijar en el Chrome de escritorio).
+
+### In-game (build /release-minpulse, partida de /tmp/pz81/profile, CDP 500 µs, 25 s por ventana; frente 3)
+**ANTES** (`/tmp/pz81/prof3-ingame2`): idle 32,9 fps, caminando 26,2. El main thread estaba **37 % / 30 % en (idle)** entre frames
+(25 s: 9,3 s idle); `GameWindow.frameStep` 38 % (render 23 %), Lua 11 %, `zombie.iso` 11 % al caminar, gl.mjs 4 %, wasm<->JS ~14 % inclusivo.
+| # | idle self s | % | walk self s | % | función |
+|---|---|---|---|---|---|
+| 1 | 9.32 | 37.3 | 7.68 | 30.4 | (idle) |
+| 2 | 0.90 | 3.6 | 0.96 | 3.8 | `KahluaTableImpl.rawget` |
+| 3 | 0.73 | 2.9 | 0.99 | 3.9 | (program) |
+| 4 | 0.48 | 1.9 | 0.46 | 1.8 | `KahluaThread.luaMainloop` (11 % total) |
+| 5 | 0.45 | 1.8 | 0.43 | 1.7 | `offer` (game.mjs, captura `new Error().stack`) |
+| 6 | 0.41 | 1.6 | 0.37 | 1.5 | `setTimeout` envuelto (game.mjs, idem, `stackTraceLimit=Infinity`) |
+| 7 | 0.34 | 1.4 | 0.32 | 1.3 | `gl.mjs call` |
+| 8 | 0.32 | 1.3 | 0.42 | 1.7 | GC / `IsoChunkMap.getGridSquareDirect` |
+| 9 | 0.24 | 1.0 | 0.21 | 0.8 | `gl.mjs logCall` |
+| 10 | 0.24 | 0.9 | 0.23 | 0.9 | @JSBody `pzFiberSuspend` (diagnóstico del parche de fibras de prepare_teavm) |
+Causa de la espera: cada `BrowserYield` y cada `EventQueue.offer` sin demora son `setTimeout(fn, 0)` encadenados; el navegador los
+acota a >= 4 ms tras 5 anidados. Arreglo (JS, `port/web/game.mjs`, quedó dentro del commit 28970a9 de front 2): `setTimeout(fn,0)` va por
+`MessageChannel` (FIFO, cancelable con ids negativos; `?zerotimer=0` lo apaga) y la captura de pilas de los timers es opt-in (`?timerdiag=1`).
+
+**DESPUÉS** (`/tmp/pz81/prof3-ingame3`): idle **55,3 fps**, caminando **43,7**; A/B en la misma sesión con `?zerotimer=0`: 32,3 / 28,0
+(+71 % / +56 %; con el perfil activo). Idle 0 %: ahora está limitado por CPU. Captura (`ingame-end.png`): mundo, casa, personaje y HUD correctos.
+| # | idle self s | % | walk self s | % | función |
+|---|---|---|---|---|---|
+| 1 | 1.28 | 5.1 | 1.16 | 4.6 | `KahluaTableImpl.rawget` |
+| 2 | 0.92 | 3.7 | 1.10 | 4.3 | (program) |
+| 3 | 0.70 | 2.8 | 0.64 | 2.5 | `KahluaThread.luaMainloop` (17 % / 16 % total) |
+| 4 | 0.44 | 1.8 | 0.37 | 1.5 | `gl.mjs call` |
+| 5 | 0.39 | 1.6 | 0.28 | 1.1 | `SpriteRenderer.buildDrawBuffer` (27 % / 17 % total) |
+| 6 | 0.39 | 1.5 | 0.35 | 1.4 | @JSBody `pzFiberSuspend` (candidato Java: diagnóstico de `patch_fiber`) |
+| 7 | 0.36 | 1.4 | 0.33 | 1.3 | `wasm-to-js` (20 % / 17 % inclusivo) |
+| 8 | 0.36 | 1.4 | 0.72 | 2.8 | `IsoChunkMap.getGridSquareDirect` |
+| 9 | 0.34 | 1.4 | - | - | `SpriteRenderer$RingBuffer.render` (30 % total) |
+| 10 | 0.31 | 1.2 | 0.52 | 2.0 | `FloatBufferImpl.put` / `IsoGridSquare.testVisionAdjacent` |
+Carga (CONTINUE -> "game loading took", `/tmp/pz81/prof3-ingame2/load.md`, 186 s, 99 % CPU): `ImageData.getPixelClamped` 16,8 %, `setPixel` 11 %,
+`performPreMultipliedAlpha` 22 % total, `PNGDecoder.decode`, jzlib, `getError` 3,1 % (5,7 s), XHR remotos 2152 req / 155 MB / 5 s (3 %).
+
+Otras mejoras de plataforma de este frente (sin medir por separado en Chrome): gl.mjs `3c60d05`/`aa39d02` (alpha test en caché, matrices con scratch, `callLog` circular,
+`attribType` sin `Map`). Pendiente: el @JSBody `pzFiberSuspend` (1,5 %, Java/prepare_teavm) y `getError` en la carga.
