@@ -577,3 +577,6 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 ## Ronda 83 (modo directo)
 - `/play.html` (release) y `/play-dev.html`: entran solos al servidor local con una cuenta por navegador (localStorage), crean personaje y aparecen en la región única; dos navegadores nuevos se vieron en el mismo mundo (capturas locales). Cómo lanzarlo y riesgos: ~/pzshots/CLAUDE_REPORT_R83.md. LAN: docs/lan-exposure.md (sin aplicar).
 - Decisiones: ToS aceptado por el script (?tos=1 lo muestra); servidor de prueba con DoLuaChecksum=false.
+
+## Ronda 84 (túnel público)
+- scripts/public-tunnel.sh start|stop|status: dev server en modo público con clave + cloudflared; verificado con curl (403/302/200, /ws 403/101) y con un Chrome por la URL pública hasta ingame. Detalles y cómo cerrar: ~/pzshots/CLAUDE_REPORT_R84.md.
