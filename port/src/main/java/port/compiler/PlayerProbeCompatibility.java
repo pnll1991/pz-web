@@ -37,6 +37,15 @@ public final class PlayerProbeCompatibility implements ClassHolderTransformer {
     private static final String LAYER = "zombie.core.skinnedmodel.advancedanimation.AnimLayer";
     private static final String LIVE_NODE = "zombie.core.skinnedmodel.advancedanimation.LiveAnimNode";
     private static final String KEYBIND = "zombie.input.KeybindId";
+    private static final String MODEL_INSTANCE = "zombie.core.skinnedmodel.model.ModelInstance";
+    private static final String ANIM_PLAYER = "zombie.core.skinnedmodel.animation.AnimationPlayer";
+    private static final String MULTI_TRACK = "zombie.core.skinnedmodel.animation.AnimationMultiTrack";
+    private static final String TRACK = "zombie.core.skinnedmodel.animation.AnimationTrack";
+    private static final String CLIP = "zombie.core.skinnedmodel.animation.AnimationClip";
+    private static final String KEYFRAME = "zombie.core.skinnedmodel.animation.Keyframe";
+    private static final String QUAT = "org.lwjgl.util.vector.Quaternion";
+    private static final String VEC3 = "org.lwjgl.util.vector.Vector3f";
+    private static final String MATRIX = "org.lwjgl.util.vector.Matrix4f";
     private static final ValueType OBJ = ValueType.object("java.lang.Object");
     private static final ValueType STR = ValueType.object("java.lang.String");
     private static final ValueType Z = ValueType.BOOLEAN, I = ValueType.INTEGER, F = ValueType.FLOAT, J = ValueType.LONG;
@@ -151,6 +160,66 @@ public final class PlayerProbeCompatibility implements ClassHolderTransformer {
         body("gNodeName", e -> e.virt0(LIVE_NODE, "getName", STR));
         body("gNodeWeight", e -> e.virt0(LIVE_NODE, "getWeight", F));
         body("gNodeActive", e -> e.virt0(LIVE_NODE, "isActive", Z));
+
+        // Frente P: pistas del AnimationPlayer, reloj y huesos (getters/campos públicos sin efectos, javap -c).
+        String gt = "zombie.GameTime";
+        body("gTimeDelta", e -> e.virt0(gt, "getTimeDelta", F));
+        body("gFpsMultiplier", e -> e.fget(e.arg(0), gt, "fpsMultiplier", F));
+        body("gPerObjectMultiplier", e -> e.fget(e.arg(0), gt, "perObjectMultiplier", F));
+        body("gMultiplierBias", e -> e.fget(e.arg(0), gt, "multiplierBias", F));
+        body("gSlomo", e -> e.stat(gt, "getSlomoMultiplier", new ValueType[]{F}));
+        body("gAverageFps", e -> e.sget("zombie.GameWindow", "averageFPS", F));
+        p("gAnimTimeDelta", "getAnimationTimeDelta", F);
+        // getModelInstance() sólo lee legsSprite.modelSlot.model; getAnimationPlayer() puede alocar: no se usa.
+        p("gModelInstance", "getModelInstance", t(MODEL_INSTANCE));
+        body("gInstanceAnimPlayer", e -> e.fget(e.arg(0), MODEL_INSTANCE, "animPlayer", t(ANIM_PLAYER)));
+        body("gApAngle", e -> e.virt0(ANIM_PLAYER, "getAngle", F));
+        body("gBoneTransformsTimeDelta", e -> e.virt0(ANIM_PLAYER, "getBoneTransformsTimeDelta", F));
+        body("gMultiTrack", e -> e.virt0(ANIM_PLAYER, "getMultiTrack", t(MULTI_TRACK)));
+        body("gTrackCount", e -> e.virt0(MULTI_TRACK, "getTrackCount", I));
+        body("gTrackAt", e -> e.virt(e.arg(0), MULTI_TRACK, "getTrackAt", new ValueType[]{I, t(TRACK)}, e.arg(1)));
+        body("gTrackName", e -> e.virt0(TRACK, "getName", STR));
+        body("gTrackCur", e -> e.virt0(TRACK, "getCurrentTimeValue", F));
+        body("gTrackPrev", e -> e.virt0(TRACK, "getPreviousTimeValue", F));
+        body("gTrackDur", e -> e.virt0(TRACK, "getDuration", F));
+        body("gTrackAcc", e -> e.virt0(TRACK, "getAccumulatedTimeValue", F));
+        body("gTrackPlaying", e -> e.fget(e.arg(0), TRACK, "isPlaying", Z));
+        body("gTrackLooping", e -> e.virt0(TRACK, "isLooping", Z));
+        body("gTrackReverse", e -> e.fget(e.arg(0), TRACK, "reverse", Z));
+        body("gTrackFinished", e -> e.virt0(TRACK, "isFinished", Z));
+        body("gTrackSpeed", e -> e.virt0(TRACK, "getSpeedDelta", F));
+        body("gTrackWeight", e -> e.virt0(TRACK, "getBlendWeight", F));
+        body("gTrackLayer", e -> e.virt0(TRACK, "getLayerIdx", I));
+        body("gTrackDeferredBone", e -> e.virt0(TRACK, "getDeferredMovementBoneIdx", I));
+        body("gTrackUseDeferred", e -> e.virt0(TRACK, "getUseDeferredMovement", Z));
+        body("gTrackClip", e -> e.virt0(TRACK, "getClip", t(CLIP)));
+        body("gClipDuration", e -> e.virt0(CLIP, "getDuration", F));
+        body("gClipKeyframes", e -> e.virt0(CLIP, "getKeyframes", ValueType.arrayOf(t(KEYFRAME))));
+        body("gClipBoneFrames", e -> e.virt(e.arg(0), CLIP, "getBoneFramesAt", new ValueType[]{I, ValueType.arrayOf(t(KEYFRAME))}, e.arg(1)));
+        body("gKeyTime", e -> e.fget(e.arg(0), KEYFRAME, "time", F));
+        body("gKeyRot", e -> e.fget(e.arg(0), KEYFRAME, "rotation", t(QUAT)));
+        body("gKeyPos", e -> e.fget(e.arg(0), KEYFRAME, "position", t(VEC3)));
+        body("gQx", e -> e.fget(e.arg(0), QUAT, "x", F));
+        body("gQy", e -> e.fget(e.arg(0), QUAT, "y", F));
+        body("gQz", e -> e.fget(e.arg(0), QUAT, "z", F));
+        body("gQw", e -> e.fget(e.arg(0), QUAT, "w", F));
+        body("gV3x", e -> e.fget(e.arg(0), VEC3, "x", F));
+        body("gV3y", e -> e.fget(e.arg(0), VEC3, "y", F));
+        body("gV3z", e -> e.fget(e.arg(0), VEC3, "z", F));
+        body("gModelTransformsCount", e -> e.virt0(ANIM_PLAYER, "getModelTransformsCount", I));
+        body("gModelTransformAt", e -> e.virt(e.arg(0), ANIM_PLAYER, "getModelTransformAt", new ValueType[]{I, t(MATRIX)}, e.arg(1)));
+        body("gBoneIndex", e -> e.virt(e.arg(0), ANIM_PLAYER, "getSkinningBoneIndex", new ValueType[]{STR, I, I}, e.arg(1), e.arg(2)));
+        body("gNewMatrix", e -> e.pe.construct(MATRIX));
+        // getBoneTransform(i, m) = boneTransforms[i].getMatrix(m): copia la matriz local (validación perezosa PRS->matriz).
+        body("gBoneLocal", e -> e.virt(e.arg(0), ANIM_PLAYER, "getBoneTransform", new ValueType[]{I, t(MATRIX), t(MATRIX)},
+            e.arg(1), e.arg(2).cast(t(MATRIX))));
+        body("gMatrixStore", e -> e.virt(e.arg(0), MATRIX, "store", new ValueType[]{t("java.nio.FloatBuffer"), t("org.lwjgl.util.vector.Matrix")},
+            e.arg(1).cast(t("java.nio.FloatBuffer"))));
+        String sd = "zombie.core.skinnedmodel.model.SkinningData";
+        body("gSkinningData", e -> e.virt0(ANIM_PLAYER, "getSkinningData", t(sd)));
+        body("gSkeletonHierarchy", e -> e.fget(e.arg(0), sd, "skeletonHierarchy", t("java.util.List")));
+        body("gBindPose", e -> e.fget(e.arg(0), sd, "bindPose", t("java.util.List")));
+        body("gBoneOffset", e -> e.fget(e.arg(0), sd, "boneOffset", t("java.util.List")));
     }
 
     /** Nombres de stub con reescritura (PlayerProbeTest los compara con PlayerProbe). */

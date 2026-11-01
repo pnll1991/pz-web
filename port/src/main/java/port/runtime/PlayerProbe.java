@@ -110,6 +110,11 @@ public final class PlayerProbe {
             if (ddx != 0 || ddy != 0) deferredNonZeroFrames++;
             j.num("deferredX", ddx).num("deferredY", ddy).num("deferredLen", (float) Math.sqrt(ddx * ddx + ddy * ddy));
         }
+        try {
+            sampleAnimation(j, p);
+        } catch (Throwable error) {
+            j.str("animationError", String.valueOf(error));
+        }
         Object animator = gAdvancedAnimator(p);
         j.bool("advancedAnimator", animator != null);
         if (animator == null) return;
@@ -123,6 +128,163 @@ public final class PlayerProbe {
             if (sub != null) { layers.append(','); layer(layers, "sub" + i, sub); }
         }
         j.raw("subLayerCount", Integer.toString(subs)).raw("layers", layers.append(']').toString());
+    }
+
+    // ---------------------------------------------------------------- frente P: pistas, reloj y huesos
+    private static final String[] BONES = {"Dummy01", "Translation_Data", "Bip01", "Bip01_Pelvis", "Bip01_Spine"};
+    private static long lastNanos, lastMillis;
+    private static float lastTrack0Time = Float.NaN;
+    private static int track0AdvancedFrames, track0StuckFrames, track0Wraps;
+
+    /** Reloj del puerto y de GameTime: el delta que avanza las pistas (getAnimationTimeDelta). */
+    private static void sampleClock(Json j, Object p) {
+        long nanos = System.nanoTime(), millis = System.currentTimeMillis();
+        j.num("nanoTime", nanos).num("nanoDeltaMs", lastNanos == 0 ? 0 : (nanos - lastNanos) / 1e6)
+            .num("currentTimeMillis", millis).num("millisDelta", lastMillis == 0 ? 0 : millis - lastMillis);
+        lastNanos = nanos; lastMillis = millis;
+        Object time = gGameTimeInstance();
+        if (time != null) {
+            j.num("timeDelta", gTimeDelta(time)).num("fpsMultiplier", gFpsMultiplier(time))
+                .num("perObjectMultiplier", gPerObjectMultiplier(time)).num("multiplierBias", gMultiplierBias(time));
+        }
+        j.num("slomo", gSlomo()).num("averageFPS", gAverageFps()).num("animTimeDelta", gAnimTimeDelta(p));
+    }
+
+    /** AnimationPlayer del ModelInstance (campo público, sin el alloc de getAnimationPlayer()). */
+    private static void sampleAnimation(Json j, Object p) {
+        sampleClock(j, p);
+        Object instance = gModelInstance(p);
+        j.bool("modelInstance", instance != null);
+        if (instance == null) return;
+        Object ap = gInstanceAnimPlayer(instance);
+        j.bool("animPlayer", ap != null);
+        if (ap == null) return;
+        j.num("apAngle", gApAngle(ap)).num("boneTransformsTimeDelta", gBoneTransformsTimeDelta(ap));
+        Object mt = gMultiTrack(ap);
+        int count = mt == null ? 0 : gTrackCount(mt);
+        var tracks = new StringBuilder("[");
+        for (int i = 0; i < count && i < 6; i++) {
+            Object t = gTrackAt(mt, i);
+            if (i > 0) tracks.append(',');
+            if (t == null) { tracks.append("null"); continue; }
+            float cur = gTrackCur(t), prev = gTrackPrev(t);
+            if (i == 0) {
+                if (!Float.isNaN(lastTrack0Time)) {
+                    if (cur > lastTrack0Time) track0AdvancedFrames++;
+                    else if (cur == lastTrack0Time) track0StuckFrames++;
+                    else track0Wraps++;
+                }
+                lastTrack0Time = cur;
+            }
+            var tj = new Json();
+            tj.str("name", gTrackName(t)).num("cur", cur).num("prev", prev).num("dur", gTrackDur(t))
+                .num("acc", gTrackAcc(t)).bool("playing", gTrackPlaying(t)).bool("looping", gTrackLooping(t))
+                .bool("reverse", gTrackReverse(t)).bool("finished", gTrackFinished(t)).num("speed", gTrackSpeed(t))
+                .num("weight", gTrackWeight(t)).num("layer", gTrackLayer(t)).num("deferredBone", gTrackDeferredBone(t))
+                .bool("useDeferred", gTrackUseDeferred(t));
+            Object clip = gTrackClip(t);
+            if (clip != null) {
+                Object[] all = (Object[]) gClipKeyframes(clip);
+                tj.num("clipDur", gClipDuration(clip)).num("clipKeyframes", all == null ? -1 : all.length);
+                int deferred = gTrackDeferredBone(t);
+                if (deferred >= 0) tj.raw("deferredFrames", frames(clip, deferred));
+                if (i == 0) tj.raw("bone0Frames", frames(clip, 0));
+            }
+            tracks.append(tj.end());
+        }
+        j.num("trackCount", count).raw("tracks", tracks.append(']').toString());
+        j.num("track0AdvancedFrames", track0AdvancedFrames).num("track0StuckFrames", track0StuckFrames)
+            .num("track0Wraps", track0Wraps);
+
+        Object sd = gSkinningData(ap);
+        List<?> hierarchy = null, bindPose = null, boneOffset = null;
+        if (sd != null) {
+            hierarchy = (List<?>) gSkeletonHierarchy(sd);
+            bindPose = (List<?>) gBindPose(sd);
+            boneOffset = (List<?>) gBoneOffset(sd);
+            if (hierarchy != null) {
+                int roots = 0;
+                var parents = new StringBuilder("[");
+                for (int i = 0; i < hierarchy.size(); i++) {
+                    Object parent = hierarchy.get(i);
+                    if (parent instanceof Integer n && n < 0) roots++;
+                    if (i < 40) { if (i > 0) parents.append(','); parents.append(parent); }
+                }
+                j.num("skeletonBones", hierarchy.size()).num("skeletonRoots", roots).raw("parents", parents.append(']').toString());
+            }
+        }
+        int transforms = gModelTransformsCount(ap);
+        j.num("modelTransforms", transforms);
+        var store = new float[16];
+        var buffer = java.nio.FloatBuffer.wrap(store);
+        // Todas las matrices de modelo: NaN y determinantes (col-major, como store()).
+        int nan = 0, degenerate = 0;
+        float detMin = Float.POSITIVE_INFINITY, detMax = Float.NEGATIVE_INFINITY;
+        for (int i = 0; i < transforms; i++) {
+            Object m = gModelTransformAt(ap, i);
+            if (m == null) continue;
+            buffer.clear(); gMatrixStore(m, buffer);
+            for (float v : store) if (!Float.isFinite(v)) nan++;
+            float d = det(store);
+            if (Math.abs(d) < 1e-4f) degenerate++;
+            if (d < detMin) detMin = d;
+            if (d > detMax) detMax = d;
+        }
+        j.num("modelNaN", nan).num("modelDegenerate", degenerate).num("modelDetMin", detMin).num("modelDetMax", detMax);
+        var bones = new StringBuilder("[");
+        for (int b = 0; b < BONES.length; b++) {
+            int index = gBoneIndex(ap, BONES[b], -1);
+            if (b > 0) bones.append(',');
+            var bj = new Json();
+            bj.str("bone", BONES[b]).num("index", index);
+            if (index >= 0 && index < transforms) {
+                Object m = gModelTransformAt(ap, index);
+                if (m != null) { buffer.clear(); gMatrixStore(m, buffer); bj.raw("model", matrix(store)); }
+                Object local = gBoneLocal(ap, index, gNewMatrix());
+                if (local != null) { buffer.clear(); gMatrixStore(local, buffer); bj.raw("local", matrix(store)); }
+                if (bindPose != null && index < bindPose.size() && bindPose.get(index) != null) {
+                    buffer.clear(); gMatrixStore(bindPose.get(index), buffer); bj.raw("bindPose", matrix(store));
+                }
+                if (boneOffset != null && index < boneOffset.size() && boneOffset.get(index) != null) {
+                    buffer.clear(); gMatrixStore(boneOffset.get(index), buffer); bj.raw("boneOffset", matrix(store));
+                }
+            }
+            bones.append(bj.end());
+        }
+        j.raw("bones", bones.append(']').toString());
+    }
+
+    /** Claves de un hueso en el clip: cantidad, primer/último tiempo, primera rotación (x,y,z,w) y posición. */
+    private static String frames(Object clip, int bone) {
+        Object[] keys;
+        try { keys = (Object[]) gClipBoneFrames(clip, bone); } catch (Throwable e) { return quote(String.valueOf(e)); }
+        if (keys == null) return "null";
+        var out = new Json();
+        out.num("n", keys.length);
+        if (keys.length > 0 && keys[0] != null && keys[keys.length - 1] != null) {
+            Object k0 = keys[0];
+            out.num("t0", gKeyTime(k0)).num("tLast", gKeyTime(keys[keys.length - 1]));
+            Object q = gKeyRot(k0), v = gKeyPos(k0), vl = gKeyPos(keys[keys.length - 1]);
+            if (q != null) out.raw("rot0", "[" + num(gQx(q)) + "," + num(gQy(q)) + "," + num(gQz(q)) + "," + num(gQw(q)) + "]");
+            if (v != null) out.raw("pos0", "[" + num(gV3x(v)) + "," + num(gV3y(v)) + "," + num(gV3z(v)) + "]");
+            if (vl != null) out.raw("posLast", "[" + num(gV3x(vl)) + "," + num(gV3y(vl)) + "," + num(gV3z(vl)) + "]");
+        }
+        return out.end();
+    }
+
+    private static String matrix(float[] m) {
+        var b = new StringBuilder("[");
+        for (int i = 0; i < 16; i++) { if (i > 0) b.append(','); b.append(num(Math.round(m[i] * 1e4f) / 1e4f)); }
+        return b.append(']').toString();
+    }
+
+    /** Determinante de una 4x4 (el orden fila/columna no lo cambia). */
+    static float det(float[] m) {
+        float a0 = m[0] * m[5] - m[1] * m[4], a1 = m[0] * m[6] - m[2] * m[4], a2 = m[0] * m[7] - m[3] * m[4];
+        float a3 = m[1] * m[6] - m[2] * m[5], a4 = m[1] * m[7] - m[3] * m[5], a5 = m[2] * m[7] - m[3] * m[6];
+        float b0 = m[8] * m[13] - m[9] * m[12], b1 = m[8] * m[14] - m[10] * m[12], b2 = m[8] * m[15] - m[11] * m[12];
+        float b3 = m[9] * m[14] - m[10] * m[13], b4 = m[9] * m[15] - m[11] * m[13], b5 = m[10] * m[15] - m[11] * m[14];
+        return a0 * b5 - a1 * b4 + a2 * b3 + a3 * b2 - a4 * b1 + a5 * b0;
     }
 
     private static void layer(StringBuilder out, String label, Object layer) {
@@ -253,4 +415,57 @@ public final class PlayerProbe {
     static String gNodeName(Object n) { throw stub(); }
     static float gNodeWeight(Object n) { throw stub(); }
     static boolean gNodeActive(Object n) { throw stub(); }
+    // frente P
+    static float gTimeDelta(Object t) { throw stub(); }
+    static float gFpsMultiplier(Object t) { throw stub(); }
+    static float gPerObjectMultiplier(Object t) { throw stub(); }
+    static float gMultiplierBias(Object t) { throw stub(); }
+    static float gSlomo() { throw stub(); }
+    static float gAverageFps() { throw stub(); }
+    static float gAnimTimeDelta(Object p) { throw stub(); }
+    static Object gModelInstance(Object p) { throw stub(); }
+    static Object gInstanceAnimPlayer(Object mi) { throw stub(); }
+    static float gApAngle(Object ap) { throw stub(); }
+    static float gBoneTransformsTimeDelta(Object ap) { throw stub(); }
+    static Object gMultiTrack(Object ap) { throw stub(); }
+    static int gTrackCount(Object mt) { throw stub(); }
+    static Object gTrackAt(Object mt, int i) { throw stub(); }
+    static String gTrackName(Object t) { throw stub(); }
+    static float gTrackCur(Object t) { throw stub(); }
+    static float gTrackPrev(Object t) { throw stub(); }
+    static float gTrackDur(Object t) { throw stub(); }
+    static float gTrackAcc(Object t) { throw stub(); }
+    static boolean gTrackPlaying(Object t) { throw stub(); }
+    static boolean gTrackLooping(Object t) { throw stub(); }
+    static boolean gTrackReverse(Object t) { throw stub(); }
+    static boolean gTrackFinished(Object t) { throw stub(); }
+    static float gTrackSpeed(Object t) { throw stub(); }
+    static float gTrackWeight(Object t) { throw stub(); }
+    static int gTrackLayer(Object t) { throw stub(); }
+    static int gTrackDeferredBone(Object t) { throw stub(); }
+    static boolean gTrackUseDeferred(Object t) { throw stub(); }
+    static Object gTrackClip(Object t) { throw stub(); }
+    static float gClipDuration(Object c) { throw stub(); }
+    static Object gClipKeyframes(Object c) { throw stub(); }
+    static Object gClipBoneFrames(Object c, int bone) { throw stub(); }
+    static float gKeyTime(Object k) { throw stub(); }
+    static Object gKeyRot(Object k) { throw stub(); }
+    static Object gKeyPos(Object k) { throw stub(); }
+    static float gQx(Object q) { throw stub(); }
+    static float gQy(Object q) { throw stub(); }
+    static float gQz(Object q) { throw stub(); }
+    static float gQw(Object q) { throw stub(); }
+    static float gV3x(Object v) { throw stub(); }
+    static float gV3y(Object v) { throw stub(); }
+    static float gV3z(Object v) { throw stub(); }
+    static int gModelTransformsCount(Object ap) { throw stub(); }
+    static Object gModelTransformAt(Object ap, int i) { throw stub(); }
+    static int gBoneIndex(Object ap, String name, int fallback) { throw stub(); }
+    static Object gNewMatrix() { throw stub(); }
+    static Object gBoneLocal(Object ap, int i, Object m) { throw stub(); }
+    static Object gMatrixStore(Object m, Object floatBuffer) { throw stub(); }
+    static Object gSkinningData(Object ap) { throw stub(); }
+    static Object gSkeletonHierarchy(Object sd) { throw stub(); }
+    static Object gBindPose(Object sd) { throw stub(); }
+    static Object gBoneOffset(Object sd) { throw stub(); }
 }
