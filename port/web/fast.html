@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="es"><meta charset="utf-8"><title>Project Zomboid · versión rápida</title>
+<!-- Ronda 81: marcador para el build optimizado (scripts/fast.sh). Redirige a game.html con build=release-minpulse,
+     persist=1 y texcache=1; los parámetros que se agreguen a esta URL (p. ej. ?probe=1) se conservan y pisan los defaults. -->
+<p id="m">Abriendo la versión rápida…</p>
+<script>
+  const q = new URLSearchParams(location.search);
+  for (const [k, v] of Object.entries({ build: 'release-minpulse', persist: '1', texcache: '1' })) if (!q.has(k)) q.set(k, v);
+  location.replace('/game.html?' + q);
+</script></html>

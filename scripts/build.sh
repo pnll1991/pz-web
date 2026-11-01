@@ -18,6 +18,10 @@ cd "$PZ_WEB_ROOT"
 # probar FULL) y luego Binaryen wasm-opt (.toolchain/emsdk; PZ_WASM_OPT=-O2 por defecto, PZ_WASM_OPT=0 lo
 # omite). Staging port/target/web-staging/release/<sub>, publica en port/target/web/release/<sub> (servido como
 # /release/game/; game.html?build=release lo carga). Nunca toca port/target/web/game ni los reportes del dev.
+# Valores por defecto de --release: TeaVM ADVANCED (PZ_TEAVM_OPT), wasm-opt -O2 (PZ_WASM_OPT) con
+# --one-caller-inline-max-function-size=3000 (PZ_WASM_OPT_OCIMFS) y --inline-max-combined-binary-size=30000 (PZ_WASM_OPT_IMCBS):
+# sin esos topes Binaryen inlinea sin límite y TurboFan muere con "V8 process OOM (Zone)" en juego. PZ_WASM_OPT=0 publica el
+# ADVANCED sin wasm-opt en port/target/web/release-noopt/game. Versión rápida diaria: scripts/fast.sh (usa --pulse=min).
 # Los gates miran la salida de TeaVM, antes de wasm-opt (que preserva la semántica pero puede inlinear).
 # --pulse=min (sólo con --release): StartupProgress instrumenta apenas las fronteras que usa bench.mjs (Display#update(Z),
 # TermsOfServiceState/MainScreenState#render, GameLoadingState/IngameState enter/exit/update); publica en

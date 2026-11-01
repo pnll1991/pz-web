@@ -1279,3 +1279,28 @@ candidato barato mueve más de ~4 % del tiempo medido. Sonda nueva: `tools/diag/
    shader obliga a esperar y el hilo principal no puede esperar. Sólo viable con el juego ya en un Worker (opción 3).
 5. **Hilos Java del juego en Workers**: imposible con WasmGC hoy (ver hechos).
 - Estado del frente 4 al 01/11 02:35: sonda Chrome parcial (WasmGC->Worker, Atomics, OffscreenCanvas medidos; latencia SAB, lectura remota y SHA pendientes: bug de handshake corregido, vuelve a esperar turno). Veredicto: no hay prototipo `?worker=1` justificado.
+
+## Ronda 81 — versión rápida (frente 1)
+- Lanzar: `scripts/fast.sh` (levanta 8098, comprueba el build) y abrir `http://127.0.0.1:8098/fast.html` (redirige a
+  `game.html?build=release-minpulse&persist=1&texcache=1`; parámetros extra se conservan). `scripts/fast.sh build|rebuild` lo construye
+  (`build.sh --with-game --release --pulse=min`, ~8 min con `build.lock`). `game.html` sin parámetros sigue siendo el build dev.
+  `game.mjs`: `?build=<nombre>` carga `/<nombre>/game/{build-state,pulse-map}.json|boot.wasm`; `--release` -> `release`, `--release --pulse=min`
+  -> `release-minpulse`, `PZ_WASM_OPT=0 --release` -> `release-noopt`.
+- Configuración anterior (SIMPLE, strict, sin ofuscar, nombres conservados, sin debug info). Release: TeaVM ADVANCED (devirtualización,
+  inlining, ScalarReplacement, LoopInvariantMotion; en 0.16 Wasm GC usa el pipeline eager: DEPENDENCY_ANALYSIS 200 s + 54 s, 8,7 GB) y
+  Binaryen `wasm-opt -O2 -g` (emsdk, v133; features gc, reference-types, exception-handling, bulk-memory, nontrapping-float-to-int,
+  sign-ext, mutable-globals, multivalue). Strict se mantiene; sin `--closed-world`/`-tnh`. `-g` conserva la name section (17 MB): wasmfn.py,
+  wasm_addr.mjs y wasmsymbols.mjs siguen funcionando. 134 MB -> 61,7 MB (código 79 -> 39,5 MB). Los gates se evalúan sobre la salida de TeaVM antes de wasm-opt.
+- **Crash resuelto**: `wasm-opt -O2` por defecto inlinea todas las funciones de un solo llamador (`-ocimfs` = -1): `IsoCell::render` pasó de
+  1 KB a 235-293 KB (también con SIMPLE + -O2) y Chrome terminó con `V8 process OOM (Zone)` (memoria de compilación TurboFan, visible con
+  `DEBUG=pw:browser PZ_CHROME_ARGS="--enable-logging=stderr --v=0"`) ~100 s dentro del juego (PAGE-CRASH sin error JS). Con
+  `--one-caller-inline-max-function-size=3000 --inline-max-combined-binary-size=30000` la mayor función del juego queda en ~64 KB
+  (`IsoCell::render` 10 KB), wasm-opt tarda 3:47 con 3 GB (antes 10 min, 8-10 GB) y el módulo pesa lo mismo. Detectar regresiones:
+  listar tamaños de función del code section (el mayor aparte de `teavm@initializer` y `GLCapabilities::<init>` debe estar bajo ~100 KB).
+- Pulsos: `StartupProgress` con `-Dpz.pulse=min` instrumenta solo Display#update(Z), TOS/MainScreen render, MainScreen/GameLoading/Ingame
+  enter-exit-update; conserva las inyecciones de PENDING_FLAG (funcionales). Las demás ~1000 fronteras (un @JSBody cada una) eran ~23 % del arranque.
+- Medido (bench de front 0, mismo perfil/partida): ToS 78 s / menú 81 s (dev baseline 342/352), carga del mundo 169 s, en juego 232 s,
+  fps quieto 32,8 / caminando 30,5 (dev 16,5 / 13,8). Parches de la ronda 80 presentes en el release: `aliveYielding` en
+  WorldStreamer/LightingThread/IsoRegionWorker.stop, `teavm.deref` (sin `stringDeref`).
+- Descartado/pendiente: `-O3`/`--converge` no probados (el límite es memoria de TurboFan, no velocidad de wasm-opt); `--js-flags` no hacen
+  falta (no se pueden fijar en el Chrome de escritorio).
