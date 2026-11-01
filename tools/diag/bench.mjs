@@ -344,6 +344,29 @@ try {
       if (!saves1 || saves1.error || !Object.keys(saves1.idbDirs || {}).length) throw new Error('no hay partida en IndexedDB tras QUIT');
       metric('save_idb_keys', Object.values(saves1.idbDirs).reduce((a, b) => Math.max(a, b), 0), 0);
     }
+    if (MODE === 'ingame' && A['quit-continue']) { // ronda 81 (frente 1): Esc -> QUIT -> menú -> CONTINUE otra vez, en la misma página
+      await sleep(10000);
+      await setProbe(true);
+      for (let i = 0; i < 3; i++) { await key('Escape', 800); await sleep(5000); st = await pstate(); log('Esc -> pausa', i + 1, st); if (blind || (st && st.gtp)) break; }
+      await shot('pause');
+      const menuBefore = (await snap()).menu, tQuit = Date.now();
+      await click(175, 524, 20 * 60000); ev('quit-click');
+      await waitFor('menú tras QUIT', s => s.menu > menuBefore + 50, 20 * 60000);
+      metric('quit_to_menu_s', (Date.now() - tQuit) / 1000, 1); ev('menu-after-quit');
+      await sleep(30000);
+      const saves2 = await savesInfo(); summary.savesAfterQuit = saves2; log('SAVES tras QUIT', saves2);
+      await shot('menu-after-quit');
+      loadingTook = null; const tC = Date.now();
+      const enter2 = click(109, 172, 40 * 60000); ev('continue2-click'); enter2.catch(e => log('click CONTINUE 2:', String(e).slice(0, 120)));
+      while (loadingTook == null) { if (Date.now() - tC > 40 * 60000) throw new Error('timeout esperando "game loading took" (2)'); await sleep(2000); }
+      metric('game_loading2_s', loadingTook, 0); ev('game-loading2-took', { seconds: loadingTook });
+      await enter2.catch(() => {});
+      let size2 = await shotSize();
+      for (let i = 0; i < 10 && size2 < 40000; i++) { await click(640, 400); await sleep(8000); size2 = await shotSize(); log('click-to-start 2', i + 1, 'png bytes', size2); }
+      await sleep(25000); await shot('ingame2');
+      metric('ingame2_png_kb', size2 / 1024, 0);
+      const d2 = (await snap()).du; await sleep(10000); metric('fps_ingame2_display', ((await snap()).du - d2) / 10, 2);
+    }
   }
   summary.consoleStates = consoleLines.map(([t, s]) => [+((t - tNav) / 1000).toFixed(1), s.slice(0, 160)]);
   log('OK');
