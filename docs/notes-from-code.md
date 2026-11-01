@@ -1096,3 +1096,26 @@ Análisis estático (`javap -c` del jar fijado, volcado en /tmp; `translateShade
   sin wrap (`dur` >> `tLast`) -> unidades de tiempo del clip (ticks vs s) -> root motion 0 y pose congelada; `modelNaN>0`
   o `modelDegenerate>0` -> cálculo de huesos en CPU; matrices de modelo sanas pero `paletteProbe` degenerada ->
   `getSkinTransforms`/`boneOffset` o la subida; todo sano -> shader/atributos.
+
+## Ronda 80 — frente Q (31/10): String.intern tras Esc -> QUIT y miniatura del guardado
+- Síntoma 1 (/tmp/pz80v3, frente V): tras `STATE: exit IngameState` (ya sin cuelgue, 7ece42d) el juego muere con PAGEERROR
+  `TypeError: type incompatibility when transforming from/to JS` en `org.teavm.backend.wasm.runtime.StringInternPool::query`
+  <- `TileGeometryFile.parseTileProperties` (`String.intern`) <- `TileGeometry.init` <- `TileGeometryManager.init` <- `IngameState.exit`.
+- Causa (fuentes TeaVM 0.16.0): el pool de `String.intern` en Wasm GC guarda cada String en un `WeakRef` JS
+  (`teavm.createStringWeakRef`) y un `FinalizationRegistry` le avisa de las recolecciones con
+  `teavm.reportGarbageCollectedString`, que corre después como tarea propia. Entre la recolección y ese aviso,
+  `WeakRef.deref()` da `undefined` y el import del pool `teavm.stringDeref` (`e => e.deref()`) lo devuelve tal cual como
+  `(ref null String)`: V8 lanza en la conversión JS -> Wasm. El import genérico `teavm.deref` del mismo runtime (el de
+  `WeakReference.get`) ya mapea `undefined` a `null`. La carga de geometría de tiles de la salida interna miles de
+  cadenas tras la partida entera: hay muchas entradas muertas cuyo aviso no llegó.
+- Arreglo (`scripts/prepare_teavm.py` `patch_string_intern_pool`): el intrínseco importa `teavm.deref` y `query()` trata
+  un valor `null` como entrada muerta (el aviso del registro la desengancha después; `remove` lo tolera). Sin tocar el
+  runtime JS servido. Test: `CompilerRegressionTest.internPoolSurvivesCollectedEntries` compila una sonda, la corre en
+  Node con `--expose-gc` (interna 4000 cadenas en un job, `gc()` en otro e interna iguales en el mismo job antes de los
+  callbacks): parchado = 4000 reinternadas; control negativo (deref original vía `installImports`) = el mismo TypeError.
+- Síntoma 2: miniatura (`NativeImage.writePng` -> `STBImageWrite.stbi_write_png(CharSequence...)` -> `MemoryStack.nUTF8`)
+  lanzaba `Browser LWJGL memory operation unavailable: MemoryUtil.encodeUTF8Unsafe(CharSequence;ZJ)I` (capturada; no
+  hay thumb.png). `NativeMemory` agrega `encodeUTF8Unsafe` y `encodeUTF16Unsafe` (LWJGL: `javap -c` del MemoryUtil
+  fijado) y `memLengthUTF8` pasa a contar como LWJGL (nUTF8 reserva con memLengthUTF8 y escribe con encodeUTF8Unsafe; un
+  surrogate suelto son 3 bytes, alto + siguiente = 4, no el '?' de `getBytes`). El resultado cuenta el NUL. Test:
+  `ForeignMemoryTest.lwjglUnsafeEncodersWriteAtTheAddress`.

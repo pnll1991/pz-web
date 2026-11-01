@@ -884,3 +884,16 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   al 100 % sin excepción, buscar con `javap -c` los bucles cuyo único trabajo es leer un estado de otro hilo y verificar que
   cada vuelta llegue a `Thread.sleep`/`wait`/`yield`. Mejor enfoque: barrer el jar (`grep -la isAlive` sobre las clases)
   y reescribir sólo las esperas sin cesión, con un transformer que falle si el objetivo cambia.
+
+## Ronda 80 (frente Q, 31/10) — String.intern y encodeUTF8Unsafe
+- Error: el primer assert del test buscaba `stringDeref` en el .wasm y falló aunque el parche estaba aplicado: el nombre
+  `teavm@stringDeref` sigue en la sección de nombres. Patrón a evitar: buscar un import por su nombre suelto en el
+  binario. Mejor enfoque: buscar la codificación del import (`\u0005teavm\u000bstringDeref`: longitud + módulo, longitud
+  + nombre) y afirmar también el import nuevo.
+- Patrón: un `TypeError: type incompatibility when transforming from/to JS` dentro de código TeaVM = un import JS devolvió
+  un valor que no cabe en el tipo Wasm declarado (típicamente `undefined` donde va `(ref null T)`). Buscar el import en
+  `boot.wasm-runtime.js` y su firma en el intrínseco; reproducirlo en Node con `--expose-gc` (WeakRef vacío antes del
+  callback de FinalizationRegistry: crear en un job, `gc()` y usar en el siguiente) y usar `installImports` con la
+  versión original del import como control negativo.
+- Patrón: al implementar un método de `MemoryUtil` que escribe, revisar con qué método LWJGL calculó el tamaño reservado
+  (nUTF8 = memLengthUTF8 + encodeUTF8Unsafe) y que ambos sigan el mismo algoritmo, aun para entradas inválidas.

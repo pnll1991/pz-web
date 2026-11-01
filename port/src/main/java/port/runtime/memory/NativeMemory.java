@@ -214,12 +214,59 @@ public final class NativeMemory {
     public static String memASCII(ByteBuffer data,int length){return memASCII(data,length,data.position());}
     public static String memASCII(ByteBuffer bytes,int length,int offset){Objects.checkFromIndexSize(offset,Math.multiplyExact(length,1),bytes.limit());byte[] data=new byte[length*1];for(int i=0;i<data.length;i++)data[i]=bytes.get(offset+i);return new String(data,StandardCharsets.ISO_8859_1);}
     public static String memASCIISafe(ByteBuffer data){return data==null?null:memASCII(data);}
-    private static byte[] encodeUTF8(CharSequence text){Objects.requireNonNull(text);return text.toString().getBytes(StandardCharsets.UTF_8);}
+    /*
+     * Round 80 (front Q): the savefile thumbnail (NativeImage.writePng -> STBImageWrite.stbi_write_png(CharSequence...)
+     * -> MemoryStack.nUTF8) raised "Browser LWJGL memory operation unavailable: MemoryUtil.encodeUTF8Unsafe". nUTF8 sizes
+     * the stack block with memLengthUTF8 and then calls encodeUTF8Unsafe, so both must follow the same encoder. LWJGL's
+     * own (javap -c on the pinned org.lwjgl.system.MemoryUtil): per char, <0x80 one byte; <0x800 two; a high surrogate
+     * takes the next char unconditionally (Character.toCodePoint) and emits four bytes; every other char (lone low
+     * surrogates included) three bytes; optional trailing NUL; the result counts the NUL. String.getBytes(UTF_8) would
+     * write '?' (one byte) for a lone surrogate where LWJGL reserves three, so it is not used here.
+     */
+    private static byte[] encodeUTF8(CharSequence text){
+        Objects.requireNonNull(text);
+        byte[] out=new byte[memLengthUTF8(text,false)];int n=0;
+        for(int i=0,len=text.length();i<len;){
+            char c=text.charAt(i++);
+            if(c<0x80){out[n++]=(byte)c;continue;}
+            int cp=c;
+            if(c<0x800)out[n++]=(byte)(0xC0|cp>>6);
+            else{
+                if(!Character.isHighSurrogate(c))out[n++]=(byte)(0xE0|cp>>12);
+                else{
+                    cp=Character.toCodePoint(c,text.charAt(i++));
+                    out[n++]=(byte)(0xF0|cp>>18);
+                    out[n++]=(byte)(0x80|cp>>12&0x3F);
+                }
+                out[n++]=(byte)(0x80|cp>>6&0x3F);
+            }
+            out[n++]=(byte)(0x80|cp&0x3F);
+        }
+        return n==out.length?out:Arrays.copyOf(out,n);
+    }
+    public static int encodeUTF8Unsafe(CharSequence text,boolean terminate,long address){
+        byte[] bytes=encodeUTF8(text);
+        if(bytes.length>0)NativeArena.putBytes(address,bytes,0,bytes.length);
+        if(terminate)NativeArena.putByte(address+bytes.length,(byte)0);
+        return bytes.length+(terminate?1:0);
+    }
+    /** LWJGL's memLengthUTF8: counts what encodeUTF8Unsafe writes, BufferOverflowException past Integer.MAX_VALUE. */
+    public static int memLengthUTF8(CharSequence text,boolean terminate){
+        int len=text.length(),bytes=len+(terminate?1:0);
+        for(int i=0;i<len;i++){
+            char c=text.charAt(i);
+            if(c<0x80)continue;
+            if(c<0x800)bytes++;
+            else{bytes+=2;if(Character.isHighSurrogate(c))i++;}
+            if(bytes<0)throw new BufferOverflowException();
+        }
+        if(bytes<0)throw new BufferOverflowException();
+        return bytes;
+    }
     public static ByteBuffer memUTF8(CharSequence text){return memUTF8(text,true);}
     public static ByteBuffer memUTF8(CharSequence text,boolean terminate){byte[] bytes=encodeUTF8(text);var out=memAlloc(bytes.length+(terminate?1:0));out.put(bytes).clear();return out;}
     public static ByteBuffer memUTF8Safe(CharSequence text){return text==null?null:memUTF8(text);}
     public static ByteBuffer memUTF8Safe(CharSequence text,boolean terminate){return text==null?null:memUTF8(text,terminate);}
-    public static int memLengthUTF8(CharSequence text,boolean terminate){return encodeUTF8(text).length+(terminate?1:0);}
     public static int memUTF8(CharSequence text,boolean terminate,ByteBuffer target){return memUTF8(text,terminate,target,target.position());}
     public static int memUTF8(CharSequence text,boolean terminate,ByteBuffer target,int offset){byte[] bytes=encodeUTF8(text);int n=bytes.length+(terminate?1:0);Objects.checkFromIndexSize(offset,n,target.limit());for(int i=0;i<n;i++)target.put(offset+i,i<bytes.length?bytes[i]:0);return n;}
     public static String memUTF8(long address){return memUTF8(address,terminated(address,Integer.MAX_VALUE,1)/1);}
@@ -236,6 +283,13 @@ public final class NativeMemory {
     public static ByteBuffer memUTF16Safe(CharSequence text){return text==null?null:memUTF16(text);}
     public static ByteBuffer memUTF16Safe(CharSequence text,boolean terminate){return text==null?null:memUTF16(text,terminate);}
     public static int memLengthUTF16(CharSequence text,boolean terminate){return encodeUTF16(text).length+(terminate?2:0);}
+    /** LWJGL's encodeUTF16Unsafe: each char as a little-endian 16-bit unit, optional 16-bit NUL; returns bytes written. */
+    public static int encodeUTF16Unsafe(CharSequence text,boolean terminate,long address){
+        int n=0;
+        for(int i=0,len=text.length();i<len;i++,n+=2)NativeArena.putShort(address+n,(short)text.charAt(i));
+        if(terminate){NativeArena.putShort(address+n,(short)0);n+=2;}
+        return n;
+    }
     public static int memUTF16(CharSequence text,boolean terminate,ByteBuffer target){return memUTF16(text,terminate,target,target.position());}
     public static int memUTF16(CharSequence text,boolean terminate,ByteBuffer target,int offset){byte[] bytes=encodeUTF16(text);int n=bytes.length+(terminate?2:0);Objects.checkFromIndexSize(offset,n,target.limit());for(int i=0;i<n;i++)target.put(offset+i,i<bytes.length?bytes[i]:0);return n;}
     public static String memUTF16(long address){return memUTF16(address,terminated(address,Integer.MAX_VALUE,2)/2);}

@@ -160,6 +160,64 @@ class CompilerRegressionTest {
     @Test void threadBootstrapAndGroupMembershipCompile()throws Exception{
         compile(ThreadBootstrapProbe.class,"thread-bootstrap",List.of(ThreadBootstrapProbe.class.getName(),"java.lang.Thread","java.lang.ThreadGroup","java.lang.Object"));
     }
+    // Ronda 80 (frente Q): tras Esc->QUIT, TileGeometryFile.parseTileProperties -> String.intern murió con
+    // "TypeError: type incompatibility when transforming from/to JS" en StringInternPool::query: el pool guarda cada
+    // String en un WeakRef y su import teavm.stringDeref devolvía undefined para un String ya recolectado cuyo
+    // FinalizationRegistry aún no había corrido. La sonda interna cadenas en un job, fuerza gc() en otro e interna de
+    // nuevo cadenas iguales en ese mismo job (antes de los callbacks de finalización).
+    public static final class InternPoolProbe {
+        static String kept;
+        public static void main(String[] args){}
+        private static String fresh(int i){return new StringBuilder("pz-intern-").append(i).toString();}
+        @org.teavm.jso.JSExport public static int internFresh(int count){
+            for(int i=0;i<count;i++)fresh(i).intern();
+            kept=fresh(-1).intern();
+            return count;
+        }
+        @org.teavm.jso.JSExport public static int internAgain(int count){
+            int own=0;
+            for(int i=0;i<count;i++){String s=fresh(i);String interned=s.intern();if(!interned.equals(s))return -2;if(interned==s)own++;if(s.intern()!=interned)return -3;}
+            String k=fresh(-1);if(k.intern()!=kept||k==kept)return -1;
+            return own;
+        }
+    }
+    private static final String INTERN_HARNESS="""
+        import { pathToFileURL } from 'node:url';
+        const [runtimePath, wasmPath, mode] = process.argv.slice(2);
+        await import(pathToFileURL(runtimePath).href);
+        // Control negativo: el deref original del pool (teavm.stringDeref = e => e.deref()).
+        const options = mode === 'unpatched' ? { installImports(imports) { imports.teavm.deref = ref => ref.deref(); } } : {};
+        const runtime = await TeaVM.wasmGC.load(wasmPath, options);
+        runtime.exports.main([]);
+        const count = runtime.exports.internFresh(4000);
+        await new Promise(resolve => setTimeout(resolve, 0));
+        globalThis.gc();
+        let result;
+        try { result = runtime.exports.internAgain(count); } catch (error) { result = `${error.name}: ${error.message}`; }
+        console.log(JSON.stringify({ result }));
+        """;
+    private static String runInternHarness(Path root,String mode)throws Exception{
+        Path script=root.resolve("target/web/regressions/intern-pool-harness.mjs");Files.writeString(script,INTERN_HARNESS);
+        var process=new ProcessBuilder(root.resolve("../.toolchain/node/bin/node").normalize().toString(),"--expose-gc",script.toString(),
+            root.resolve("target/web/boot.wasm-runtime.js").toString(),root.resolve("target/web/regressions/intern-pool.wasm").toString(),mode).redirectErrorStream(true).start();
+        String output=new String(process.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals(0,process.waitFor(),output);
+        return output.strip().lines().reduce((a,b)->b).orElse("");
+    }
+    @Test void internPoolSurvivesCollectedEntries()throws Exception{
+        compile(InternPoolProbe.class,"intern-pool",List.of());
+        Path root=Path.of(System.getProperty("basedir",".")).toAbsolutePath();
+        String wasm=new String(Files.readAllBytes(root.resolve("target/web/regressions/intern-pool.wasm")),java.nio.charset.StandardCharsets.ISO_8859_1);
+        assertFalse(wasm.contains("\u0005teavm\u000bstringDeref"),"the pool no longer imports teavm.stringDeref");assertTrue(wasm.contains("\u0005teavm\u0005deref"),"it imports teavm.deref");
+        String patched=runInternHarness(root,"patched");
+        var number=java.util.regex.Pattern.compile("\\{\"result\":(-?\\d+)\\}").matcher(patched);
+        assertTrue(number.matches(),patched);
+        int own=Integer.parseInt(number.group(1));
+        assertTrue(own>0,"gc() collected interned strings and intern() re-registered them: "+patched);
+        assertTrue(own<=4000,patched);
+        String unpatched=runInternHarness(root,"unpatched");
+        assertTrue(unpatched.contains("type incompatibility"),"negative control reproduces the browser TypeError: "+unpatched);
+    }
     private void compile(Class<?> main,String name,List<String> reflectionClasses)throws Exception{
         Path root=Path.of(System.getProperty("basedir", ".")).toAbsolutePath();
         var classpath=new ArrayList<File>();classpath.add(root.resolve("target/test-classes").toFile());classpath.add(root.resolve("target/classes").toFile());

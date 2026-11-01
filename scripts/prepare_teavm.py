@@ -1284,6 +1284,46 @@ def patch_annotation_class_values(package):
     print("TeaVM: annotation Class/Class[] members reach their accessor result (AnnotationGenerationHelper)")
 
 
+def patch_string_intern_pool():
+    """String.intern() must survive an interned string the browser already collected.
+
+    Round 80 (front Q), measured in Chrome after Esc -> QUIT: PAGEERROR "TypeError: type
+    incompatibility when transforming from/to JS" at org.teavm.backend.wasm.runtime.StringInternPool::query
+    <- zombie.tileDepth.TileGeometryFile::parseTileProperties (String.intern) <- TileGeometry.init <-
+    IngameState.exit. The Wasm GC pool keeps each interned String through a JS WeakRef and is told about
+    collections by a FinalizationRegistry callback, which runs later as its own task. In between,
+    WeakRef.deref() returns undefined, and the pool's import teavm.stringDeref (e => e.deref()) hands that
+    undefined back as a (ref null String): V8 throws on the JS -> Wasm conversion and the game thread dies.
+    The generic import teavm.deref of the same runtime (used by WeakReference.get) already maps undefined
+    to null, so the pool imports that one, and query() treats a null value as a dead entry (the registry
+    callback still unlinks it later; StringInternPool.remove tolerates it). Interning semantics for live
+    strings are unchanged.
+    """
+    with zipfile.ZipFile(ROOT / f".toolchain/downloads/teavm-core-{VERSION}-sources.jar") as package:
+        intrinsic = package.read("org/teavm/backend/wasm/intrinsics/StringInternPoolIntrinsic.java").decode("utf-8")
+        pool = package.read("org/teavm/backend/wasm/runtime/StringInternPool.java").decode("utf-8")
+    old = """        function.setImportName("stringDeref");"""
+    new = """        // Local change: teavm.deref returns null (not undefined) for a collected target.
+        function.setImportName("deref");"""
+    if intrinsic.count(old) != 1:
+        raise RuntimeError("Unexpected TeaVM StringInternPoolIntrinsic shape")
+    intrinsic = intrinsic.replace(old, new)
+    old = """                var value = entry.getValue();
+                if (value.equals(s)) {"""
+    new = """                var value = entry.getValue();
+                // Local change: null = collected, finalization callback not yet delivered.
+                if (value != null && value.equals(s)) {"""
+    if pool.count(old) != 1:
+        raise RuntimeError("Unexpected TeaVM StringInternPool shape")
+    pool = pool.replace(old, new)
+    for path, source in (("org/teavm/backend/wasm/intrinsics/StringInternPoolIntrinsic.java", intrinsic),
+                         ("org/teavm/backend/wasm/runtime/StringInternPool.java", pool)):
+        destination = ROOT / "port/target/generated-sources/teavm" / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("// Local change: interned strings collected before their finalization callback.\n" + source)
+    print(f"TeaVM {VERSION}: String.intern tolerates collected entries (teavm.deref, null-checked query)")
+
+
 def main():
     archive = ROOT / f".toolchain/downloads/teavm-core-{VERSION}-sources.jar"
     if not archive.exists():
@@ -1321,6 +1361,7 @@ def main():
     patch_default_path()
     patch_zip_inflater_stream()
     patch_fiber()
+    patch_string_intern_pool()
 
 
 if __name__ == "__main__":
