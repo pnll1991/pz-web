@@ -19,7 +19,7 @@ try {
   const page = await browser.newPage();
   page.on('pageerror', e => console.log('PAGEERROR', e.message));
   await page.goto(`http://127.0.0.1:${process.env.PZ_DIAG_PORT || 8098}/f4/probe.html?n=${n}`);
-  try { await page.waitForFunction(() => globalThis.f4?.done, null, { timeout: +(process.env.F4_TIMEOUT_MS || 300000) }); }
+  try { await page.waitForFunction(() => globalThis.f4?.done, null, { timeout: +(process.env.F4_TIMEOUT_MS || 120000) }); }
   catch (e) { console.log('TIMEOUT', e.message.split('\n')[0]); }
   console.log(JSON.stringify(await page.evaluate(() => globalThis.f4), null, 1));
 } finally { await browser.close(); }

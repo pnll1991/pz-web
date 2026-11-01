@@ -40,7 +40,7 @@ onmessage = async (e) => {
     } catch (err) { r.error = String(err); }
     postMessage({ op: 'gl', r }); }
   else if (m.op === 'pong') { const a = new Int32Array(m.sab); // servidor: espera pedido en [0], responde en [1]
-    postMessage({ op: 'pong-ready' });
+    postMessage({ op: 'pong' });
     for (;;) { Atomics.wait(a, 0, 0); const v = Atomics.exchange(a, 0, 0); if (v < 0) break; Atomics.store(a, 1, v + 1); Atomics.notify(a, 1); } }
   else if (m.op === 'ping') { const a = new Int32Array(m.sab); const t0 = performance.now();
     for (let i = 1; i <= m.n; i++) { Atomics.store(a, 1, 0); Atomics.store(a, 0, i); Atomics.notify(a, 0); Atomics.wait(a, 1, 0); }

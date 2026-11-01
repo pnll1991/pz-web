@@ -1141,3 +1141,141 @@ Análisis estático (`javap -c` del jar fijado, volcado en /tmp; `translateShade
 - Test: `PortXmlBeansIdrefTest` (espejos sintéticos de la forma XML; con `PZ_HOME` lee también los
   `defaultWalk.xml`/`Idle.xml` fijados y exige que cada vértice sea idéntico a un `m_2DBlends`). Sin el fix falla
   (3/3). No hay JAXB RI en `.toolchain/m2` para comparar campo a campo.
+
+## Ronda 81 — profiling (frente 3)
+Herramienta: `tools/diag/profile.mjs` (`boot|ingame|report`; CDP Profiler a 500 µs, nombres wasm de la sección `name`,
+fuentes de los `@JSBody` -- scripts `new Function` sin URL que Chrome rotula "(anon)" -- guardadas en `<fase>.scripts.json`
+y mostradas como `jsbody{...}`). Resumen: `node tools/diag/profile.mjs report X.cpuprofile --top 10 --wasm port/target/web/game/boot.wasm [--from s --to s]`
+(self/total por función, por archivo, por categoría). Bajo `chrome.lock`.
+
+### Boot ANTES (build 22:24, 0-395 s hasta el ToS; el menú no llegó en 1320 s en ese run por el clic del ToS)
+| # | self s | % | función |
+|---|---|---|---|
+| 1 | 172 (87+85) | 44 | `port.shim.BrowserMonitor` (@JSBody `new Error().stack`) por `Object.notifyAll` <- `ReentrantLock.acquire`, `CellularAutomatonRNG.next` |
+| 2 | 69.6 | 17.6 | `AbstractStringBuilder.delete` <- `StringBuilder.replace` <- `ScriptParser.stripComments` <- `TileGeometryFile.parseFile` |
+| 3 | 17.4 | 4.4 | `ImageData.getPixelClamped` |
+| 4 | 11.2 | 2.8 | `ImageData.setPixel` |
+| 5 | 7.7 | 2.0 | idle |
+| 6 | 4.7 | 1.2 | `ImageData.performPreMultipliedAlpha` (5.9 % total) |
+| 7 | 2.9 | 0.7 | `teavm@initReflection` |
+| 8 | 2.8 | 0.7 | `Object.monitorExit` |
+| 9 | 2.7 | 0.7 | `jzlib InfCodes.inflate_fast` |
+| 10 | 2.5 | 0.6 | `PNGDecoder.unfilterPaeth` |
+En la ventana del ToS (420-1320 s): 44 % `BrowserMonitor` otra vez, `deref` 17.6 s (`NativeArena.address`: un `teavm.deref` por cada `WeakReference` de `retired`, hasta 4096 por llamada), `gl.mjs call` 15 s, `getUniform`/`isCompiled`/`AbstractPerformanceProfileProbe.start` (pulses).
+Categorías: nativas/@JSBody 55 %, JCL TeaVM 23 %, `zombie.core.textures` 11 %; vfs.mjs 0.8 %, gl.mjs 0.6 %, packs.mjs 0.5 %, Kahlua 0.2 %, PortXmlBeans ~1 %.
+
+### Arreglos (plataforma, sin tocar reglas)
+- `3d4539c` BrowserMonitor opt-in (`PZ_MONITOR_TRACE=true` o `?monitor=1`): sin la bandera `record()` vuelve antes de la frontera.
+- `cf6c7e7` `prepare_teavm.patch_string_builder_copies`: delete/deleteCharAt/insert mueven la cola con `System.arraycopy` (array.copy); test JVM vs Wasm de 3000 operaciones.
+- `c46954d` `NativeArena.address` escanea los `retired` sólo para buffers sin vista.
+- `41cfecd` `BrowserProgress.pulse`: `Set` en vez de `some()` lineal, claves `#last` en caché, `shift()` en vez de `splice(0,n)` (node, 2M pulsos: 3715 -> 422 ms).
+
+### Boot DESPUÉS (build 00:15 con los tres primeros; /tmp/pz81/prof3-boot2)
+Mismo método: ToS + ACCEPT + 5 renders del menú en **131,6 s** (antes ToS a 395 s / baseline de front 0 menú 352 s: -63 %).
+| # | self s | % | función |
+|---|---|---|---|
+| 1 | 30.2 | 22.9 | `BrowserProgress.pulseNative` (@JSBody pzPulseLabels) -> arreglado en `41cfecd` |
+| 2 | 16.6 | 12.6 | `ImageData.getPixelClamped` |
+| 3 | 13.4 | 10.2 | `ImageData.setPixel` |
+| 4 | 6.3 | 4.8 | idle |
+| 5 | 5.1 | 3.8 | `ImageData.performPreMultipliedAlpha` (18.7 % total) |
+| 6 | 2.8 | 2.2 | `jzlib InfCodes.inflate_fast` |
+| 7 | 2.7 | 2.1 | `PNGDecoder.unfilterPaeth` |
+| 8 | 2.7 | 2.1 | (program) |
+| 9 | 2.3 | 1.7 | `gl.mjs drainQueue` |
+| 10 | 2.2 | 1.7 | `ImageData.scaleMipLevelMaxAlpha` (10.8 % total) |
+Categorías: `zombie.core.textures` 34.6 %, @JSBody 24.6 %, JCL 14.6 %, vfs.mjs 2.1 %, gl.mjs 2.0 %. Lo que queda es decodificación/mips de texturas (caché del frente 2).
+
+## Ronda 81 — hilos (frente 4, 01/11): ¿qué puede salir del hilo principal?
+Pregunta: ¿pueden WorldStreamer, LightingThread, la carga de chunks u otros hilos del juego correr fuera del hilo
+principal en el navegador? Respuesta corta: **los hilos Java del juego, no** (no hay heap WasmGC compartido); lo que sí
+se puede mover es trabajo que no toca objetos Java, y hoy pesa poco (medido abajo). No hay prototipo de juego: ningún
+candidato barato mueve más de ~4 % del tiempo medido. Sonda nueva: `tools/diag/threads_probe.mjs`.
+
+### Hechos (con fuente)
+- **WasmGC no se comparte entre hilos.** Un `structref` de WasmGC no se clona ni se transfiere: `postMessage`/`structuredClone`
+  dan `DataCloneError` (Node 24.22 / V8 13.x con `/tmp/pz81/f4/probe/gcclone.mjs`, y Chrome 156.0.0.0 headless con la sonda:
+  `DataCloneError: Failed to execute 'postMessage' on 'Worker'` y lo mismo con `structuredClone`). La propuesta *shared-everything threads* (tipos `shared`, structs compartidos) está en **fase 1** del CG
+  (https://github.com/WebAssembly/proposals). V8 la tiene detrás de `--experimental-wasm-shared`: sin el flag el tipo
+  `shared` (forma 0x65) no compila (Chrome: `CompileError: unknown type form: 101, enable with --wasm-shared`); con el flag compila en Node, pero el objeto **tampoco** se puede
+  pasar por `postMessage`. Aunque se habilitara: TeaVM 0.16 no emite tipos `shared` (en `WasmGCTarget` sólo existe
+  `setSharedBuffer`, que marca como `shared` la **memoria lineal**, `module.sharedMemory`, L520; el cargador lo respeta
+  con `memory:{shared:true}`), su runtime de fibras es de un hilo (`org.teavm.runtime.Fiber`, `EventQueue`), y los
+  imports JS (`wasm:js-string`, `externref` de JSO) no son compartibles. Conclusión: **dos hilos Java del mismo heap
+  no pueden correr en paralelo en Chrome hoy**; con TeaVM ni siquiera con el flag.
+- **Atomics.wait está prohibido en el hilo principal** (Chrome: `TypeError: Atomics.wait cannot be called in this context`) y permitido en un Worker (ok).
+  Como el juego (todas las fibras) vive en el hilo principal, **ninguna llamada nativa síncrona** puede esperar el
+  resultado de un Worker. Lo único posible desde el hilo principal: (a) escribir pedidos sin esperar (anillo en SAB),
+  (b) leer resultados ya publicados en un SAB (`Atomics.load`), (c) suspender **una fibra** con `@Async` hasta un
+  `postMessage`/`Atomics.waitAsync` (no bloquea al resto, pero contagia la corrutina a todos los llamadores y toca el
+  gate de `Thread.currentThread` de `scripts/build.sh`).
+- Latencia de una llamada síncrona Worker->Worker por SAB+Atomics: PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) µs ida y vuelta (20 000 llamadas). Sirve
+  de cota si algún día el juego entero corre en un Worker y llama a otro.
+- **OffscreenCanvas + WebGL2 + rAF en un Worker funcionan** en este Chrome (`transferControlToOffscreen` + `getContext('webgl2')` = "WebGL 2.0 (OpenGL ES 3.0 Chromium)", `requestAnimationFrame` disponible en el Worker). Pero mover el juego entero
+  a un Worker no es barato: `port/shim/BrowserDom.java` usa `DOMParser`, `XMLSerializer` y
+  `document.implementation.createDocument` para todo el XML del juego (PZXmlUtil, JAXB propio), y **no existen en
+  Workers**; además `window.mjs`/`input.mjs` usan `canvas.style`, pointer lock, `navigator.getGamepads`, ícono
+  (`document.head`), `visibilitychange`; `sqlite.mjs` inyecta un `<script>`; y toda la instrumentación (live.mjs,
+  bench.mjs, profile.mjs) evalúa `globalThis.pzRuntime` en la página. Gana: página que responde aunque el juego haga
+  una espera activa, XHR síncrono con `responseType='arraybuffer'` y `Atomics.wait` hacia Workers auxiliares.
+  **No** gana CPU: el juego sigue en un solo hilo.
+
+### Hilos que arranca el juego (javap del jar fijado, 160 clases que nombran `java/lang/Thread`)
+- Hilos propios: `MainThread`, `RenderThread`, `WorldStreamer`, `LightingThread`, `IsoMetaGrid$MetaGridLoaderThread`
+  (N hilos para los lotheaders), `MapCollisionData$MCDThread`, `PolygonalMap2$PMThread`, `IsoRegionWorker`,
+  `WorldReuserThread`, `GameLoadingState` (hilo de carga), `ZipBackup`, `BufferUtils$ClearReferences`,
+  `PathfindNativeThread` (sólo con la opción de debug); `ServerMap/ServerChunkLoader/ServerLOS/RCON/UdpEngine/Voice` son
+  de servidor/red.
+- Paralelismo fino del mismo frame: `PZForkJoinPool.commonPool()` + `CompletableFuture.runAsync/supplyAsync(...).join()`
+  en `IsoWorld` (animaciones), `FBORenderCell`, `LightingJNI` (checkLights), `IngameState`, `GameWindow`;
+  `FileSystemImpl` (`newFixedThreadPool(availableProcessors)`), `TextureDraw.slotInitExec`.
+- Todos trabajan sobre objetos Java compartidos (IsoChunk, IsoGridSquare, listas de TextureDraw, colas de FileTask):
+  sin heap compartido no hay forma de correrlos en otro hilo sin serializar el mundo. En escritorio el mayor
+  paralelismo es MainThread (lógica) vs RenderThread (GL) y aquí se serializan; tampoco tiene arreglo sin heap común.
+
+### Nuestras "nativas" como módulos Worker (Lighting64, PopMan64, MapCollision64)
+- Son el único caso con frontera de mensajes natural: el juego les habla por JNI con primitivos/buffers.
+  `LightingJNI`: 50 nativas, 35 `void` (alimentan cuadrados/luces: anillo de pedidos sin esperar) y 15 con retorno, todas
+  lecturas del estado calculado (`getSquareLighting`, `getSeen`, `getVertLight`, `stateUpdateCounter`,
+  `chunkLightingDone`...): se pueden servir desde un SAB que el Worker publica (doble búfer). `ZombiePopulationManager`:
+  20 `void` + 8 con retorno, casi todas "¿hay datos?" (`n_hasDataForThread`, `n_shouldWait`, `n_getAddZombieData`):
+  el diseño del juego ya es asíncrono. `MapCollisionData`: `n_pathTask` devuelve un int de forma síncrona (desde el
+  hilo MCD: candidato a `@Async` sobre `Atomics.waitAsync`).
+- **Hoy no hay nada que mover**: Lighting64 es luz ambiental sin oclusión, PopMan64 sin población virtual,
+  MapCollision64 sin path tasks (Ronda 79); su costo en los perfiles es ~0. Recomendación para cuando se implementen de
+  verdad: hacerlas wasm32 (C/C++ propio o un segundo módulo TeaVM, heap propio) en un Worker con el protocolo de arriba;
+  ahí sí corren en paralelo con el juego sin bloquearlo.
+
+### Oportunidad medida
+- Arranque (perfil de front 3, `/tmp/pz81/prof3-boot0`, 0->ToS 395 s y hasta 1320 s): self movible a un Worker sin
+  heap compartido = `gl.mjs` 28,1 s (2,1 %; además debe correr en el hilo del contexto GL), `vfs.mjs` 3,3 s (0,3 %),
+  `packs.mjs` 2,1 s (0,2 %), jzlib (inflate de PNG, Java del juego) 6,7 s (0,5 %). El resto es Java/JS del mismo heap:
+  diagnóstico de monitores (44 %, front 3), `AbstractStringBuilder.delete` (17,6 %, front 3), `zombie.core.textures`
+  (front 2). Lua compile y XML no aparecen en el top; para Lua, un caché `Prototype.dump`/`loadByteCode` (existen en
+  `se.krka.kahlua.vm.Prototype`) le gana a compilar en Workers.
+- Antes de `main` (bench front 0, `baseline-dev`): instanciado a 7,28 s, `wasm_compile_s` 0,65 s (código en caché):
+  adelantar `compileStreaming` para solaparlo con los packs ahorraría < 1 s. Descartado.
+- Carga del mundo (bench front 0, create-save): `game_loading_s` 365 s; XHR síncronos de `/media` = 6743 pedidos,
+  184,2 MB, **15,2 s** (2,25 ms por pedido, 4 % de la carga). Un prefetcher en Worker que llene un caché SAB ahorraría
+  como mucho esos 15 s y sólo si adivina qué se lee; los 4112 lotheaders (32,5 MB) se leen todos al crear el
+  IsoMetaGrid: un único rango/paquete para todos los ahorra sin Worker (front 2, cachés). Sonda (1 MiB por pedido):
+  hilo principal texto+`charCodeAt` PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms/MB (decodificación sola PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms/MB), Worker arraybuffer
+  PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms/MB, Worker 48 fetch en paralelo PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms/MB; 64 KiB: principal PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms, Worker PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms.
+- SHA-256 de los packs (packs.mjs verifica cada blob y cada rango, en serie): 256 MiB en trozos de 4 MiB, en serie
+  PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms, en paralelo PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms, en paralelo con el hilo principal ocupado PENDIENTE (sonda sin turno de chrome.lock; ver `/tmp/pz81/f4/probe4.json`) ms.
+- En partida: pendiente: el perfil en partida de front 3 y el bench ingame de front 0 aún no existen (create-save falló dos veces). Hasta que haya perfil, ninguna porción del frame en partida está medida; no se prototipa nada sobre números que no tenemos.
+
+### Opciones, de más a menos viable
+1. **Nativas propias como Workers wasm32** (cuando Lighting64/PopMan64/MapCollision64 dejen de ser simplificaciones):
+   paralelismo real, sin cambiar reglas; costo = protocolo anillo+SAB y `@Async` sólo en `n_pathTask`. Ganancia
+   esperada hoy: 0 (no hay trabajo); a futuro, todo el cálculo de luz/población fuera del frame.
+2. **E/S remota fuera del hilo** (prefetch en Worker a SAB): techo 15 s de 365 s de carga; mejor primero agrupar
+   lotheaders (front 2). Riesgo: predicción equivocada = bytes de más.
+3. **Juego entero en Worker + OffscreenCanvas** (`?worker=1`): sólo responsividad, 0 % de CPU; requiere reemplazar el
+   XML DOM (`BrowserDom`) por un parser propio, proxy de ventana/entrada/pointer lock/gamepad y adaptar toda la
+   instrumentación. Grande y con riesgo de fidelidad en XML. No ahora.
+4. **Pipeline de comandos GL a un Worker** (gl.mjs codifica en SAB, otro Worker con el OffscreenCanvas ejecuta): mueve a
+   lo sumo el self de gl.mjs + bindings WebGL; cada `getError`/`getParameter`/`readPixels`/estado de compilación de
+   shader obliga a esperar y el hilo principal no puede esperar. Sólo viable con el juego ya en un Worker (opción 3).
+5. **Hilos Java del juego en Workers**: imposible con WasmGC hoy (ver hechos).
+- Estado del frente 4 al 01/11 02:35: sonda Chrome parcial (WasmGC->Worker, Atomics, OffscreenCanvas medidos; latencia SAB, lectura remota y SHA pendientes: bug de handshake corregido, vuelve a esperar turno). Veredicto: no hay prototipo `?worker=1` justificado.
