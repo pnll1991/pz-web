@@ -76,7 +76,8 @@ function cpuReport(a, b) {
 // --- métricas ---
 const summary = { mode: MODE, url: URL_, profile: PROFILE, gpu: profileName(), front: FRONT, change: CHANGE, notes: NOTES, run: RUN, metrics: {}, events: [] };
 try { const st = statSync('port/target/web/game/boot.wasm'); summary.bootWasm = { bytes: st.size, mtime: st.mtime.toISOString() }; } catch {}
-const tsvNote = () => [NOTES, `mode=${MODE}`, `run=${RUN.split('/').pop()}`, summary.bootWasm ? `boot.wasm=${summary.bootWasm.mtime.slice(0, 16)}` : '', URL_.includes('?') ? URL_.slice(URL_.indexOf('?')) : ''].filter(Boolean).join(' ');
+const tsvExtra = {};
+const tsvNote = () => [NOTES, tsvExtra.walk_dir ? `walk_dir=${tsvExtra.walk_dir}` : '', `mode=${MODE}`, `run=${RUN.split('/').pop()}`, summary.bootWasm ? `boot.wasm=${summary.bootWasm.mtime.slice(0, 16)}` : '', URL_.includes('?') ? URL_.slice(URL_.indexOf('?')) : ''].filter(Boolean).join(' ');
 function metric(name, value, digits = 2) {
   if (value == null || Number.isNaN(value)) { log('METRIC', name, 'n/a'); return; }
   const v = typeof value === 'number' ? +value.toFixed(digits) : value;
@@ -298,15 +299,28 @@ try {
       await sleep(4000);
       const w0 = await shotB64();
       const probe = async () => { await setProbe(true); await sleep(2500); const p = await pstate(); await setProbe(false); await sleep(1500); return p; };
-      const p0 = await probe(); log('antes de W', p0);
-      await rate(WALK_S, 'walk', async s => { await key('w', s * 1000); });
+      // El guardado deja al jugador pegado a una pared (colisión OK): una sola dirección puede estar bloqueada.
+      // Probar S, D, A, W 4 s cada una (pausa de 3 s tras soltar: artefacto de la esfera) y leer x/y con la sonda de runtime.
+      let pos = await probe(); log('posición inicial', pos); summary.walk = { start: pos, steps: [] };
+      let best = { d: 0, dir: null };
+      for (const dir of ['s', 'd', 'a', 'w']) {
+        await key(dir, 4000); await sleep(3000);
+        const q = await probe();
+        const d = pos && q && pos.x != null && q.x != null ? Math.hypot(q.x - pos.x, q.y - pos.y) : null;
+        summary.walk.steps.push({ dir, from: pos && { x: pos.x, y: pos.y }, to: q && { x: q.x, y: q.y }, dist: d });
+        log('dirección', dir, d); if (d != null && d > best.d) best = { d, dir };
+        if (q) pos = q;
+      }
+      if (best.dir) { tsvExtra.walk_dir = best.dir; metric('walk_dist', best.d); summary.walk_dir = best.dir; log('walk_dir', best.dir); }
+      else if (pos) metric('walk_dist', 0);
+      metric('walk_moved_probe', best.d > 0.5 ? 1 : 0, 0); // por la sonda; walk_moved (abajo) es la señal secundaria por pantalla
+      await sleep(3000);
+      await rate(WALK_S, 'walk', async s => { await key(best.dir || 's', s * 1000); }); // fps mientras se mueve de verdad
       await sleep(5000); // pasa el artefacto de la esfera
       const w1 = await shotB64();
       const walkDiff = await diffRatio(w0, w1); metric('walk_diff', walkDiff, 4);
       if (walkDiff != null && idleDiff != null) metric('walk_moved', walkDiff > Math.max(0.02, 3 * idleDiff) ? 1 : 0, 0);
       await diffPage.close().catch(() => {});
-      const p1 = await probe(); log('después de W', p1);
-      if (p0 && p1 && p0.x != null) { summary.walk = { p0, p1 }; metric('walk_dist', Math.hypot(p1.x - p0.x, p1.y - p0.y)); }
       await shot('after-walk');
     } else {
       await sleep(30000);
