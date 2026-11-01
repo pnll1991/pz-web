@@ -26,8 +26,13 @@ globalThis.setTimeout = (fn, ms, ...rest) => {
   if (timerObs.items.length < 40) timerObs.items.push({ n: timerObs.calls, ms: ms ?? null, site });
   return baseSetTimeout(() => { timerObs.fired++; fn(); }, ms, ...rest);
 };
+// Ronda 81: ?build=release carga el build optimizado (scripts/build.sh --with-game --release), publicado en
+// /release/game/ con su propio build-state.json y pulse-map.json; ?build=<nombre> carga /<nombre>/game/ (variantes
+// para comparar); sin el parámetro, el build dev de /game/.
+const buildName = new URLSearchParams(location.search).get('build');
+const gameDir = buildName && /^[a-z0-9-]+$/.test(buildName) ? `/${buildName}/game` : '/game';
 try {
-  const response = await fetch('/game/build-state.json');
+  const response = await fetch(`${gameDir}/build-state.json`);
   if (!response.ok) throw new Error('Todavía no hay una compilación del juego.');
   const build = await response.json();
   if (!build.success || build.mode !== 'game-main') throw new Error('La compilación real del juego está bloqueada. Consultá el reporte local de TeaVM.');
@@ -38,7 +43,7 @@ try {
   // diagnostics keep their label shape. A missing map only silences the diagnostics; it never
   // changes the game.
   try {
-    const pulseResponse = await fetch('/game/pulse-map.json');
+    const pulseResponse = await fetch(`${gameDir}/pulse-map.json`);
     if (pulseResponse.ok) globalThis.pzPulseLabels = await pulseResponse.json();
   } catch (error) { console.warn('pulse-map no disponible:', error.message); }
   // Round 32: suspending the render fiber corrupts TeaVM's fiber state while the game fiber is
@@ -103,7 +108,7 @@ try {
   // installImports hook to observe, without changing it: how many events TeaVM hands to the timer,
   // how many timers actually fire, whether the fired callback throws, and how many are cancelled.
   const asyncObs = globalThis.pzAsync = { offers: 0, fired: 0, errors: 0, kills: 0, errorsSeen: [], last: [] };
-  const runtime = await TeaVM.wasmGC.load('/game/boot.wasm', {
+  const runtime = await TeaVM.wasmGC.load(`${gameDir}/boot.wasm`, {
     installImports(imports) {
       const base = imports.teavmAsync;
       if (!base || typeof base.offer !== 'function' || typeof base.kill !== 'function')

@@ -14,15 +14,25 @@ cd "$PZ_WEB_ROOT"
 # durante el build. PZ_SWAP_LOCK=<archivo> hace el swap en segundo plano bajo `flock` de ese archivo (p. ej. el
 # chrome.lock de la ronda), sin retener el build;
 # PZ_NO_SWAP=1 deja el resultado en staging (swap manual con scripts/swap_staged.sh). Sin --dev: igual que antes.
-DEV=0; GAME=0; ARGS=()
+# Ronda 81: --release = el camino --dev (cachés, staging, gates) con TeaVM ADVANCED (PZ_TEAVM_OPT=FULL para
+# probar FULL) y luego Binaryen wasm-opt (.toolchain/emsdk; PZ_WASM_OPT=-O2 por defecto, PZ_WASM_OPT=0 lo
+# omite). Staging port/target/web-staging/release/<sub>, publica en port/target/web/release/<sub> (servido como
+# /release/game/; game.html?build=release lo carga). Nunca toca port/target/web/game ni los reportes del dev.
+# Los gates miran la salida de TeaVM, antes de wasm-opt (que preserva la semántica pero puede inlinear).
+DEV=0; GAME=0; REL=0; ARGS=()
 for arg in "$@"; do
-  case "$arg" in --dev) DEV=1 ;; --with-game) GAME=1; ARGS+=("$arg") ;; *) ARGS+=("$arg") ;; esac
+  case "$arg" in --dev) DEV=1 ;; --release) DEV=1; REL=1 ;; --with-game) GAME=1; ARGS+=("$arg") ;; *) ARGS+=("$arg") ;; esac
 done
 step_t=$(date +%s); build_t=$step_t
 step() { local now; now=$(date +%s); echo "[build.sh] $1: $((now - step_t)) s"; step_t=$now; }
 if [ "$GAME" = 1 ]; then SUB=game; else SUB=.; fi
+REPORTS=port/target/reports; DEST=port/target/web/$SUB; TEAVM_OPT=SIMPLE
+if [ "$REL" = 1 ]; then
+  REPORTS=port/target/reports/release; DEST=port/target/web/release/$SUB; TEAVM_OPT=${PZ_TEAVM_OPT:-ADVANCED}
+  mkdir -p "$REPORTS"
+fi
 if [ "$DEV" = 1 ]; then
-  STAGE=port/target/web-staging/$SUB
+  if [ "$REL" = 1 ]; then STAGE=port/target/web-staging/release/$SUB; else STAGE=port/target/web-staging/$SUB; fi
   python3 scripts/prepare_build.py "${ARGS[@]}" --cache-exposure --output-dir "$STAGE"; step prepare_build
   # Generadores que reescriben siempre: conservar el mtime de los archivos cuyo contenido no cambió,
   # para que maven-compiler no recompile el módulo entero por fuentes "nuevas" idénticas.
@@ -36,7 +46,7 @@ if [ "$DEV" = 1 ]; then
   step prepare_teavm+contracts
   # pz.teavm.filterCache: memo de DependencyAnalyzer.filterType (scripts/prepare_teavm.py patch_dependency_filter).
   mvn -B -ntp -o -Dmaven.repo.local="$PZ_WEB_ROOT/.toolchain/m2" -Dmaven.test.skip=true -Dpz.teavm.filterCache=true \
-    -f port/pom.xml prepare-package
+    -Dpz.teavm.optimization="$TEAVM_OPT" -f port/pom.xml prepare-package
   step maven
   WASM=$STAGE/boot.wasm
 else
@@ -54,8 +64,8 @@ fi
 # Si contienen ops de Fiber, Fiber.suspend hace popInt sobre un int-stack que nunca pusheó.
 if [ -f "$WASM" ] && { [ "$DEV" = 0 ] || [ "$GAME" = 1 ]; }; then
   python3 scripts/wasmfn.py "$WASM" \
-    'java.lang.Thread::currentThread' 'java.lang.Thread::setCurrentThread' | tee port/target/reports/thread-fiber-gate.txt
-  if grep -q 'fiberops: True' port/target/reports/thread-fiber-gate.txt; then
+    'java.lang.Thread::currentThread' 'java.lang.Thread::setCurrentThread' | tee "$REPORTS/thread-fiber-gate.txt"
+  if grep -q 'fiberops: True' "$REPORTS/thread-fiber-gate.txt"; then
     echo "GATE FAIL: Thread::currentThread/setCurrentThread son corutinas (Fiber ops). Ver docs/notes-from-code.md" >&2
     exit 1
   fi
@@ -64,9 +74,9 @@ if [ -f "$WASM" ] && { [ "$DEV" = 0 ] || [ "$GAME" = 1 ]; }; then
   # CraftRecipe::LoadIO -> ScriptManager::Load. Un transformer que no matchea no deja nada.
   python3 scripts/wasmfn.py "$WASM" \
     'zombie.util.StringUtils::containsWhitespace' 'zombie.util.StringUtils::removeWhitespace' \
-    | tee port/target/reports/stringutils-gate.txt
-  if grep -q 'java.lang.String::matches\|java.lang.String::replaceAll' port/target/reports/stringutils-gate.txt \
-     || ! grep -q 'StringUtilsBridge' port/target/reports/stringutils-gate.txt; then
+    | tee "$REPORTS/stringutils-gate.txt"
+  if grep -q 'java.lang.String::matches\|java.lang.String::replaceAll' "$REPORTS/stringutils-gate.txt" \
+     || ! grep -q 'StringUtilsBridge' "$REPORTS/stringutils-gate.txt"; then
     echo "GATE FAIL: el patch de StringUtils no se aplicó (sigue usando regex). Ver AGENT_LEARNINGS.md ronda 50" >&2
     exit 1
   fi
@@ -77,17 +87,30 @@ if [ -f "$WASM" ] && { [ "$DEV" = 0 ] || [ "$GAME" = 1 ]; }; then
   python3 scripts/wasmfn.py "$WASM" \
     'zombie.scripting.ui.XuiSkin$EntityUiStyle::<clinit>' 'zombie.scripting.ui.XuiSkin::<clinit>' \
     'zombie.core.textures.Texture::<clinit>' 'zombie.core.SpriteRenderer$RingBuffer$StateRun::<clinit>' \
-    | tee port/target/reports/assertions-gate.txt
-  if grep -q 'desiredAssertionStatus' port/target/reports/assertions-gate.txt; then
+    | tee "$REPORTS/assertions-gate.txt"
+  if grep -q 'desiredAssertionStatus' "$REPORTS/assertions-gate.txt"; then
     echo "GATE FAIL: AssertionDisabledCompatibility no se aplicó (queda desiredAssertionStatus en <clinit>)" >&2
     exit 1
   fi
 fi
 step gates
+if [ "$REL" = 1 ] && [ "${PZ_WASM_OPT:--O2}" != 0 ]; then
+  # Features que emite TeaVM 0.16 Wasm GC (validadas con wasm-opt 133); sin --closed-world ni -tnh/--ignore-implicit-traps:
+  # el runtime JS ve los tipos exportados y strict mode depende de las trampas/checks de null.
+  WOPT=.toolchain/emsdk/upstream/bin/wasm-opt
+  [ -x "$WOPT" ] || { echo "falta $WOPT (python3 scripts/bootstrap.py instala emsdk)" >&2; exit 1; }
+  before=$(stat -c %s "$WASM")
+  /usr/bin/time -f "[build.sh] wasm-opt peak RSS %M KiB" "$WOPT" "$WASM" --enable-gc --enable-reference-types \
+    --enable-exception-handling --enable-bulk-memory --enable-bulk-memory-opt --enable-nontrapping-float-to-int \
+    --enable-sign-ext --enable-mutable-globals --enable-multivalue "${PZ_WASM_OPT:--O2}" -g -o "$WASM.opt"
+  mv -f "$WASM.opt" "$WASM"
+  echo "[build.sh] wasm-opt ${PZ_WASM_OPT:--O2}: $before -> $(stat -c %s "$WASM") B"
+  step wasm-opt
+fi
 if [ "$DEV" = 1 ]; then
   if [ "${PZ_NO_SWAP:-0}" = 1 ]; then
-    echo "[build.sh] PZ_NO_SWAP=1: resultado en $STAGE; publicar con: bash scripts/swap_staged.sh $STAGE port/target/web/$SUB"
-  elif [ -n "${PZ_SWAP_LOCK:-}" ]; then
+    echo "[build.sh] PZ_NO_SWAP=1: resultado en $STAGE; publicar con: bash scripts/swap_staged.sh $STAGE $DEST"
+  elif [ -n "${PZ_SWAP_LOCK:-}" ] && [ "$REL" = 0 ]; then
     # No retener build.lock mientras se espera el lock del swap: copia instantánea del staging y un proceso
     # desacoplado que publica cuando obtiene el lock. Un build posterior borra las copias viejas (su swap falla).
     rm -rf port/target/web-staging/ready-*
@@ -98,8 +121,8 @@ if [ "$DEV" = 1 ]; then
       >> port/target/web-staging/swap.log 2>&1 < /dev/null &
     echo "[build.sh] swap en espera de $PZ_SWAP_LOCK (pid $!, log port/target/web-staging/swap.log)"
   else
-    bash scripts/swap_staged.sh "$STAGE" "port/target/web/$SUB"
+    bash scripts/swap_staged.sh "$STAGE" "$DEST"
   fi
   step swap
 fi
-echo "[build.sh] total: $(( $(date +%s) - build_t )) s (dev=$DEV)"
+echo "[build.sh] total: $(( $(date +%s) - build_t )) s (dev=$DEV release=$REL)"

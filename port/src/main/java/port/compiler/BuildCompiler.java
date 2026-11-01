@@ -28,12 +28,16 @@ public final class BuildCompiler {
         // build.sh --dev: staging directory, swapped into target/web only after the gates pass.
         String outputOverride = entrypoint.getProperty("output", "");
         Path output = outputOverride.isEmpty() ? port.resolve(game ? "target/web/game" : "target/web") : Path.of(outputOverride);
-        Path reports = port.resolve("target/reports/" + mode + "-" + entrypoint.getProperty("reflection"));
+        // Ronda 81: build.sh --release pasa -Dpz.teavm.optimization=ADVANCED (pipeline eager: devirtualización,
+        // inlining, escape analysis). Sus reportes van a un directorio propio y no pisan los de target/ del build dev.
+        TeaVMOptimizationLevel optimization = TeaVMOptimizationLevel.valueOf(System.getProperty("pz.teavm.optimization", "SIMPLE"));
+        release = optimization != TeaVMOptimizationLevel.SIMPLE;
+        Path reports = port.resolve("target/reports/" + mode + "-" + entrypoint.getProperty("reflection") + (release ? "-release" : ""));
         Files.createDirectories(reports);
         // Derived diagnostics must never survive a failed/restarted analysis.
         for (String name : List.of("missing-apis.json", "missing-apis.md", "teavm-diagnostics.txt", "jdk-api-report.txt", "chrome-startup.json", "wasm-functions.json")) {
             Files.deleteIfExists(reports.resolve(name));
-            Files.deleteIfExists(port.resolve("target").resolve(name));
+            if (!release) Files.deleteIfExists(port.resolve("target").resolve(name));
         }
         write(port, reports, "build-report.json", "{\"success\":false,\"status\":\"running\",\"mode\":\"" + mode + "\"}\n");
         Files.createDirectories(output);
@@ -70,7 +74,8 @@ public final class BuildCompiler {
             tool.setTargetType(TeaVMTargetType.WEBASSEMBLY_GC);
             tool.setTargetDirectory(output.toFile());
             tool.setTargetFileName("boot.wasm");
-            tool.setOptimizationLevel(TeaVMOptimizationLevel.SIMPLE);
+            tool.setOptimizationLevel(optimization);
+            System.out.println("TeaVM optimization level: " + optimization);
             tool.setObfuscated(false);
             // Round 79: Java semantics for null/array-bounds/cast failures. Without strict mode Wasm GC
             // traps ("dereferencing a null pointer") and kills the whole fiber, while on the JVM the
@@ -152,7 +157,7 @@ public final class BuildCompiler {
             if (game) {
                 String pulseMap = StartupProgress.pulseMapJson();
                 Files.writeString(reports.resolve("pulse-map.json"), pulseMap);
-                Files.writeString(port.resolve("target").resolve("pulse-map.json"), pulseMap);
+                if (!release) Files.writeString(port.resolve("target").resolve("pulse-map.json"), pulseMap);
                 Files.writeString(output.resolve("pulse-map.json"), pulseMap);
             }
             StringBuilder jdkProblems = new StringBuilder("Scope: " + mode + "; compilation reachability is not runtime evidence.\n");
@@ -171,12 +176,12 @@ public final class BuildCompiler {
             var dependencies = tool.getDependencyInfo();
             String report = """
                     {"mode":"%s","game_main":"%s","reflection":"%s","game_initialized":false,"success":%s,
-                     "teavm":"0.16.0","compiler_patch":"compact-reflection-caches-v1","target":"WEBASSEMBLY_GC",
+                     "teavm":"0.16.0","compiler_patch":"compact-reflection-caches-v1","target":"WEBASSEMBLY_GC","optimization":"%s",
                      "reachable_classes":%d,"reachable_methods":%d,
                      "wasm_bytes":%d,"compile_ms":%d,"external_classpath_entries":%d,
                      "jvm_heap_limit_bytes":%d,"process_peak_rss_kib":%d,
                      "diagnostics_file":"teavm-diagnostics.txt"}
-                    """.formatted(mode, gameMain, entrypoint.getProperty("reflection"), success, dependencies.getReachableClasses().size(),
+                    """.formatted(mode, gameMain, entrypoint.getProperty("reflection"), success, optimization, dependencies.getReachableClasses().size(),
                     dependencies.getReachableMethods().size(), bytes, elapsed, externalCount, heapLimit, peakRss());
             write(port, reports, "build-report.json", report);
             Files.writeString(output.resolve("build-state.json"), report);
@@ -197,9 +202,11 @@ public final class BuildCompiler {
         if (patched != 3) throw new IllegalStateException("TeaVM memory patch is not active; use scripts/build.sh");
     }
 
+    private static boolean release;
+
     private static void write(Path port, Path reports, String name, String value) throws Exception {
         Files.writeString(reports.resolve(name), value);
-        Files.writeString(port.resolve("target").resolve(name), value);
+        if (!release) Files.writeString(port.resolve("target").resolve(name), value);
     }
 
     private static long peakRss() throws Exception {
