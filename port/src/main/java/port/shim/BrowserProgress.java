@@ -17,16 +17,26 @@ public final class BrowserProgress {
     // method after the JSO transformation phase fail with "Method is not annotated with
     // org.teavm.interop.Import" (build-round32-game.log). The JS body stays inside this wrapper.
     public static void pulse(int bucket) { pulseNative(bucket); }
+    // Round 81 (front 3): same data, without the per-pulse linear scan. pzGameProgress keeps one entry
+    // per label in first-seen order; `p.some(...)` walked the whole list (hundreds of labels) on every
+    // pulse of hot instrumented methods (ShaderProgram.getUniform/isCompiled, the profiler probes...).
+    // A Set kept as a non-enumerable property of that same array answers it; it is rebuilt from the
+    // array if a tool replaces pzGameProgress. The '#last' keys are built once per bucket.
     @JSBody(params="bucket",script="""
       var labels=globalThis.pzPulseLabels; if(!labels)return;
       var label=labels[bucket]; if(label===undefined)return;
       var t=performance.now();
       var c=globalThis.pzGameCounts||(globalThis.pzGameCounts={});
-      var n=(c[label]|0)+1; c[label]=n; c[label+'#last']=t;
+      var n=(c[label]|0)+1; c[label]=n;
+      var lk=globalThis.pzPulseLastKeys; if(!lk||lk.labels!==labels){lk=globalThis.pzPulseLastKeys=[];lk.labels=labels;}
+      c[lk[bucket]||(lk[bucket]=label+'#last')]=t;
       var p=globalThis.pzGameProgress||(globalThis.pzGameProgress=[]);
-      if(!p.some(function(x){return x.label===label;}))p.push({label:label,time:t});
+      var seen=p.pzSeen;
+      if(seen===undefined||seen.size>p.length){seen=new Set();for(var i=0;i<p.length;i++)seen.add(p[i].label);
+        Object.defineProperty(p,'pzSeen',{value:seen,configurable:true,writable:true});}
+      if(!seen.has(label)){seen.add(label);p.push({label:label,time:t});}
       var r=globalThis.pzGameTrace||(globalThis.pzGameTrace=[]);
-      r.push({label:label,time:t}); if(r.length>400)r.splice(0,r.length-400);
+      r.push({label:label,time:t}); if(r.length>400)r.shift();
     """)
     private static native void pulseNative(int bucket);
     // Ronda 75: ultimos argumentos de UIManager#updateMouseButtons / UIElement#onMouseDown.
