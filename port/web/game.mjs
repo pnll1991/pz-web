@@ -17,14 +17,46 @@ if (typeof Error.stackTraceLimit === 'number') Error.stackTraceLimit = Infinity;
 // while the wrapped teavmAsync.offer reported exactly one offer (the renderThread start). To find
 // out which JS path really registers timers here, observe setTimeout itself: who calls it, with
 // which delay, and how many timers actually fire. Observation only; the call still happens.
-const timerObs = globalThis.pzTimers = { calls: 0, fired: 0, bySite: {}, items: [] };
+const timerObs = globalThis.pzTimers = { calls: 0, fired: 0, bySite: {}, items: [], zero: 0 };
 const baseSetTimeout = globalThis.setTimeout.bind(globalThis);
+const baseClearTimeout = globalThis.clearTimeout.bind(globalThis);
+// Round 81 (front 3): the call-site capture below ran `new Error().stack` with stackTraceLimit = Infinity inside
+// the (deep) fiber stack on EVERY setTimeout -- 3-4 % of the in-game frame in the release profile -- so it is
+// opt-in now (?timerdiag=1). Counters stay.
+const timerDiag = new URLSearchParams(location.search).get('timerdiag') === '1';
+// Round 81 (front 3): setTimeout(fn, 0) chains (BrowserYield, TeaVM EventQueue.offer with no delay) are clamped
+// to >= 4 ms by the browser after 5 nested timers, and the in-game profile showed 30-37 % of the main thread idle
+// between frames. A MessageChannel task has no clamp and keeps FIFO order. Ids are negative so clearTimeout can
+// cancel them; `?zerotimer=0` restores the plain setTimeout.
+const zeroTimer = new URLSearchParams(location.search).get('zerotimer') !== '0';
+const zeroQueue = [], zeroItems = new Map();
+let zeroId = 0;
+const zeroChannel = new MessageChannel();
+zeroChannel.port1.onmessage = () => {
+  const item = zeroQueue.shift();
+  if (item === undefined) return;
+  zeroItems.delete(item.id);
+  if (!item.cancelled) { timerObs.fired++; item.fn(); }
+};
+globalThis.clearTimeout = (id) => {
+  if (typeof id === 'number' && id < 0) { const item = zeroItems.get(id); if (item !== undefined) { item.cancelled = true; zeroItems.delete(id); } return; }
+  return baseClearTimeout(id);
+};
 globalThis.setTimeout = (fn, ms, ...rest) => {
   timerObs.calls++;
-  const site = ((new Error()).stack ?? '').split('\n').slice(1, 4)
-    .map((line) => line.trim().slice(0, 90)).join(' | ');
-  timerObs.bySite[site] = (timerObs.bySite[site] ?? 0) + 1;
-  if (timerObs.items.length < 40) timerObs.items.push({ n: timerObs.calls, ms: ms ?? null, site });
+  if (timerDiag) {
+    const site = ((new Error()).stack ?? '').split('\n').slice(1, 4)
+      .map((line) => line.trim().slice(0, 90)).join(' | ');
+    timerObs.bySite[site] = (timerObs.bySite[site] ?? 0) + 1;
+    if (timerObs.items.length < 40) timerObs.items.push({ n: timerObs.calls, ms: ms ?? null, site });
+  }
+  if (zeroTimer && !(ms > 0) && rest.length === 0 && typeof fn === 'function') {
+    timerObs.zero++;
+    const item = { id: --zeroId, fn, cancelled: false };
+    zeroItems.set(item.id, item); zeroQueue.push(item);
+    zeroChannel.port2.postMessage(0);
+    return item.id;
+  }
   return baseSetTimeout(() => { timerObs.fired++; fn(); }, ms, ...rest);
 };
 // Ronda 81: ?build=release carga el build optimizado (scripts/build.sh --with-game --release), publicado en
@@ -100,7 +132,7 @@ try {
   globalThis.pzRuntime = { vfs, normalizePath, gl:new GLBridge(canvas), input:new CanvasInput(canvas) };
   // Ronda 81 (frente 2): páginas de texturas decodificadas por el juego, guardadas en IndexedDB y
   // reutilizadas en el arranque siguiente (port.runtime.PackImageCache). Clave = ETag de boot.wasm (el
-  // build) + SHA-256 del PNG; opt-in con ?texcache=1 (?nocache=1 la apaga), ?texcache=verify compara sin usarla.
+  // build) + SHA-256 del PNG; activa por defecto (?nocache=1 / ?texcache=0 la apagan), ?texcache=verify compara sin usarla.
   // Si IndexedDB falla el juego sigue con el call() original (modo 0) y el error queda en stats.
   pzRuntime.texCache = TextureCache.fromLocation(location.search, '');
   if (pzRuntime.texCache.mode !== 0) {
@@ -143,7 +175,7 @@ try {
           // Round 38: which Java frame handed the event to the timer? Two fibers are parked and only
           // an EventQueue event can wake one of them, so the caller identity decides who is at fault.
           let frames = [];
-          try {
+          if (timerDiag) try {
             const limit = Error.stackTraceLimit;
             Error.stackTraceLimit = 16;
             frames = String((new Error()).stack || '').split('\n')

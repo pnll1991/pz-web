@@ -4,7 +4,7 @@
 //
 // Clave = build + mask/flags/formato del códec (lo arma Java) + SHA-256 del PNG exacto de la página.
 // El build (ETag de boot.wasm) invalida todo: al abrir con otro build se vacía el almacén, así nunca
-// conviven datos de dos compilaciones. ?texcache=1 la activa; ?nocache=1 o ?texcache=0 la apagan (call()
+// conviven datos de dos compilaciones. activa por defecto; ?nocache=1 o ?texcache=0 la apagan (call()
 // original puro); ?texcache=verify compara cada acierto con el original y devuelve siempre el original.
 const DB = 'pz-web-texcache-v1', STORE = 'pages', META = 'meta';
 const hex = buffer => [...new Uint8Array(buffer)].map(v => v.toString(16).padStart(2, '0')).join('');
@@ -23,8 +23,9 @@ export class TextureCache {
 
   static fromLocation(search, build) {
     const q = new URLSearchParams(search), v = q.get('texcache');
-    // Ronda 81: opt-in (?texcache=1) mientras otros frentes miden arranques en frío con el mismo build.
-    const mode = q.get('nocache') === '1' || v === '0' || v === null ? 0 : v === 'verify' ? 2 : 1;
+    // Ronda 81: activa por defecto (medido: ToS 106 -> 55 s, carga de la partida 252 -> 178 s, verify 174/174 idénticas);
+    // ?nocache=1 o ?texcache=0 la apagan.
+    const mode = q.get('nocache') === '1' || v === '0' ? 0 : v === 'verify' ? 2 : 1;
     return new TextureCache({ mode, build });
   }
 
