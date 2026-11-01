@@ -8,7 +8,7 @@ import { launchOptions } from './chrome-flags.mjs';
 const argv = process.argv.slice(2), A = {};
 for (let i = 0; i < argv.length; i++) { const k = argv[i].replace(/^--/, ''); if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) A[k] = argv[++i]; else A[k] = true; }
 const OUT = A.out || '/tmp/pz83/two-shots'; mkdirSync(OUT, { recursive: true });
-const URL_ = `http://127.0.0.1:8098/${A.page || 'play.html'}`;
+const URL_ = A.url || `http://127.0.0.1:8098/${A.page || 'play.html'}`; // --url: e.g. the public tunnel URL with ?k=
 const names = A.only ? ['a'] : ['a', 'b'];
 const t0 = Date.now(), sleep = ms => new Promise(r => setTimeout(r, ms));
 const log = (who, ...a) => { const s = `[+${Math.round((Date.now() - t0) / 1000)}s] ${who}: ${a.join(' ')}`; console.log(s); appendFileSync(`${OUT}/log.txt`, s + '\n'); };

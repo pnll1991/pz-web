@@ -59,3 +59,13 @@ test('stats frames answer ping, MTU, type and ip per guid', () => {
   assert.equal(net.statOf(1, 2, 'avg'), 30); assert.equal(net.statOf(1, 2, 'mtu'), 1400); assert.equal(net.statOf(1, 2, 'type'), 1); assert.equal(net.statOf(1, 2, 'ip', ''), '127.0.0.1');
   assert.equal(net.statOf(9, 9, 'avg', -1), -1);
 });
+
+test('the WebSocket URL follows the page scheme (wss on https, ws on http)', () => {
+  const saved = globalThis.location;
+  try {
+    globalThis.location = { protocol: 'https:', host: 'x.trycloudflare.com' };
+    assert.equal(new NetBridge({ WebSocketImpl: FakeWS }).wsUrl(), 'wss://x.trycloudflare.com/ws');
+    globalThis.location = { protocol: 'http:', host: '127.0.0.1:8098' };
+    assert.equal(new NetBridge({ WebSocketImpl: FakeWS }).wsUrl(), 'ws://127.0.0.1:8098/ws');
+  } finally { globalThis.location = saved; }
+});

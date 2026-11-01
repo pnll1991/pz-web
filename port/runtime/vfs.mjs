@@ -95,6 +95,13 @@ export class VirtualFileSystem {
     // (dev-server /media-bundle: same bytes) and the rest are served from memory. Off with bundleEnabled=false.
     this.bundleEnabled = true; this.bundles = new Map(); this.bundleDirs = new Set();
     this.bundleStats = { requests:0, files:0, bytes:0, ms:0, hits:0, mismatches:0, failed:0 };
+    // Round 84: responses fetched ahead (port/runtime/prefetch.mjs), keyed `${url}|${Range}`; each is used once, so memory is returned.
+    this.prefetched = new Map(); this.prefetchHits = 0;
+  }
+  takePrefetched(url, range = '') {
+    const key = `${url}|${range}`, bytes = this.prefetched.get(key);
+    if (bytes) { this.prefetched.delete(key); this.prefetchHits++; }
+    return bytes || null;
   }
   /** Bytes of a bundled remote file, or null (not bundled / unavailable). Never throws. */
   bundled(path) {
@@ -106,14 +113,18 @@ export class VirtualFileSystem {
     this.bundleDirs.add(dir);
     const t0 = performance.now(), stats = this.bundleStats;
     try {
-      const xhr = new XMLHttpRequest();
-      xhr.open('GET', `${this.remoteBase.replace(/media\/$/, '')}media-bundle?dir=${encodeURIComponent(dir.slice('/media/'.length))}&ext=lotheader`, false);
-      xhr.overrideMimeType('text/plain; charset=x-user-defined');
-      xhr.setRequestHeader('Cache-Control', 'no-store');
-      xhr.send();
-      if (xhr.status !== 200) throw new Error(`HTTP ${xhr.status}`);
-      const text = xhr.responseText, bytes = new Uint8Array(text.length);
-      for (let i = 0; i < bytes.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
+      const url = `${this.remoteBase.replace(/media\/$/, '')}media-bundle?dir=${encodeURIComponent(dir.slice('/media/'.length))}&ext=lotheader`;
+      let bytes = this.takePrefetched(url);
+      if (!bytes) {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', url, false);
+        xhr.overrideMimeType('text/plain; charset=x-user-defined');
+        xhr.setRequestHeader('Cache-Control', 'no-store');
+        xhr.send();
+        if (xhr.status !== 200) throw new Error(`HTTP ${xhr.status}`);
+        const text = xhr.responseText; bytes = new Uint8Array(text.length);
+        for (let i = 0; i < bytes.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
+      }
       const headerLength = new DataView(bytes.buffer).getUint32(0, true);
       const listed = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + headerLength)));
       let offset = 4 + headerLength;
@@ -152,11 +163,13 @@ export class VirtualFileSystem {
   /** Synchronous Range GET of [start, end) of a remote media file. */
   fetchRange(path, start, end) {
     const t0 = performance.now();
+    const url = this.remoteBase + path.slice('/media/'.length).split('/').map(encodeURIComponent).join('/') + `?r=${start}-${end}`;
+    const ahead = this.takePrefetched(url, `bytes=${start}-${end - 1}`);
+    if (ahead && ahead.length === end - start) { const s = this.remoteStats; s.requests++; s.bytes += ahead.length; return ahead; }
     const xhr = new XMLHttpRequest();
     // One URL per range (the dev server ignores the query): Chrome otherwise reuses a cached partial
     // entry, revalidates it with If-Range and the server answers 200 with the whole file.
-    xhr.open('GET', this.remoteBase + path.slice('/media/'.length).split('/').map(encodeURIComponent).join('/')
-      + `?r=${start}-${end}`, false);
+    xhr.open('GET', url, false);
     xhr.overrideMimeType('text/plain; charset=x-user-defined');
     xhr.setRequestHeader('Range', `bytes=${start}-${end - 1}`);
     // Bypass the HTTP cache: a cached partial entry makes Chrome revalidate with If-Range and the

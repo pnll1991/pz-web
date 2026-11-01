@@ -1,6 +1,8 @@
 import http from 'node:http';
 import { classpathResources } from './classpath.mjs';
 import { attachBridge } from './ws-bridge.mjs';
+import { createPublicGate } from './public-mode.mjs';
+import { createWarmList } from './warm-list.mjs';
 import { createHash } from 'node:crypto';
 import { realpath, stat, open, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -70,7 +72,10 @@ function inside(parent, child) {
 }
 
 export async function createDevServer({ webRoot = path.join(root, 'port/target/web'),
-  resourceRoots = [], pzHome = process.env.PZ_HOME, packsRoot = process.env.PZ_PACKS || path.join(root, 'packs') } = {}) {
+  resourceRoots = [], pzHome = process.env.PZ_HOME, packsRoot = process.env.PZ_PACKS || path.join(root, 'packs'),
+  publicKey = process.env.PZWEB_PUBLIC_KEY || '', warmFile = process.env.PZWEB_WARM_FILE || '/tmp/pzweb-warm.json' } = {}) {
+  const gate = createPublicGate({ key: publicKey });
+  const warm = createWarmList({ file: warmFile });
   webRoot = await realpath(webRoot).catch(() => { throw new Error('Build missing. Run scripts/build.sh first.'); });
   let mediaRoot;
   if (pzHome) {
@@ -101,9 +106,15 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
       res.end(req.method === 'HEAD' ? undefined : message);
     };
     try {
-      const authority = `127.0.0.1:${server.address().port}`;
-      if (req.headers.host !== authority || req.headers['sec-fetch-site'] === 'cross-site' ||
-          (req.headers.origin && req.headers.origin !== `http://${authority}`)) {
+      // Round 84: public (tunnel) requests are authenticated by the key gate first; their same-origin rules use the tunnel host and https.
+      const publicRequest = gate.isPublic(req);
+      if (gate.handle(req, res, headers)) return;
+      const authority = publicRequest ? req.headers.host : `127.0.0.1:${server.address().port}`;
+      const scheme = publicRequest ? 'https' : 'http';
+      // a cross-site *navigation* (a link opened from a chat app) is fine; cross-site subresources are not
+      const crossSite = req.headers['sec-fetch-site'] === 'cross-site' && !(publicRequest && req.headers['sec-fetch-mode'] === 'navigate');
+      if (req.headers.host !== authority || crossSite ||
+          (req.headers.origin && req.headers.origin !== `${scheme}://${authority}`)) {
         respond(403, 'Local same-origin requests only'); return;
       }
       if (!['GET', 'HEAD'].includes(req.method)) { respond(405, 'Read-only server', { Allow: 'GET, HEAD' }); return; }
@@ -113,6 +124,12 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
       if (pathname.includes('\0') || pathname.includes('\\') || pathname.split('/').includes('..')) {
         respond(400, 'Invalid path'); return;
       }
+      if (pathname === '/warm-media.json') { // Round 84: ranges real sessions asked for (see dev-server/warm-list.mjs)
+        const body = JSON.stringify(warm.list());
+        res.writeHead(200, { ...headers, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
+        res.end(req.method === 'HEAD' ? undefined : body); return;
+      }
+      if (req.method === 'GET' && (pathname === '/media-bundle' || (pathname.startsWith('/media/') && req.headers.range))) warm.record(req.url, req.headers.range || '');
       if (pathname === '/health') {
         res.writeHead(200, { ...headers, 'Content-Type': 'application/json' });
         res.end(req.method === 'HEAD' ? undefined : JSON.stringify({ mode: 'platform-smoke', gameMounted: !!mediaRoot }));
@@ -200,7 +217,7 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
       else { console.error('dev-server:', error.message); respond(500, 'Local server error'); }
     }
   });
-  attachBridge(server, { log: message => console.log('mp-bridge:', message) });
+  attachBridge(server, { log: message => console.log('mp-bridge:', message), gate });
   return server;
 }
 

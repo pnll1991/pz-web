@@ -3,6 +3,7 @@ import { bulletBridge } from '/runtime/bullet.mjs';
 import { GLBridge } from '/runtime/gl.mjs';
 import { NetBridge } from '/runtime/net.mjs';
 import { installAutoJoin, watchConsole, clickUntilIngame } from '/runtime/autojoin.mjs';
+import { prefetchMedia } from '/runtime/prefetch.mjs';
 import { CanvasInput } from '/runtime/input.mjs';
 import { BrowserWindow } from '/runtime/window.mjs';
 import { VirtualFileSystem, normalizePath } from '/runtime/vfs.mjs';
@@ -145,6 +146,11 @@ try {
       : state.startsWith('connect') ? `Conectando como ${auto.user}…` : (text[state] ?? state) && `${text[state] ?? state} · ${auto.user}`; };
     watchConsole(auto, { onState: state => { show(state); if (state === 'loaded') clickUntilIngame(auto, pzRuntime.input, canvas); } });
     show('installed');
+    // Over the public https tunnel (or ?prefetch=1) bring the media the game will read in parallel first: one round trip per read is too slow.
+    if (location.protocol === 'https:' || new URLSearchParams(location.search).get('prefetch') === '1') {
+      const stats = pzRuntime.prefetchStats = await prefetchMedia(vfs, { onProgress: f => { label.textContent = `Precargando recursos… ${Math.round(f * 100)} %`; } });
+      console.log(`prefetch ${JSON.stringify(stats)}`); show('installed');
+    }
   }
   // Ronda 81 (frente 2): páginas de texturas decodificadas por el juego, guardadas en IndexedDB y
   // reutilizadas en el arranque siguiente (port.runtime.PackImageCache). Clave = ETag de boot.wasm (el

@@ -43,14 +43,19 @@ export function createDecoder(onMessage, maxBytes = 8 << 20) {
 }
 
 // Attach to an http.Server. Only loopback peers and loopback Origins are accepted.
-export function attachBridge(server, { command = path.join(ROOT, 'scripts/mp-bridge.sh'), args = ['run'], log = () => {} } = {}) {
+export function attachBridge(server, { command = path.join(ROOT, 'scripts/mp-bridge.sh'), args = ['run'], log = () => {}, gate = null } = {}) {
   const sessions = new Set();
   server.on('upgrade', (req, socket) => {
     const url = new URL(req.url, 'http://x');
-    const origin = req.headers.origin ? new URL(req.headers.origin).hostname : '127.0.0.1';
+    let origin = '';
+    try { origin = req.headers.origin ? new URL(req.headers.origin).hostname : '127.0.0.1'; } catch { /* junk Origin: refused below */ }
     const fail = (code, msg) => { socket.end(`HTTP/1.1 ${code} ${msg}\r\nConnection: close\r\n\r\n`); };
     if (url.pathname !== '/ws') return fail(404, 'Not Found');
-    if (!['127.0.0.1', 'localhost'].includes(origin) || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(socket.remoteAddress)) return fail(403, 'Forbidden');
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(socket.remoteAddress)) return fail(403, 'Forbidden'); // the tunnel connects from loopback too
+    // Round 84: a public (tunnel) upgrade needs the key cookie and its own https Origin; everything else keeps the loopback rules.
+    const publicVerdict = gate ? gate.wsAllowed(req) : null;
+    if (publicVerdict === false) return fail(403, 'Forbidden');
+    if (publicVerdict === null && (!['127.0.0.1', 'localhost'].includes(origin) || req.headers['cf-connecting-ip'])) return fail(403, 'Forbidden');
     const key = req.headers['sec-websocket-key'];
     if (!key || req.headers.upgrade?.toLowerCase() !== 'websocket') return fail(400, 'Bad Request');
     socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +

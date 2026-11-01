@@ -13,7 +13,8 @@ export class NetBridge {
     this.stats = new Map(); this.lastGuid = null; this.everConnected = false;
     this.counters = { packetsIn: 0, packetsOut: 0, bytesIn: 0, bytesOut: 0 };
   }
-  wsUrl() { return this.url || `ws://${globalThis.location.host}/ws`; }
+  // wss:// when the page itself is https (the public tunnel): a plain ws:// from an https page is blocked as mixed content.
+  wsUrl() { return this.url || `${globalThis.location.protocol === 'https:' ? 'wss' : 'ws'}://${globalThis.location.host}/ws`; }
 
   connect(host, port, password) {
     if (this.ws) return 0;
