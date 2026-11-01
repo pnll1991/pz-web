@@ -218,6 +218,31 @@ class CompilerRegressionTest {
         String unpatched=runInternHarness(root,"unpatched");
         assertTrue(unpatched.contains("type incompatibility"),"negative control reproduces the browser TypeError: "+unpatched);
     }
+    // Ronda 81 (frente 3): StringBuilder delete/deleteCharAt/insert/replace mueven la cola con System.arraycopy
+    // (array.copy) en vez del bucle char a char de TeaVM (70 s del boot en ScriptParser.stripComments). La misma
+    // secuencia pseudoaleatoria corre en la JVM (referencia OpenJDK) y en Wasm GC; el resultado debe ser idéntico.
+    public static final class StringBuilderCopyProbe {
+        public static void main(String[] args){}
+        public static String script(){
+            var sb=new StringBuilder("pz-web/ronda81: /* comentario */ texto // linea\n");long seed=81;
+            for(int step=0;step<3000;step++){
+                seed=seed*6364136223846793005L+1442695040888963407L;int r=(int)(seed>>>33);int op=Math.floorMod(r,6);
+                int len=sb.length();int a=len==0?0:Math.floorMod(r>>>3,len+1);int b=a+Math.floorMod(r>>>11,Math.max(1,len-a+1));if(b>len)b=len;
+                switch(op){
+                    case 0->sb.insert(a,"ins"+step);
+                    case 1->{if(len>0&&a<len)sb.deleteCharAt(a);}
+                    case 2->sb.delete(a,b);
+                    case 3->sb.replace(a,b,step%2==0?"":"r"+step+"-larga");
+                    case 4->sb.insert(a,(char)('a'+step%26));
+                    default->{if(sb.length()<40)sb.append("relleno-").append(step).append(" /* x */\n");}
+                }
+            }
+            try{sb.delete(-1,2);sb.append("sin-excepcion");}catch(StringIndexOutOfBoundsException e){sb.append("|SIOOBE");}
+            try{sb.deleteCharAt(sb.length());sb.append("sin-excepcion");}catch(StringIndexOutOfBoundsException e){sb.append("|SIOOBE2");}
+            return sb.length()+":"+sb;
+        }
+        @org.teavm.jso.JSExport public static String run(){return script();}
+    }
     // Ronda 81 (frente 3): el diagnóstico de monitores (port.shim.BrowserMonitor) es opt-in; por defecto ningún
     // notifyAll/monitorExit cruza a JS. Con PZ_MONITOR_TRACE=true vuelve a contar (pzMonitorCounts).
     public static final class MonitorTraceProbe {
@@ -244,6 +269,13 @@ class CompilerRegressionTest {
         return output.strip().lines().reduce((a,b)->b).orElse("");
     }
     private static String jsonString(String s){var b=new StringBuilder("\"");for(char c:s.toCharArray()){if(c=='"'||c=='\\')b.append('\\').append(c);else if(c=='\n')b.append("\\n");else if(c<0x20||c>0x7e)b.append(String.format("\\u%04x",(int)c));else b.append(c);}return b.append('"').toString();}
+    @Test void stringBuilderTailMovesMatchOpenJdk()throws Exception{
+        compile(StringBuilderCopyProbe.class,"string-builder-copy",List.of());
+        String expected=StringBuilderCopyProbe.script();
+        assertTrue(expected.endsWith("|SIOOBE|SIOOBE2"),expected);
+        String out=runExportHarness(Path.of(System.getProperty("basedir",".")).toAbsolutePath(),"string-builder-copy.wasm","0");
+        assertEquals("{\"result\":"+jsonString(expected)+",\"counts\":0}",out);
+    }
     @Test void monitorTraceIsOptIn()throws Exception{
         compile(MonitorTraceProbe.class,"monitor-trace",List.of());
         Path root=Path.of(System.getProperty("basedir",".")).toAbsolutePath();

@@ -1324,6 +1324,66 @@ def patch_string_intern_pool():
     print(f"TeaVM {VERSION}: String.intern tolerates collected entries (teavm.deref, null-checked query)")
 
 
+def patch_string_builder_copies():
+    """StringBuilder delete/deleteCharAt/insert move the tail with System.arraycopy (array.copy).
+
+    Round 81 (front 3), boot CPU profile: 70 s of 395 s (17.6 %) were self time of
+    java.lang.AbstractStringBuilder::delete, called by StringBuilder.replace from the game's
+    ScriptParser.stripComments (TileGeometryFile.parseFile). TeaVM 0.16 moves the tail one char per
+    iteration (array.get + array.set with bounds checks); OpenJDK uses System.arraycopy, which TeaVM's
+    Wasm GC backend lowers to a single array.copy (memmove semantics, overlapping ranges allowed).
+    Same chars, same lengths, same exceptions: only the copy loop changes.
+    """
+    archive = ROOT / f".toolchain/downloads/teavm-classlib-{VERSION}-sources.jar"
+    path = "org/teavm/classlib/java/lang/TAbstractStringBuilder.java"
+    with zipfile.ZipFile(archive) as package:
+        source = package.read(path).decode("utf-8")
+    edits = [
+        ("""        ensureCapacity(length + string.length());
+        for (int i = length - 1; i >= index; --i) {
+            buffer[i + string.length()] = buffer[i];
+        }
+        length += string.length();""",
+         """        ensureCapacity(length + string.length());
+        System.arraycopy(buffer, index, buffer, index + string.length(), length - index);
+        length += string.length();"""),
+        ("""        length--;
+        for (int i = index; i < length; ++i) {
+            buffer[i] = buffer[i + 1];
+        }
+        return this;""",
+         """        length--;
+        System.arraycopy(buffer, index + 1, buffer, index, length - index);
+        return this;"""),
+        ("""        int sz = length - end;
+        length -= end - start;
+        for (int i = 0; i < sz; ++i) {
+            buffer[start++] = buffer[end++];
+        }
+        return this;""",
+         """        int sz = length - end;
+        length -= end - start;
+        System.arraycopy(buffer, end, buffer, start, sz);
+        return this;"""),
+        ("""        ensureCapacity(length + end - start);
+        for (int i = sz - 1; i >= 0; --i) {
+            buffer[end + i] = buffer[start + i];
+        }
+        length += end - start;""",
+         """        ensureCapacity(length + end - start);
+        System.arraycopy(buffer, start, buffer, end, sz);
+        length += end - start;"""),
+    ]
+    for old, new in edits:
+        if source.count(old) != 1:
+            raise RuntimeError("Unexpected TeaVM StringBuilder shape: " + old[:60])
+        source = source.replace(old, new)
+    destination = ROOT / "port/target/generated-sources/teavm" / path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("// Local change: StringBuilder tail moves use System.arraycopy.\n" + source)
+    print(f"TeaVM {VERSION}: StringBuilder delete/insert via System.arraycopy")
+
+
 def main():
     archive = ROOT / f".toolchain/downloads/teavm-core-{VERSION}-sources.jar"
     if not archive.exists():
@@ -1362,6 +1422,7 @@ def main():
     patch_zip_inflater_stream()
     patch_fiber()
     patch_string_intern_pool()
+    patch_string_builder_copies()
 
 
 if __name__ == "__main__":
