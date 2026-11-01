@@ -218,6 +218,39 @@ class CompilerRegressionTest {
         String unpatched=runInternHarness(root,"unpatched");
         assertTrue(unpatched.contains("type incompatibility"),"negative control reproduces the browser TypeError: "+unpatched);
     }
+    // Ronda 81 (frente 3): el diagnóstico de monitores (port.shim.BrowserMonitor) es opt-in; por defecto ningún
+    // notifyAll/monitorExit cruza a JS. Con PZ_MONITOR_TRACE=true vuelve a contar (pzMonitorCounts).
+    public static final class MonitorTraceProbe {
+        static final Object lock=new Object();static int n;
+        public static void main(String[] args){}
+        @org.teavm.jso.JSExport public static int run(){for(int i=0;i<200;i++){synchronized(lock){n++;lock.notifyAll();}}return n;}
+    }
+    private static String runExportHarness(Path root,String wasm,String trace)throws Exception{
+        Path script=root.resolve("target/web/regressions/export-harness.mjs");Files.writeString(script,"""
+            import { pathToFileURL } from 'node:url';
+            const [runtimePath, wasmPath, trace] = process.argv.slice(2);
+            if (trace === '1') globalThis.PZ_MONITOR_TRACE = true;
+            await import(pathToFileURL(runtimePath).href);
+            const runtime = await TeaVM.wasmGC.load(wasmPath);
+            runtime.exports.main([]);
+            const result = runtime.exports.run();
+            const counts = globalThis.pzMonitorCounts ? Object.values(globalThis.pzMonitorCounts).reduce((a, b) => a + b, 0) : 0;
+            console.log(JSON.stringify({ result, counts }));
+            """);
+        var process=new ProcessBuilder(root.resolve("../.toolchain/node/bin/node").normalize().toString(),script.toString(),
+            root.resolve("target/web/boot.wasm-runtime.js").toString(),root.resolve("target/web/regressions/"+wasm).toString(),trace).redirectErrorStream(true).start();
+        String output=new String(process.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals(0,process.waitFor(),output);
+        return output.strip().lines().reduce((a,b)->b).orElse("");
+    }
+    private static String jsonString(String s){var b=new StringBuilder("\"");for(char c:s.toCharArray()){if(c=='"'||c=='\\')b.append('\\').append(c);else if(c=='\n')b.append("\\n");else if(c<0x20||c>0x7e)b.append(String.format("\\u%04x",(int)c));else b.append(c);}return b.append('"').toString();}
+    @Test void monitorTraceIsOptIn()throws Exception{
+        compile(MonitorTraceProbe.class,"monitor-trace",List.of());
+        Path root=Path.of(System.getProperty("basedir",".")).toAbsolutePath();
+        assertEquals("{\"result\":200,\"counts\":0}",runExportHarness(root,"monitor-trace.wasm","0"));
+        var traced=java.util.regex.Pattern.compile("\\{\"result\":200,\"counts\":(\\d+)\\}").matcher(runExportHarness(root,"monitor-trace.wasm","1"));
+        assertTrue(traced.matches());assertTrue(Integer.parseInt(traced.group(1))>=200,"PZ_MONITOR_TRACE=true counts every notifyAll/monitorExit");
+    }
     private void compile(Class<?> main,String name,List<String> reflectionClasses)throws Exception{
         Path root=Path.of(System.getProperty("basedir", ".")).toAbsolutePath();
         var classpath=new ArrayList<File>();classpath.add(root.resolve("target/test-classes").toFile());classpath.add(root.resolve("target/classes").toFile());

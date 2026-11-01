@@ -13,10 +13,31 @@ import org.teavm.jso.JSBody;
  * JSO imports for a @JSBody declared in a renamed java.* class (round 25 learning).
  */
 public final class BrowserMonitor {
+    // Round 81 (front 3): opt-in. The boot CPU profile spent 172 s of 395 s (44 %) here: every
+    // Object.notifyAll (phase 9, ReentrantLock.acquire/unlock, CellularAutomatonRNG.next) crossed into
+    // JS and built `new Error().stack`, and every monitorExit (phase 5) crossed to bump a counter.
+    // Nothing reads pzMonitorCounts/pzMonitorLast/pzMonitorLog unless someone is debugging monitors, so
+    // the trace is read once (globalThis.PZ_MONITOR_TRACE === true or ?monitor=1) and otherwise the
+    // call returns before the boundary. Plain static fields without initializers: no <clinit>, and the
+    // monitor paths that call this must not gain a suspension point (round 40).
+    private static boolean checked;
+    private static boolean trace;
+
     public static void record(int phase, int objId, int ownerId, int threadId, int count,
             int entering, int notify) {
+        if (!checked) {
+            trace = traceEnabled();
+            checked = true;
+        }
+        if (!trace) {
+            return;
+        }
         recordNative(phase, objId, ownerId, threadId, count, entering, notify);
     }
+
+    @JSBody(script = "return globalThis.PZ_MONITOR_TRACE === true || (typeof location !== 'undefined'"
+            + " && new URLSearchParams(location.search).get('monitor') === '1');")
+    private static native boolean traceEnabled();
 
     @JSBody(params = {"phase", "objId", "ownerId", "threadId", "count", "entering", "notify"},
             script = "var contended = phase === 10 || phase === 11"
