@@ -90,6 +90,46 @@ export class VirtualFileSystem {
     this.remote = new Map(); this.remoteBase = '/media/';
     this.blockCache = new Map(); this.blockCacheBytes = 0; this.blockCacheMax = 384 * 1024 * 1024;
     this.remoteStats = { requests:0, bytes:0, ms:0 };
+    // Round 81 (front 2): the world load opens ~4000 tiny media/maps/<map>/*.lotheader files, one synchronous
+    // XHR each. The first read of one fetches the whole directory's lotheaders in a single response
+    // (dev-server /media-bundle: same bytes) and the rest are served from memory. Off with bundleEnabled=false.
+    this.bundleEnabled = true; this.bundles = new Map(); this.bundleDirs = new Set();
+    this.bundleStats = { requests:0, files:0, bytes:0, ms:0, hits:0, mismatches:0, failed:0 };
+  }
+  /** Bytes of a bundled remote file, or null (not bundled / unavailable). Never throws. */
+  bundled(path) {
+    if (!this.bundleEnabled || !path.endsWith('.lotheader')) return null;
+    const hit = this.bundles.get(path);
+    if (hit) { this.bundleStats.hits++; return hit; }
+    const dir = path.slice(0, path.lastIndexOf('/'));
+    if (this.bundleDirs.has(dir)) return null;
+    this.bundleDirs.add(dir);
+    const t0 = performance.now(), stats = this.bundleStats;
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', `${this.remoteBase.replace(/media\/$/, '')}media-bundle?dir=${encodeURIComponent(dir.slice('/media/'.length))}&ext=lotheader`, false);
+      xhr.overrideMimeType('text/plain; charset=x-user-defined');
+      xhr.setRequestHeader('Cache-Control', 'no-store');
+      xhr.send();
+      if (xhr.status !== 200) throw new Error(`HTTP ${xhr.status}`);
+      const text = xhr.responseText, bytes = new Uint8Array(text.length);
+      for (let i = 0; i < bytes.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
+      const headerLength = new DataView(bytes.buffer).getUint32(0, true);
+      const listed = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + headerLength)));
+      let offset = 4 + headerLength;
+      for (const [name, size] of listed) {
+        const file = `${dir}/${name}`;
+        // Only what the manifest lists, with exactly the listed size; anything else keeps the per-file path.
+        if (this.remote.get(file) === size && offset + size <= bytes.length) this.bundles.set(file, bytes.subarray(offset, offset + size));
+        else stats.mismatches++;
+        offset += size;
+      }
+      stats.requests++; stats.files += this.bundles.size; stats.bytes += bytes.length;
+    } catch (error) { stats.failed++; stats.lastError = String(error); }
+    stats.ms += performance.now() - t0;
+    const found = this.bundles.get(path);
+    if (found) stats.hits++;
+    return found ?? null;
   }
   /** Round 79: register the on-demand media files. Pack-mounted files keep priority. */
   attachRemote(entries, base = '/media/') {
@@ -146,6 +186,11 @@ export class VirtualFileSystem {
   }
   readRemoteInto(path, position, target) {
     const BLOCK = 1 << 20, size = this.remote.get(path);
+    const whole = this.bundled(path);
+    if (whole) {
+      const n = Math.min(target.length, Math.max(0, size - position));
+      target.set(whole.subarray(position, position + n)); return n;
+    }
     const count = Math.min(target.length, Math.max(0, size - position));
     // Large sequential reads skip the cache: one request straight into the caller's buffer.
     if (count > 4 * BLOCK) { target.set(this.fetchRange(path, position, position + count)); return count; }
@@ -158,6 +203,8 @@ export class VirtualFileSystem {
     return count;
   }
   readRemoteFile(path) {
+    const whole = this.bundled(path);
+    if (whole) return whole.slice();
     const size = this.remote.get(path), out = new Uint8Array(size), CHUNK = 16 << 20;
     for (let at = 0; at < size; at += CHUNK) out.set(this.fetchRange(path, at, Math.min(size, at + CHUNK)), at);
     return out;

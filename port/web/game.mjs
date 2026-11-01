@@ -67,6 +67,7 @@ try {
     // models_X/anims_X hold .x/.fbx/.glb meshes that only the jassimp64 native can read; the boot
     // packs carry the game's own .txt mesh/anim format instead (round 60), so those trees stay hidden.
     const assimpOnly = /^(models_X|anims_X)\//;
+    vfs.bundleEnabled = new URLSearchParams(location.search).get('nocache') !== '1' && new URLSearchParams(location.search).get('bundle') !== '0';
     globalThis.pzRemoteMedia = vfs.attachRemote(listed.files.filter(([name]) => !assimpOnly.test(name)));
   }
   // Round 43: KahluaUtil.setupLibraryText opens new FileInputStream(new File("stdlib.lua")

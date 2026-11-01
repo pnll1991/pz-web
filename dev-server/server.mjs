@@ -51,6 +51,18 @@ async function buildManifest(mediaRoot) {
   await walk(mediaRoot, '');
   return JSON.stringify({ schema_version:1, files:out });
 }
+/** Round 81: [u32le headerLength][JSON [[name,size],...]][file bytes in header order]; same bytes as GET /media/<dir>/<name>. */
+async function buildBundle(mediaRoot, folder, ext) {
+  const names = [], parts = [];
+  for (const entry of (await readdir(folder, { withFileTypes:true })).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+    if (!entry.isFile() || !entry.name.endsWith('.' + ext)) continue;
+    const full = await realpath(path.join(folder, entry.name));
+    if (!inside(mediaRoot, full)) continue;
+    const bytes = await readFile(full); names.push([entry.name, bytes.length]); parts.push(bytes);
+  }
+  const header = Buffer.from(JSON.stringify(names)), length = Buffer.alloc(4); length.writeUInt32LE(header.length);
+  return Buffer.concat([length, header, ...parts]);
+}
 function inside(parent, child) {
   const relative = path.relative(parent, child);
   return !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
@@ -81,6 +93,7 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
   }
   const resources = await classpathResources(resourceRoots);
   let manifest = null;
+  const bundles = new Map();
   const server = http.createServer(async (req, res) => {
     const respond = (status, message = '', extra = {}) => {
       res.writeHead(status, { ...headers, 'Content-Type': 'text/plain; charset=utf-8', ...extra });
@@ -109,6 +122,19 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
         manifest ??= buildManifest(mediaRoot);
         const body = await manifest;
         res.writeHead(200, { ...headers, 'Content-Type':'application/json', 'Content-Length':Buffer.byteLength(body) });
+        res.end(req.method === 'HEAD' ? undefined : body); return;
+      }
+      if (pathname === '/media-bundle') { // Round 81 (front 2): every direct child of media/<dir> with one extension, in one response
+        if (!mediaRoot) { respond(404, 'PZ_HOME not mounted'); return; }
+        const q = new URL(req.url, `http://${authority}`).searchParams;
+        const dir = q.get('dir') ?? '', ext = q.get('ext') ?? '';
+        if (!/^[A-Za-z0-9]{1,16}$/.test(ext) || dir.split('/').includes('..') || dir.startsWith('/') || dir === '') { respond(400, 'Invalid bundle request'); return; }
+        const folder = await realpath(path.join(mediaRoot, dir)).catch(() => null);
+        if (!folder || !inside(mediaRoot, folder)) { respond(404, 'No such directory'); return; }
+        const key = `${folder}\0${ext}`;
+        bundles.has(key) || bundles.set(key, buildBundle(mediaRoot, folder, ext));
+        const body = await bundles.get(key);
+        res.writeHead(200, { ...headers, 'Content-Type':'application/octet-stream', 'Content-Length':body.length, 'Cache-Control':'no-store' });
         res.end(req.method === 'HEAD' ? undefined : body); return;
       }
       if (pathname === '/classpath/lookup') {
