@@ -33,10 +33,12 @@ REPORTS=port/target/reports; DEST=port/target/web/$SUB; TEAVM_OPT=SIMPLE
 if [ "$REL" = 1 ]; then
   REPORTS=port/target/reports/release; DEST=port/target/web/release/$SUB; TEAVM_OPT=${PZ_TEAVM_OPT:-ADVANCED}
   if [ "$PULSE" = min ]; then REPORTS=port/target/reports/release-minpulse; DEST=port/target/web/release-minpulse/$SUB; fi
+  if [ "${PZ_WASM_OPT:--O2}" = 0 ] && [ "$PULSE" != min ]; then REPORTS=port/target/reports/release-noopt; DEST=port/target/web/release-noopt/$SUB; fi
   mkdir -p "$REPORTS"
 fi
 if [ "$DEV" = 1 ]; then
   if [ "$REL" = 1 ] && [ "$PULSE" = min ]; then STAGE=port/target/web-staging/release-minpulse/$SUB
+  elif [ "$REL" = 1 ] && [ "${PZ_WASM_OPT:--O2}" = 0 ]; then STAGE=port/target/web-staging/release-noopt/$SUB
   elif [ "$REL" = 1 ]; then STAGE=port/target/web-staging/release/$SUB; else STAGE=port/target/web-staging/$SUB; fi
   python3 scripts/prepare_build.py "${ARGS[@]}" --cache-exposure --output-dir "$STAGE"; step prepare_build
   # Generadores que reescriben siempre: conservar el mtime de los archivos cuyo contenido no cambió,
@@ -100,6 +102,9 @@ if [ -f "$WASM" ] && { [ "$DEV" = 0 ] || [ "$GAME" = 1 ]; }; then
 fi
 step gates
 if [ "$REL" = 1 ] && [ "${PZ_WASM_OPT:--O2}" != 0 ]; then
+  # Ronda 81: el inlining "one caller" sin tope de -O2 (-ocimfs -1) hace IsoCell::render de 1 KB a 235-293 KB y
+  # TurboFan muere con "V8 process OOM (Zone)" ~100 s después de entrar en juego (PAGE-CRASH). Con -ocimfs 3000
+  # -imcbs 30000 la mayor función del juego queda en ~64 KB (IsoCell::render 10 KB) y wasm-opt tarda 3:47 con 3 GB.
   # Features que emite TeaVM 0.16 Wasm GC (validadas con wasm-opt 133); sin --closed-world ni -tnh/--ignore-implicit-traps:
   # el runtime JS ve los tipos exportados y strict mode depende de las trampas/checks de null.
   WOPT=.toolchain/emsdk/upstream/bin/wasm-opt
@@ -107,7 +112,8 @@ if [ "$REL" = 1 ] && [ "${PZ_WASM_OPT:--O2}" != 0 ]; then
   before=$(stat -c %s "$WASM")
   /usr/bin/time -f "[build.sh] wasm-opt peak RSS %M KiB" "$WOPT" "$WASM" --enable-gc --enable-reference-types \
     --enable-exception-handling --enable-bulk-memory --enable-bulk-memory-opt --enable-nontrapping-float-to-int \
-    --enable-sign-ext --enable-mutable-globals --enable-multivalue "${PZ_WASM_OPT:--O2}" -g -o "$WASM.opt"
+    --enable-sign-ext --enable-mutable-globals --enable-multivalue "${PZ_WASM_OPT:--O2}" \
+    --one-caller-inline-max-function-size="${PZ_WASM_OPT_OCIMFS:-3000}" --inline-max-combined-binary-size="${PZ_WASM_OPT_IMCBS:-30000}" -g -o "$WASM.opt"
   mv -f "$WASM.opt" "$WASM"
   echo "[build.sh] wasm-opt ${PZ_WASM_OPT:--O2}: $before -> $(stat -c %s "$WASM") B"
   step wasm-opt

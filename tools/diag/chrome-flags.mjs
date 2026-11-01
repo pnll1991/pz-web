@@ -1,5 +1,6 @@
 // Ronda 80: opciones de lanzamiento de Chrome comunes a todos los drivers de prueba.
 // PZ_GPU=nvidia (por defecto) | swiftshader | <nombre de perfil en PROFILES>.
+// PZ_CHROME_ARGS="--enable-logging=stderr --v=0 ..." agrega flags (ronda 81, frente 1: causa de PAGE-CRASH; con DEBUG=pw:browser el stderr de Chrome sale por el del proceso).
 // PZ_CHROME_HEADED=1 fuerza ventana visible. PZ_CHROME_USERDIR fija el --user-data-dir (siempre bajo /tmp).
 // Nunca usar el perfil del usuario: cada lanzamiento usa un directorio propio en /tmp.
 import { mkdtempSync } from 'node:fs';
@@ -24,7 +25,7 @@ export function launchOptions(extra = {}) {
   const p = PROFILES[name];
   if (!p) throw new Error(`PZ_GPU desconocido: ${name} (opciones: ${Object.keys(PROFILES).join(', ')})`);
   const headless = process.env.PZ_CHROME_HEADED === '1' ? false : p.headless;
-  return { executablePath: CHROME, headless, args: [...COMMON, ...p.args, ...(extra.args || [])], env: { ...process.env, ...(p.env || {}) } };
+  return { executablePath: CHROME, headless, args: [...COMMON, ...p.args, ...(extra.args || []), ...(process.env.PZ_CHROME_ARGS ? process.env.PZ_CHROME_ARGS.split(' ').filter(Boolean) : [])], env: { ...process.env, ...(p.env || {}) } };
 }
 
 // Directorio de perfil temporal propio (para launchPersistentContext).
