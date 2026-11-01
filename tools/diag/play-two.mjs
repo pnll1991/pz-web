@@ -32,7 +32,14 @@ async function open(name) {
 }
 async function until(c, what, pred, ms) {
   const end = Date.now() + ms;
-  while (Date.now() < end) { if (await pred()) return; await sleep(2000); }
+  let n = 0;
+  while (Date.now() < end) {
+    if (await pred()) return; await sleep(2000);
+    if (++n % 20 === 0) { // every ~40 s: where is it? (state seen by the page + a screenshot)
+      const st = await c.page.evaluate(() => ({ a: globalThis.pzRuntime?.autoJoin?.state, log: (globalThis.pzRuntime?.autoJoin?.log || []).length })).catch(() => null);
+      log(c.name, 'waiting', JSON.stringify(st)); await c.shot(`wait-${n / 20}`).catch(() => {});
+    }
+  }
   throw new Error(`${c.name}: timeout waiting for ${what}`);
 }
 

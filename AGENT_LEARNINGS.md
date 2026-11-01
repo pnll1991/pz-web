@@ -940,3 +940,5 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Patrón: ante "Script version mismatch with server" el servidor compara SHA-256 de contenido: buscar iteraciones de HashMap/HashSet en getVersion (TeaVM itera distinto que el JDK). Inventariar con javap en lugar de adivinar.
 - Patrón: en `grep -r` sobre .class usar `-a` (sin él "0 resultados" engaña).
 - Patrón: un monitor con `grep Exception` cuenta trazas de advertencias del servidor; usar marcas específicas ("SERVER STARTED").
+- Error repetido (R83): `ps | grep "[p]lay-two.mjs" | kill` mata mi propia shell si el nombre aparece en MI línea de comandos (otra parte del mismo `bash -c`). Mejor enfoque: `pgrep -f '^node tools/diag/play-two'` (anclado al inicio del comando) en una llamada aparte, sin el nombre en el resto de la línea.
+- Patrón (R83): un servidor PZ con `DoLuaChecksum=true` expulsa a los clientes cuyo Lua difiere (mi script extra en media/lua/client); y tras conectar, el juego recarga el Lua (el script corre otra vez con isClient()=true): no usar `return` temprano que pierda el resto de la máquina de estados.

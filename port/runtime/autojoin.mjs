@@ -57,9 +57,12 @@ export function clickUntilIngame(auto, input, canvas, { intervalMs = 2500, holdM
   const started = Date.now();
   const tick = () => {
     if (auto.state === 'ingame' || Date.now() - started > maxMs) return;
+    // The game polls the button state (Mouse.isButtonDown), so keep CanvasInput's own state in step with the events,
+    // exactly like its pointerdown/pointerup handlers do.
     input.emit({ type: 'cursor', x: canvas.width / 2, y: canvas.height / 2, dx: 0, dy: 0 });
+    input.buttons?.add(0); (input.latched ??= new Set()).add(0);
     input.emit({ type: 'button', button: 0, action: 1 });
-    setTimeoutFn(() => { input.emit({ type: 'button', button: 0, action: 0 }); setTimeoutFn(tick, intervalMs); }, holdMs);
+    setTimeoutFn(() => { input.buttons?.delete(0); input.emit({ type: 'button', button: 0, action: 0 }); setTimeoutFn(tick, intervalMs); }, holdMs);
   };
   tick();
 }

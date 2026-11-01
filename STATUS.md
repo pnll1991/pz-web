@@ -573,3 +573,7 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 ## Ronda 82 (multijugador)
 - Hecho y verificado (capturas locales, no versionadas): dos clientes web entran al servidor dedicado real (127.0.0.1:16261, -nosteam, sin UPnP) mediante /ws + puente Java con la RakNet real, y se ven moverse. Detalles, cómo lanzarlo y riesgos: docs/multiplayer-design.md y ~/pzshots/CLAUDE_REPORT_R82.md.
 - Falta: recompilar release (fast.html aún no trae multijugador), vehículos (Bullet.addVehicle) y voz (RakVoice), lista de servidores con ping, reconexión y más de dos clientes.
+
+## Ronda 83 (modo directo)
+- `/play.html` (release) y `/play-dev.html`: entran solos al servidor local con una cuenta por navegador (localStorage), crean personaje y aparecen en la región única; dos navegadores nuevos se vieron en el mismo mundo (capturas locales). Cómo lanzarlo y riesgos: ~/pzshots/CLAUDE_REPORT_R83.md. LAN: docs/lan-exposure.md (sin aplicar).
+- Decisiones: ToS aceptado por el script (?tos=1 lo muestra); servidor de prueba con DoLuaChecksum=false.

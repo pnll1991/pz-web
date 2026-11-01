@@ -46,8 +46,10 @@ test('console watcher records script states and the loading line, and still logs
 
 test('click loop presses and releases the left button until the world starts', () => {
   const events = [], timers = [], auto = { state: 'loaded' };
-  clickUntilIngame(auto, { emit: e => events.push(e) }, { width: 800, height: 600 }, { setTimeoutFn: f => timers.push(f) });
+  const input = { buttons: new Set(), emit: e => events.push(e) };
+  clickUntilIngame(auto, input, { width: 800, height: 600 }, { setTimeoutFn: f => timers.push(f) });
+  assert.ok(input.buttons.has(0) && input.latched.has(0), 'button state is set while held');
   assert.deepEqual(events.map(e => e.type + (e.action ?? '')), ['cursor', 'button1']);
-  timers.shift()(); assert.equal(events.at(-1).action, 0);
+  timers.shift()(); assert.equal(events.at(-1).action, 0); assert.ok(!input.buttons.has(0));
   auto.state = 'ingame'; timers.shift()(); const n = events.length; assert.equal(events.length, n);
 });

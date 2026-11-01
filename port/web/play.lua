@@ -21,6 +21,18 @@ if CFG.acceptTos then
     end)
 end
 
+-- The character info window opens by itself for a new character; close it once the player exists.
+local function closeInfo()
+    pcall(function()
+        local info = getPlayerInfoPanel and getPlayerInfoPanel(0)
+        if info and info:isVisible() then info:setVisible(false) end
+    end)
+end
+local infoTicks = 0
+Events.OnPlayerUpdate.Add(function(player)
+    if infoTicks < 240 then infoTicks = infoTicks + 1; if infoTicks % 20 == 0 then closeInfo() end end
+end)
+
 Events.OnGameStart.Add(function()
     say("ingame")
     local guide = SurvivalGuide and SurvivalGuide.instance
@@ -31,9 +43,8 @@ Events.OnGameStart.Add(function()
     end
 end)
 
-if isClient() then return end -- after the login the game may reload Lua: the connection is already running
-
-local S = { t = 0, phase = "wait", since = 0, tries = 0, mainSeen = 0 }
+-- After the login the game reloads its Lua (this file runs again): a client is already connected, so only the creation screens remain.
+local S = { t = 0, phase = isClient() and "connecting" or "wait", since = 0, tries = 0, mainSeen = 0 }
 
 local function visible(ui) return ui and ui.isVisible and ui:isVisible() end
 
