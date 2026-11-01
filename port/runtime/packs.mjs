@@ -12,11 +12,24 @@ const mountablePath = path => path.startsWith('/media/') || READ_ONLY_MOUNTABLE.
 // observable rather than a silent failure.
 const CACHE_MAX_BYTES = 64 * 1024 * 1024;
 
+// Round 81 (front 2): the per-file sha256 pass (~9.6k digests over ~500 MB) is a pure function of the index
+// bytes and the pack bytes. Each pack is still verified in full on every boot; when the index is byte-identical
+// (same sha256) to one whose per-file pass already succeeded in this browser, that pass is not repeated.
+// '?nocache=1' (or { memo:false }) always repeats it. The first pass runs the digests concurrently.
+const VERIFIED_KEY = 'pz-web-packs-verified-index';
+const memoAllowed = () => typeof location === 'undefined' || new URLSearchParams(location.search).get('nocache') !== '1';
+const readMemo = () => { try { return localStorage.getItem(VERIFIED_KEY); } catch { return null; } };
+const writeMemo = value => { try { localStorage.setItem(VERIFIED_KEY, value); } catch { /* sin localStorage: se verifica siempre */ } };
+
 /** Cache immutable local pack blobs and preload verified files into synchronous memory. */
-export async function preloadPacks(vfs, indexUrl = '/packs/index.json') {
+export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo = memoAllowed() } = {}) {
   const response = await fetch(indexUrl, { cache:'no-cache' });
   if (!response.ok) throw new Error(`Pack index HTTP ${response.status}`);
-  const index = await response.json();
+  const indexBytes = await response.arrayBuffer();
+  const indexHash = await digest(indexBytes);
+  const index = JSON.parse(new TextDecoder().decode(indexBytes));
+  const skipFileDigests = memo && readMemo() === indexHash;
+  const stats = globalThis.pzPackStats = { indexHash, fileDigests: skipFileDigests ? 'memo' : 'computed', t0: performance.now(), ms: 0 };
   if (index.schema_version !== 1 || !Array.isArray(index.packs) || !Array.isArray(index.files))
     throw new Error('Unsupported pack schema');
   if (index.packs.some(pack => !Number.isSafeInteger(pack.bytes) || pack.bytes < 0) ||
@@ -34,6 +47,7 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json') {
   // Round 80 (front H): several paths may alias one pack range (a clip listed in media/anims_X/Bob and
   // read from media/anims/bob): it is verified once and counted once, as the VFS does for its views.
   const verifiedRanges = new Map();
+  const inFlight = { set:new Set(), bytes:0 };
   for (const pack of index.packs) {
     if (!/^[a-f0-9]{64}\.bin$/.test(pack.name) || pack.name !== `${pack.sha256}.bin`)
       throw new Error('Invalid pack name');
@@ -58,14 +72,24 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json') {
     } else {
       (globalThis.pzPackCacheSkipped ??= []).push({ name: pack.name, bytes: pack.bytes });
     }
-    for (const file of index.files.filter(file => file.pack === pack.name)) {
+    const files = index.files.filter(file => file.pack === pack.name);
+    for (const file of files) {
       if (!Number.isSafeInteger(file.offset) || !Number.isSafeInteger(file.length) || file.offset < 0 || file.length < 0 || file.offset + file.length > blob.byteLength)
         throw new Error('Invalid file bounds in pack');
       const range = `${pack.name}:${file.offset}:${file.length}`;
-      if (!verifiedRanges.has(range))
-        verifiedRanges.set(range, await digest(new Uint8Array(bytes, file.offset, file.length)));
-      if (verifiedRanges.get(range) !== file.sha256) throw new Error(`File integrity mismatch: ${file.path}`);
+      if (!skipFileDigests && !verifiedRanges.has(range)) {
+        // WebCrypto copies its input: bound the bytes in flight (a single 321 MB file waits alone).
+        while (inFlight.bytes > 0 && inFlight.bytes + file.length > 64 * 1024 * 1024) await Promise.race(inFlight.set);
+        const job = digest(new Uint8Array(bytes, file.offset, file.length));
+        const tracked = job.finally(() => { inFlight.set.delete(tracked); inFlight.bytes -= file.length; });
+        inFlight.set.add(tracked); inFlight.bytes += file.length;
+        verifiedRanges.set(range, tracked);
+      }
       pending.push([file.path, blob, file.offset, file.length, range]);
+    }
+    if (!skipFileDigests) for (const file of files) {
+      const range = `${pack.name}:${file.offset}:${file.length}`;
+      if (await verifiedRanges.get(range) !== file.sha256) throw new Error(`File integrity mismatch: ${file.path}`);
     }
   }
   if (pending.length !== index.files.length || new Set(pending.map(([path]) => path)).size !== pending.length)
@@ -80,5 +104,7 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json') {
   const total = pending.reduce((n, [, , , length, range]) => counted.has(range) ? n : (counted.add(range), n + length), 0);
   if (total > vfs.maxBytes) throw new Error('Pack files exceed VFS memory budget');
   for (const [path, blob, offset, length] of pending) vfs.mountView(path, blob, offset, length);
-  return { files:pending.length, bytes:total };
+  if (!skipFileDigests && memo) writeMemo(indexHash);
+  stats.ms = performance.now() - stats.t0;
+  return { files:pending.length, bytes:total, fileDigests:stats.fileDigests };
 }

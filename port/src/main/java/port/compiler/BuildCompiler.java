@@ -123,6 +123,8 @@ public final class BuildCompiler {
                 tool.getTransformers().add(PlayerProbeCompatibility.class.getName());
                 // Ronda 80 (frente O): esperas activas sobre Thread.isAlive() que colgaban Esc->QUIT.
                 tool.getTransformers().add(SpinWaitCompatibility.class.getName());
+                // Ronda 81 (frente 2): caché de páginas de texturas decodificadas (runtime/texcache.mjs).
+                tool.getTransformers().add(PackImageCacheCompatibility.class.getName());
             }
             try {
                 verifyCompilerPatch();

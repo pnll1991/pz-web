@@ -5,6 +5,7 @@ import { CanvasInput } from '/runtime/input.mjs';
 import { BrowserWindow } from '/runtime/window.mjs';
 import { VirtualFileSystem, normalizePath } from '/runtime/vfs.mjs';
 import { preloadPacks } from '/runtime/packs.mjs';
+import { TextureCache } from '/runtime/texcache.mjs';
 
 const status = document.getElementById('game-status');
 // TeaVM derives Java frames from V8 stacks; the default ten frames hide callers.
@@ -96,6 +97,27 @@ try {
       '# pz-web: no PZPathFind64 native in the browser; use the game\'s Java pathfinder.\nPathfind.UseNativeCode=false\n'));
   }
   globalThis.pzRuntime = { vfs, normalizePath, gl:new GLBridge(canvas), input:new CanvasInput(canvas) };
+  // Ronda 81 (frente 2): páginas de texturas decodificadas por el juego, guardadas en IndexedDB y
+  // reutilizadas en el arranque siguiente (port.runtime.PackImageCache). Clave = ETag de boot.wasm (el
+  // build) + SHA-256 del PNG; opt-in con ?texcache=1 (?nocache=1 la apaga), ?texcache=verify compara sin usarla.
+  // Si IndexedDB falla el juego sigue con el call() original (modo 0) y el error queda en stats.
+  pzRuntime.texCache = TextureCache.fromLocation(location.search, '');
+  if (pzRuntime.texCache.mode !== 0) {
+    try {
+      const head = await fetch(`${gameDir}/boot.wasm`, { method:'HEAD', cache:'no-cache' });
+      pzRuntime.texCache.build = head.ok ? head.headers.get('ETag') || head.headers.get('Last-Modified') || '' : '';
+      await pzRuntime.texCache.open();
+    } catch (error) {
+      pzRuntime.texCache.stats.lastError = String(error); pzRuntime.texCache.mode = 0;
+      console.warn('texcache apagada:', error);
+    }
+    // Para los benchmarks (la consola queda en console.txt): estado cada 30 s mientras cambie.
+    let lastStats = '';
+    setInterval(() => {
+      const s = JSON.stringify({ mode:pzRuntime.texCache.mode, ...pzRuntime.texCache.stats, lookupMs:Math.round(pzRuntime.texCache.stats.lookupMs) });
+      if (s !== lastStats) { lastStats = s; console.log(`texcache t=${Math.round(performance.now() / 1000)}s ${s}`); }
+    }, 30000);
+  }
   pzRuntime.window = new BrowserWindow(canvas,pzRuntime.gl,pzRuntime.input);
   await pzRuntime.window.prepare();
   pzRuntime.sqlite = await sqliteBridge(vfs);
