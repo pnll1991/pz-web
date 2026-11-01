@@ -23,6 +23,14 @@ public final class ReflectionConfiguration extends SimpleReflectionPolicy {
             if (bases.contains(parent.name())) return true;
         return false;
     }
+    /** True when cls (or any superclass/interface, transitively) is one of the named types. */
+    private static boolean implementsAny(org.teavm.extension.introspect.IntrospectClass<?> cls, java.util.Set<String> types) {
+        if (cls == null) return false;
+        if (types.contains(cls.name())) return true;
+        if (implementsAny(cls.superclass(), types)) return true;
+        for (var parent : cls.interfaces()) if (implementsAny(parent, types)) return true;
+        return false;
+    }
     private final java.util.Map<String, java.util.Optional<PublicApi>> jdkApis = new java.util.HashMap<>();
     @Override public java.util.Collection<org.teavm.extension.introspect.IntrospectMember> classAccessibleMembers(
             org.teavm.extension.introspect.IntrospectClass<?> cls) {
@@ -89,6 +97,10 @@ public final class ReflectionConfiguration extends SimpleReflectionPolicy {
             // for ObjectID$ObjectIDShort/ObjectIDInteger (IsoZombie.registerECSComponents during IsoWorld.init).
             selectClasses(cls -> cls != null && extendsAny(cls, java.util.Set.of("zombie.network.id.ObjectID")))
                 .reflectableMethods(method -> method.isConstructor());
+            // Round 82: PacketsCache builds one handler per PacketType with packetType.handler.getDeclaredConstructor().newInstance();
+            // without these constructors connection.getPacket(...) returns null and the first packet (Login) dies with an NPE.
+            selectClasses(cls -> cls != null && !cls.isInterface() && implementsAny(cls, java.util.Set.of("zombie.network.packets.INetworkPacket")))
+                .reflectableMethods(method -> method.isConstructor() && method.parameters().isEmpty());
         } catch (IOException error) {
             throw new IllegalStateException("Cannot read reflection configuration", error);
         }

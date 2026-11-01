@@ -19,6 +19,8 @@ public final class GameBoot {
         // jassimp64 (models_X .x meshes): answered from the preconverted cache the packs serve at the
         // .x path (port/natives/Jassimp64.java, tools/jassimp/JassimpCache.java).
         port.natives.Jassimp64.install();
+        // RakNet64/ZNetNoSteam64: client networking through the local WebSocket bridge (port/natives/RakNetPeer.java).
+        port.natives.RakNetPeer.install();
         state("starting", "", "");
         try {
             launch(args);

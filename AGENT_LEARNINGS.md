@@ -932,3 +932,11 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 ## R81b: esfera azul/parpadeo negro en partida
 - Causa: puertas `apiId` (SkyBox/IsoPuddles/IsoWater) leen GLCapabilities.OpenGL30/ARB/EXT, falsas en el port → RenderSkyBox no enlaza su FBO y limpia/dibuja en pantalla. No era release, texcache ni timers.
 - Patrón a evitar: parchear solo el chequeo de soporte (TextureFBO) y olvidar otras lecturas de capacidades; listar con bytecode todas las lecturas de la capacidad. Detectar por capturas (1/60 cuadros) es débil: usar el contador `screenSmallClears` de gl.mjs (clear en framebuffer por defecto con viewport menor al canvas; 28 de arranque son normales, no deben crecer).
+
+## R82: multijugador
+- Patrón: antes de reimplementar un protocolo, ver si la biblioteca nativa real corre en una JVM aparte (RakNetPeerInterface + libRakNet64 conectó al servidor en 20 líneas). Un puente que reenvía bytes conserva handshake/versión/fiabilidad. Ojo: la nativa es un singleton por proceso (el 2.º peer devuelve Startup=1): una JVM por cliente.
+- Error: el servidor dedicado abre puertos del router por UPnP por defecto (`UPnP=true`) y lo hizo en el primer arranque. Mejor enfoque: escribir el ini mínimo con `UPnP=false` ANTES del primer arranque.
+- Error: `keyboard.type` de Playwright no entra en el juego (lee teclado por cuadro) y un canvas nunca dispara `beforeinput`: el port no podía recibir texto. Causa real en input.mjs, no en la prueba.
+- Patrón: ante "Script version mismatch with server" el servidor compara SHA-256 de contenido: buscar iteraciones de HashMap/HashSet en getVersion (TeaVM itera distinto que el JDK). Inventariar con javap en lugar de adivinar.
+- Patrón: en `grep -r` sobre .class usar `-a` (sin él "0 resultados" engaña).
+- Patrón: un monitor con `grep Exception` cuenta trazas de advertencias del servidor; usar marcas específicas ("SERVER STARTED").

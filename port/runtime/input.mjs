@@ -27,10 +27,17 @@ export class CanvasInput {
       this.emit({ type:'key', key:code, action:action && event.repeat ? 2 : action });
       if (['Space','Tab','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(event.code)) event.preventDefault();
     };
-    on(canvas, 'keydown', event => key(event, 1));
+    // A canvas is not editable, so Chrome never fires beforeinput on it: without this the game could not receive any typed
+    // text (server name/IP, user name, password). Printable keys become text on keydown until a real beforeinput shows up
+    // (IME/composed text), after which beforeinput is the only text source so nothing is delivered twice.
+    let beforeInputSeen = false;
+    on(canvas, 'keydown', event => {
+      key(event, 1);
+      if (!beforeInputSeen && event.key && event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey && !event.isComposing)
+        this.emit({ type:'text', text:event.key });
+    });
     on(canvas, 'keyup', event => key(event, 0));
-    // beforeinput also covers composed text; physical keys are never treated as text.
-    on(canvas, 'beforeinput', event => { if (event.data) this.emit({ type:'text', text:event.data }); });
+    on(canvas, 'beforeinput', event => { if (event.data) { beforeInputSeen = true; this.emit({ type:'text', text:event.data }); } });
     on(canvas, 'pointerdown', event => {
       canvas.focus(); canvas.setPointerCapture(event.pointerId);
       const button = [0,2,1][event.button] ?? event.button;

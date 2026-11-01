@@ -1,6 +1,7 @@
 import { sqliteBridge } from '/runtime/sqlite.mjs';
 import { bulletBridge } from '/runtime/bullet.mjs';
 import { GLBridge } from '/runtime/gl.mjs';
+import { NetBridge } from '/runtime/net.mjs';
 import { CanvasInput } from '/runtime/input.mjs';
 import { BrowserWindow } from '/runtime/window.mjs';
 import { VirtualFileSystem, normalizePath } from '/runtime/vfs.mjs';
@@ -129,7 +130,7 @@ try {
     vfs.writeFile('/Zomboid/debug-options.ini', new TextEncoder().encode(
       '# pz-web: no PZPathFind64 native in the browser; use the game\'s Java pathfinder.\nPathfind.UseNativeCode=false\n'));
   }
-  globalThis.pzRuntime = { vfs, normalizePath, gl:new GLBridge(canvas), input:new CanvasInput(canvas) };
+  globalThis.pzRuntime = { vfs, normalizePath, gl:new GLBridge(canvas), input:new CanvasInput(canvas), net:new NetBridge() };
   // Ronda 81 (frente 2): páginas de texturas decodificadas por el juego, guardadas en IndexedDB y
   // reutilizadas en el arranque siguiente (port.runtime.PackImageCache). Clave = ETag de boot.wasm (el
   // build) + SHA-256 del PNG; activa por defecto (?nocache=1 / ?texcache=0 la apagan), ?texcache=verify compara sin usarla.

@@ -85,6 +85,59 @@ class TransformerPatchTest {
             "removeWhitespace must delegate to the bridge, got " + removed);
     }
 
+    @Test void totpHmacUsesTheBridgeNotJavaxCrypto() {
+        var source = source(gameJar());
+        ClassHolder cls = source.get("de.taimos.totp.TOTP");
+        assertNotNull(cls, "de.taimos.totp.TOTP must be readable from the pinned jar");
+        var before = cls.getMethod(MethodDescriptor.parse("hmac_sha1([B[B)[B"));
+        assertNotNull(before);
+        assertTrue(invokeNames(before).contains("javax.crypto.Mac::getInstance"), "the original body needs javax.crypto.Mac");
+        new port.compiler.TotpCompatibility().transformClass(cls, new TestContext(new org.teavm.model.ClassHierarchy(source)));
+        var hit = soleInvoke(cls, "hmac_sha1").getMethod();
+        assertEquals("port.runtime.text.HmacSha1Bridge", hit.getClassName());
+        assertEquals(MethodDescriptor.parse("hmac_sha1([B[B)[B"), hit.getDescriptor());
+    }
+
+    @Test void hmacSha1BridgeMatchesJavaxCrypto() throws Exception {
+        java.util.Random random = new java.util.Random(82);
+        int[][] sizes = {{20, 8}, {0, 0}, {63, 64}, {64, 65}, {100, 1000}, {16, 8}};
+        for (int[] size : sizes) {
+            byte[] key = new byte[size[0]], data = new byte[size[1]];
+            random.nextBytes(key); random.nextBytes(data);
+            var mac = javax.crypto.Mac.getInstance("HmacSHA1");
+            mac.init(new javax.crypto.spec.SecretKeySpec(key.length == 0 ? new byte[1] : key, "RAW"));
+            if (key.length == 0) continue; // javax.crypto refuses an empty key; RFC 2104 allows it, covered by the long-key cases
+            org.junit.jupiter.api.Assertions.assertArrayEquals(mac.doFinal(data),
+                port.runtime.text.HmacSha1Bridge.hmac_sha1(key, data), "key=" + key.length + " data=" + data.length);
+        }
+    }
+
+    @Test void spriteOverlayVersionIteratesInJdkHashOrder() {
+        var source = source(gameJar());
+        ClassHolder cls = source.get("zombie.scripting.entity.components.spriteconfig.SpriteOverlayConfigScript");
+        assertNotNull(cls);
+        var getVersion = cls.getMethod(MethodDescriptor.parse("getVersion(Lzombie/world/scripts/IVersionHash;)V"));
+        assertTrue(invokeNames(getVersion).contains("java.util.HashMap::values"), "the original iterates HashMap.values()");
+        new port.compiler.HashOrderCompatibility().transformClass(cls, new TestContext(new org.teavm.model.ClassHierarchy(source)));
+        assertTrue(invokeNames(getVersion).contains("port.runtime.text.JdkHashOrder::values"));
+        assertTrue(!invokeNames(getVersion).contains("java.util.HashMap::values"));
+    }
+
+    @Test void jdkHashOrderMatchesRealHashMapIteration() {
+        java.util.Random random = new java.util.Random(82);
+        for (int round = 0; round < 300; round++) {
+            int n = random.nextInt(60);
+            var real = new java.util.HashMap<String, Integer>();
+            var linked = new java.util.LinkedHashMap<String, Integer>();
+            for (int i = 0; i < n; i++) {
+                String key = "Style" + random.nextInt(500) + (random.nextBoolean() ? "_x" : "");
+                real.put(key, i); linked.put(key, i);
+            }
+            assertEquals(new java.util.ArrayList<>(real.values()),
+                new java.util.ArrayList<>(port.runtime.text.JdkHashOrder.values(linked)), "round " + round + " n=" + n);
+        }
+    }
+
     @Test void assertionTransformerDisablesGameAsserts() {
         // Round 50: the MainThread died with java.lang.AssertionError in
         // XuiSkin$EntityUiStyle::Load. javac emits `$assertionsDisabled = !C.desiredAssertionStatus()`

@@ -226,6 +226,21 @@ try {
   await shot('menu');
   await rate(MENU_FPS_S, 'menu');
 
+  if (A.steps && A.steps !== true) { // Ronda 82: pasos libres sobre el menú: c:x,y,ms | t:texto | k:Tecla,ms | w:ms ; captura tras cada paso
+    let n = 0;
+    for (const step of String(A.steps).split(';').filter(Boolean)) {
+      const [kind, arg = ''] = [step.slice(0, 1), step.slice(2)];
+      if (kind === 'c') { const [x, y, ms = 3000] = arg.split(',').map(Number); await click(x, y); await sleep(ms); }
+      else if (kind === 't') { /* el juego lee el teclado por cuadro: cada tecla se mantiene ~150 ms */ for (const ch of arg) { await key(ch, 150); await sleep(120); } await sleep(1000); }
+      else if (kind === 'k') { const [name, ms = 150] = arg.split(','); await key(name, +ms); await sleep(1500); }
+      else if (kind === 'w') await sleep(+arg);
+      else throw new Error(`paso desconocido: ${step}`);
+      log('STEP', step); await shot(`step${String(++n).padStart(2, '0')}`);
+    }
+    if (A.hold) { log('hold', A.hold, 's'); await sleep(+A.hold * 1000); await shot('hold'); }
+    summary.consoleStates = consoleLines.map(([t, s]) => [+((t - tNav) / 1000).toFixed(1), s.slice(0, 160)]);
+    log('OK'); await finish(0);
+  }
   if (MODE === 'ingame' || MODE === 'create-save') {
     let enter;
     if (MODE === 'ingame') {
