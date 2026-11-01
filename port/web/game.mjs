@@ -2,6 +2,7 @@ import { sqliteBridge } from '/runtime/sqlite.mjs';
 import { bulletBridge } from '/runtime/bullet.mjs';
 import { GLBridge } from '/runtime/gl.mjs';
 import { NetBridge } from '/runtime/net.mjs';
+import { installAutoJoin, watchConsole, clickUntilIngame } from '/runtime/autojoin.mjs';
 import { CanvasInput } from '/runtime/input.mjs';
 import { BrowserWindow } from '/runtime/window.mjs';
 import { VirtualFileSystem, normalizePath } from '/runtime/vfs.mjs';
@@ -131,6 +132,20 @@ try {
       '# pz-web: no PZPathFind64 native in the browser; use the game\'s Java pathfinder.\nPathfind.UseNativeCode=false\n'));
   }
   globalThis.pzRuntime = { vfs, normalizePath, gl:new GLBridge(canvas), input:new CanvasInput(canvas), net:new NetBridge() };
+  // Round 83: direct mode (?autojoin=1, entered through /play.html): per-browser account, the menu is driven by a Lua script
+  // mounted into media/lua/client (port/web/play.lua), and the loading screen's click is sent from here.
+  if (new URLSearchParams(location.search).get('autojoin') === '1') {
+    const auto = pzRuntime.autoJoin = await installAutoJoin(vfs, location.search);
+    const label = Object.assign(document.createElement('div'), { id: 'pz-play-status' });
+    label.style.cssText = 'position:fixed;left:8px;bottom:4px;z-index:3;font:12px sans-serif;color:#bbb;pointer-events:none;text-shadow:0 0 3px #000';
+    document.body.appendChild(label);
+    const text = { installed: 'Preparando…', 'script-loaded': 'Preparando…', 'tos-accepted': 'Términos aceptados', menu: 'Menú', spawn: 'Aparición',
+      profession: 'Creando personaje', character: 'Creando personaje', loaded: 'Mundo cargado', ingame: '' };
+    const show = state => { label.textContent = state.startsWith('connect-failed') ? `No se pudo conectar (${state.slice(15)}); reintentando…`
+      : state.startsWith('connect') ? `Conectando como ${auto.user}…` : (text[state] ?? state) && `${text[state] ?? state} · ${auto.user}`; };
+    watchConsole(auto, { onState: state => { show(state); if (state === 'loaded') clickUntilIngame(auto, pzRuntime.input, canvas); } });
+    show('installed');
+  }
   // Ronda 81 (frente 2): páginas de texturas decodificadas por el juego, guardadas en IndexedDB y
   // reutilizadas en el arranque siguiente (port.runtime.PackImageCache). Clave = ETag de boot.wasm (el
   // build) + SHA-256 del PNG; activa por defecto (?nocache=1 / ?texcache=0 la apagan), ?texcache=verify compara sin usarla.

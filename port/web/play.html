@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="es"><meta charset="utf-8"><title>Project Zomboid · jugar</title>
+<!-- Round 83: modo directo con la versión rápida (build release). Salta el menú, entra solo al servidor local con la cuenta de este
+     navegador y crea el personaje. ?tos=1 muestra los términos en lugar de aceptarlos. Los parámetros de la URL pisan los defaults. -->
+<p id="m">Entrando…</p>
+<script>
+  const q = new URLSearchParams(location.search);
+  for (const [k, v] of Object.entries({ build: 'release-minpulse', persist: '1', texcache: '1', autojoin: '1' })) if (!q.has(k)) q.set(k, v);
+  location.replace('/game.html?' + q);
+</script></html>
