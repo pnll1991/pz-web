@@ -11,6 +11,8 @@ pid() { ps -eo pid,args | grep -v grep | grep "GameServer -nosteam -cachedir=$D"
 apply_config() {
   [[ -f "$D/Server/pzweb.ini" ]] && sed -i 's/^VoiceEnable=.*/VoiceEnable=false/; s/^UPnP=true/UPnP=false/; s/^SteamVAC=true/SteamVAC=false/' "$D/Server/pzweb.ini"
   [[ -f "$D/Server/pzweb_SandboxVars.lua" ]] && sed -i 's/EnableVehicles = true/EnableVehicles = false/' "$D/Server/pzweb_SandboxVars.lua"
+  # una sola región de aparición (punto fijo de pzweb_spawnpoints.lua): los jugadores de prueba aparecen juntos
+  [[ -d "$D/Server" ]] && printf 'function SpawnRegions()\n\treturn {\n\t\t{ name = "pzweb", serverfile = "pzweb_spawnpoints.lua" },\n\t}\nend\n' > "$D/Server/pzweb_spawnregions.lua"
   return 0
 }
 case "${1:-status}" in

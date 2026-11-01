@@ -568,3 +568,8 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 - **Faltantes**: por qué un menú con partida guardada rinde menos que sin ella (37 vs 16 fps en dev); el segundo CONTINUE rinde 37 fps (el primero 59);
   no se repitió el perfil en partida después de los temporizadores; vehículos/zombis/pelo siguen pendientes (ronda 80).
 - **Bloqueos**: ninguno. **Pasos manuales**: ninguno (la caché de texturas ocupa ~945 MB del perfil de Chrome; `?nocache=1` la apaga).
+
+
+## Ronda 82 (multijugador)
+- Hecho y verificado (capturas locales, no versionadas): dos clientes web entran al servidor dedicado real (127.0.0.1:16261, -nosteam, sin UPnP) mediante /ws + puente Java con la RakNet real, y se ven moverse. Detalles, cómo lanzarlo y riesgos: docs/multiplayer-design.md y ~/pzshots/CLAUDE_REPORT_R82.md.
+- Falta: recompilar release (fast.html aún no trae multijugador), vehículos (Bullet.addVehicle) y voz (RakVoice), lista de servidores con ping, reconexión y más de dos clientes.
