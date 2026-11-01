@@ -253,13 +253,15 @@ try {
     // La sonda puede no publicar nunca (visto 01/11 en el build 00:15: playerProbe=null aun con la guía abierta);
     // en ese caso se sigue a ciegas con la receta de la ronda 80 (3 clics, 35 s, Esc 800 ms) y se avisa en el resumen.
     let blind = false;
-    for (let i = 0; i < 4; i++) { // "Click to Start": a ~3 fps un clic puede no tomar
-      await click(640, 400); await sleep(5000); st = await pstate(); log('click-to-start', i + 1, st);
-      if (st && st.gtp) break;
+    // Señal robusta: tamaño del PNG de la captura (pantalla "Click to Start" = casi negra, <15 KB; mundo/guía > 40 KB).
+    const shotSize = async () => { try { return (await capped(page.screenshot({ timeout: 90000 }), 95000, 'screenshot')).length; } catch { return -1; } };
+    let size = await shotSize(); log('captura antes de empezar', size);
+    for (let i = 0; i < 10 && size < 40000; i++) { // "Click to Start": a ~3 fps un clic puede no tomar
+      await click(640, 400); await sleep(8000); size = await shotSize(); log('click-to-start', i + 1, 'png bytes', size);
     }
-    for (const end = Date.now() + 60000; !(st && st.gtp) && Date.now() < end; await sleep(3000)) st = await pstate();
-    if (!st) { blind = true; summary.blind = true; await sleep(30000); }
-    ev('started', st || {}); metric('click_to_guide_s', (Date.now() - tClick) / 1000, 1);
+    if (size < 40000) throw new Error(`"Click to Start" no avanzó (png ${size} B)`);
+    await sleep(25000); // la guía tarda en aparecer
+    st = await pstate(); blind = !st; summary.blind = blind; log('estado tras empezar', st);
     await shot('guide');
     if (blind) { await key('Escape', 800); await sleep(5000); log('modo a ciegas: Esc enviado (verificar con ingame.png)'); }
     else if (st && st.gtp) { // Survival Guide abierta (pausa el juego): Esc 800 ms la cierra
