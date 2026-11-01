@@ -27,17 +27,73 @@ public final class PortXmlBeans {
         return unmarshal(type, root, null);
     }
 
-    /** As the RI: after a bean's properties are read, its class-defined afterUnmarshal(Unmarshaller, Object) runs. */
+    /**
+     * As the RI: after a bean's properties are read, its class-defined afterUnmarshal(Unmarshaller, Object) runs;
+     * forward IDREFs are patched over the whole document once every bean (and its callback) has been read.
+     */
     public static Object unmarshal(Class<?> type, Element root, Unmarshaller unmarshaller) throws JAXBException {
-        return unmarshal(type, root, unmarshaller, null);
+        IdScope ids = new IdScope();
+        Object bean = unmarshal(type, root, unmarshaller, null, ids);
+        ids.resolvePending();
+        return bean;
     }
 
-    private static Object unmarshal(Class<?> type, Element root, Unmarshaller unmarshaller, Object parent) throws JAXBException {
+    private static Object unmarshal(Class<?> type, Element root, Unmarshaller unmarshaller, Object parent, IdScope ids) throws JAXBException {
         if (root == null) throw new JAXBException("No root element to unmarshal");
         Object bean = instantiate(type);
-        readBean(bean, root, unmarshaller);
+        readBean(bean, root, unmarshaller, ids);
+        ids.declare(bean);
         afterUnmarshal(bean, unmarshaller, parent);
         return bean;
+    }
+
+    // Ronda 80 (frente S): @XmlID/@XmlIDREF. Anim2DBlendTriangle.node1..3 son @XmlIDREF a los Anim2DBlend
+    // (@XmlID referenceID) de m_2DBlends, y AnimLayer.applyBlendField compara los nodos elegidos por
+    // Anim2DBlendPicker con los de AnimNode.blends2d por IDENTIDAD (if_acmpne). Sin resolver la referencia
+    // cada <node1>2</node1> era un Anim2DBlend vacío nuevo: ninguna pista coincidía, blendFieldWeight=0 en
+    // todas (Idle y defaultWalk), no se aplicaba animación (pose = boneOffset) y el root motion ponderado era 0.
+    // Como el RI (TransducedAccessor IDREF + DefaultIDResolver): un id ya visto se asigna en el acto; uno
+    // adelantado se parchea al terminar el documento; el ámbito es el documento entero; un id sin
+    // declarar deja el campo en null (el RI lo informa como ERROR al ValidationEventHandler y sigue).
+    private static final class IdScope {
+        private final Map<String, Object> declared = new HashMap<>();
+        private final List<Object[]> pending = new ArrayList<>();
+
+        void declare(Object bean) throws JAXBException {
+            for (Field field : fields(bean.getClass())) {
+                if (!field.isAnnotationPresent(XmlID.class)) continue;
+                Object id;
+                try { id = field.get(bean); }
+                catch (ReflectiveOperationException | IllegalArgumentException error) { throw new JAXBException("Cannot read " + field, error); }
+                if (id != null) declared.put(collapse(id.toString()), bean);
+            }
+        }
+
+        void reference(Field field, Object bean, String raw) throws JAXBException {
+            String id = collapse(raw);
+            Object target = declared.get(id);
+            if (target != null) assignReference(field, bean, target, id);
+            else pending.add(new Object[] {field, bean, id});
+        }
+
+        void resolvePending() throws JAXBException {
+            for (Object[] entry : pending) {
+                Object target = declared.get((String) entry[2]);
+                if (target != null) assignReference((Field) entry[0], entry[1], target, (String) entry[2]);
+            }
+            pending.clear();
+        }
+
+        private static void assignReference(Field field, Object bean, Object target, String id) throws JAXBException {
+            if (!field.getType().isInstance(target))
+                throw new JAXBException("IDREF '" + id + "' of " + field + " names a " + target.getClass().getName());
+            assign(field, bean, target);
+        }
+    }
+
+    /** xs:ID / xs:IDREF are whitespace-collapsed tokens. */
+    private static String collapse(String raw) {
+        return raw.strip().replaceAll("\\s+", " ");
     }
 
     // Ronda 80: JAXB llama al callback de clase `afterUnmarshal(Unmarshaller, Object padre)` de cada bean
@@ -110,6 +166,13 @@ public final class PortXmlBeans {
             return;
         }
         String name = elementName(field);
+        if (field.isAnnotationPresent(XmlIDREF.class)) {
+            if (value == null) return;
+            Element child = document.createElement(name);
+            element.appendChild(child);
+            child.setTextContent(idOf(value));
+            return;
+        }
         List<Object> items = new ArrayList<>();
         if (value instanceof Collection<?> collection) items.addAll(collection);
         else if (value != null && value.getClass().isArray()) {
@@ -124,13 +187,30 @@ public final class PortXmlBeans {
         }
     }
 
-    private static void readBean(Object bean, Element element, Unmarshaller unmarshaller) throws JAXBException {
+    private static String idOf(Object bean) throws JAXBException {
+        for (Field field : fields(bean.getClass())) {
+            if (!field.isAnnotationPresent(XmlID.class)) continue;
+            try {
+                Object id = field.get(bean);
+                if (id != null) return id.toString();
+            } catch (ReflectiveOperationException | IllegalArgumentException error) { throw new JAXBException("Cannot read " + field, error); }
+        }
+        throw new JAXBException("IDREF target " + bean.getClass().getName() + " has no @XmlID value");
+    }
+
+    private static void readBean(Object bean, Element element, Unmarshaller unmarshaller, IdScope ids) throws JAXBException {
         for (Field field : fields(bean.getClass())) {
             if (field.isAnnotationPresent(XmlTransient.class)) continue;
+            boolean idref = field.isAnnotationPresent(XmlIDREF.class);
+            if (idref && (field.getType().isArray() || Collection.class.isAssignableFrom(field.getType())))
+                throw new JAXBException("@XmlIDREF collections are outside the supported JAXB subset: " + field);
             XmlAttribute attribute = field.getAnnotation(XmlAttribute.class);
             if (attribute != null) {
                 String raw = element.getAttribute(attributeName(attribute.name(), field.getName()));
-                if (raw != null && !raw.isEmpty()) assign(field, bean, raw);
+                if (raw != null && !raw.isEmpty()) {
+                    if (idref) ids.reference(field, bean, raw);
+                    else assign(field, bean, raw);
+                }
                 continue;
             }
             XmlElements choices = field.getAnnotation(XmlElements.class);
@@ -144,20 +224,24 @@ public final class PortXmlBeans {
                 found.add(childElement);
             }
             if (found.isEmpty()) continue;
+            if (idref) {
+                ids.reference(field, bean, found.get(0).getTextContent());
+                continue;
+            }
             Class<?> declared = field.getType();
             boolean many = Collection.class.isAssignableFrom(declared) && declared != Object.class;
             if (many) {
                 Collection<Object> target = collection(field, bean);
                 for (Element child : found)
-                    target.add(readValue(choiceType(choices, child.getTagName(), elementType(field)), child, unmarshaller, bean));
+                    target.add(readValue(choiceType(choices, child.getTagName(), elementType(field)), child, unmarshaller, bean, ids));
             } else {
                 Class<?> type = field.getType().isArray() ? field.getType().getComponentType()
                         : choiceType(choices, found.get(0).getTagName(), field.getType());
-                Object single = readValue(type, found.get(0), unmarshaller, bean);
+                Object single = readValue(type, found.get(0), unmarshaller, bean, ids);
                 if (field.getType().isArray()) {
                     Object array = Array.newInstance(field.getType().getComponentType(), found.size());
                     Array.set(array, 0, single);
-                    for (int i = 1; i < found.size(); i++) Array.set(array, i, readValue(type, found.get(i), unmarshaller, bean));
+                    for (int i = 1; i < found.size(); i++) Array.set(array, i, readValue(type, found.get(i), unmarshaller, bean, ids));
                     assignArray(field, bean, array);
                 } else assign(field, bean, single);
             }
@@ -174,7 +258,7 @@ public final class PortXmlBeans {
         }
     }
 
-    private static Object readValue(Class<?> type, Element element, Unmarshaller unmarshaller, Object parent) throws JAXBException {
+    private static Object readValue(Class<?> type, Element element, Unmarshaller unmarshaller, Object parent, IdScope ids) throws JAXBException {
         if (isLeaf(type)) return convert(type, element.getTextContent());
         // Ronda 64: leer un elemento XML con el tipo de la propia coleccion es un error our, no del
         // juego. Antes, para `public ArrayList<FileGuidPair> files` se pasaba field.getType()
@@ -185,7 +269,7 @@ public final class PortXmlBeans {
         if (Collection.class.isAssignableFrom(type) || Map.class.isAssignableFrom(type))
             throw new JAXBException("Element <" + element.getTagName() + "> has no declared item type for "
                     + type.getName());
-        return unmarshal(type, element, unmarshaller, parent);
+        return unmarshal(type, element, unmarshaller, parent, ids);
     }
 
     private static void assign(Field field, Object bean, Object value) throws JAXBException {

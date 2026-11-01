@@ -1119,3 +1119,25 @@ Análisis estático (`javap -c` del jar fijado, volcado en /tmp; `translateShade
   fijado) y `memLengthUTF8` pasa a contar como LWJGL (nUTF8 reserva con memLengthUTF8 y escribe con encodeUTF8Unsafe; un
   surrogate suelto son 3 bytes, alto + siguiente = 4, no el '?' de `getBytes`). El resultado cuenta el NUL. Test:
   `ForeignMemoryTest.lwjglUnsafeEncodersWriteAtTheAddress`.
+
+## Ronda 80 — frente S (31/10): todas las pistas del jugador con weight=0
+- Evidencia (frente V, `/tmp/pz80v3/S_*.txt`): pistas que avanzan bien (tiempo, bucle, speed 0,48/1,04) pero
+  `AnimationTrack.getBlendWeight()` = 0 en todas: Idle [Bob_Idle, Bob_Idle_HeavyBreathing, Bob_Idle] y defaultWalk
+  [Bob_WalkLightLimpR/L, Bob_WalkHeavyLimpR/L, Bob_Walk, Bob_WalkSlow].
+- Cálculo (javap): `getBlendWeight = blendWeight * (blendCurve ? lerp(t/dur) : 1) * blendFieldWeight`. Idle y
+  defaultWalk son 2D blends (`m_2DBlends` + `m_2DBlendTri`, escalares `m_Scalar`/`m_Scalar2`), así que
+  `AnimLayer.updateInternal` va por `applyBlendField`: `Anim2DBlendPicker.Pick(x,y)` devuelve node1..3 + scale1..3 y a
+  cada pista principal `i` le da `scaleK` sólo si `blends2d.get(i) == nodeK` (`if_acmpne`, identidad), si no 0.
+- Causa: `Anim2DBlendTriangle.node1..3` son `@XmlIDREF @XmlElement` a `Anim2DBlend` (`@XmlAttribute(name="referenceID")
+  @XmlID`). `PortXmlBeans` no resolvía IDREF: cada `<node1>2</node1>` se leía como un `Anim2DBlend` NUEVO y vacío
+  (pos 0,0, referenceId null), el picker armaba casco/triángulos con esos objetos y ninguna pista coincidía ->
+  blendFieldWeight 0 -> sin animación (modelo identidad, paleta = boneOffset, cuerpo colapsado) y root motion
+  ponderado 0 (W no traslada). Únicos usos de XmlID/XmlIDREF en el jar: esas dos clases.
+- Fix (`PortXmlBeans.IdScope`): como el RI (IDREF TransducedAccessor + DefaultIDResolver) el ámbito es el documento; id
+  ya declarado -> se asigna en el acto, adelantado -> se parchea al final del documento (tras los afterUnmarshal);
+  sin declarar -> null (el RI lo informa como ERROR y sigue); xs:IDREF se colapsa (strip). IDREF en colecciones/arrays
+  -> JAXBException (fuera del subconjunto). El marshal escribe el id del destino. El picker lo arma `AnimNode.Parse`
+  tras el unmarshal (`SetPickTriangles`), así que ve los nodos ya resueltos.
+- Test: `PortXmlBeansIdrefTest` (espejos sintéticos de la forma XML; con `PZ_HOME` lee también los
+  `defaultWalk.xml`/`Idle.xml` fijados y exige que cada vértice sea idéntico a un `m_2DBlends`). Sin el fix falla
+  (3/3). No hay JAXB RI en `.toolchain/m2` para comparar campo a campo.

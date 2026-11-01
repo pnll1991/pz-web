@@ -897,3 +897,12 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
   versión original del import como control negativo.
 - Patrón: al implementar un método de `MemoryUtil` que escribe, revisar con qué método LWJGL calculó el tamaño reservado
   (nUTF8 = memLengthUTF8 + encodeUTF8Unsafe) y que ambos sigan el mismo algoritmo, aun para entradas inválidas.
+
+## Ronda 80 (frente S, 31/10) — pesos 0 por @XmlIDREF
+- Error: `PortXmlBeans` trataba un campo `@XmlIDREF` como un bean anidado: `<node1>2</node1>` producía un objeto
+  nuevo y vacío en vez del `@XmlID` declarado, sin error. El juego compara esos objetos por identidad
+  (`AnimLayer.applyBlendField`) y todas las pistas quedaron con peso 0 (pose colapsada, sin root motion). Patrón a
+  evitar: aceptar una anotación JAXB en el filtro de campos (`fields()` ya listaba XmlID/XmlIDREF) sin implementar
+  su semántica. Mejor enfoque: ante un reemplazo de biblioteca, `grep -la` de cada anotación soportada sobre las
+  clases del jar y un test por anotación; ante "peso 0"/"valor por defecto" del juego, seguir con `javap -c` la
+  cadena de cálculo hasta una comparación por identidad o un dato leído del XML.
