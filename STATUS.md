@@ -624,3 +624,10 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 - Límites: no se corrió el juego real (no hubo build ni partida; la entrada del juego pasa por estos mismos módulos). El menú contextual propio del juego no se probó. En Chrome headless el cambio de pestaña no emite `blur` y Esc inyectado por CDP no sale del lock (se usó `exitPointerLock`); el flujo con `blur` real se vio en Firefox. No hay callback de foco hacia Java (haría falta build).
 - Pendiente tras publicar: mirar en la partida en vivo que `GLFW_FOCUSED=0` en una pestaña sin foco no cambie nada visible (el juego solo consulta el atributo).
 
+## R89 (2/11/2026): carga comprimida y Tiles2x en tramos (rama `perf/carga-1b-brotli-chunks`)
+- Hecho: br/gzip precomprimidos para wasm y packs, texto comprimido en memoria, Tiles2x partido en 369 tramos con sha256 (`scripts/lazy-packs.mjs`, `lazypack.mjs`), la 2.ª llamada a `preloadPacks()` de `game.mjs` (que hacía fallar la carga con `VFS memory budget exceeded`) la quitó antes #26; aquí solo se midió.
+- Evidencia (juego real, instancia propia 8211/8212 + PZ 16291, `load-bytes.mjs`): 1.ª carga 889,9 -> 641,5 MB, 2.ª 95,0 -> 84,2 MB; ingame en 285 s / 288 s en loopback y 714 s -> 668 s con 25 Mbps simulados. Detalle y tablas en `docs/analisis-carga-inicial.md`. `npm test`: solo fallan las 3 de pzbullet (como en la CI).
+- Hallazgo: el juego lee los 369 PNG de Tiles2x en la carga del mundo; Tiles2x no se puede bajar parcialmente (la ganancia es solapar la descarga, no ahorrar bytes).
+- Pendiente: `/media` (241 MB, 4730 Range) sigue sin comprimir; medir por el túnel real (la simulación es de 25 Mbps).
+- **Para publicar**: JS nuevo (`sync_web`) y `lazy-packs.mjs` + `precompress.mjs` sin cortar nada; **reiniciar 8098** para servir lo comprimido (`NEED RESTART`, OK del dueño).
+

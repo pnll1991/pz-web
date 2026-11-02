@@ -1,5 +1,6 @@
 import { normalizePath, READ_ONLY_MOUNTABLE } from './vfs.mjs';
 import { readWithProgress } from './loading.mjs';
+import { LazyFile, ChunkStore } from './lazypack.mjs';
 
 const hex = bytes => [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
 const digest = async bytes => hex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
@@ -38,13 +39,15 @@ const opfsWrite = async (dir, name, bytes) => {
 // (same sha256) to one whose per-file pass already succeeded in this browser, that pass is not repeated.
 // '?nocache=1' (or { memo:false }) always repeats it. The first pass runs the digests concurrently.
 const VERIFIED_KEY = 'pz-web-packs-verified-index';
+// Ronda 89: los packs perezosos (lazypack.mjs) se montan sin bajar el blob grande; '?lazy=0' (o { lazy:false }) los baja enteros como antes.
+const lazyAllowed = () => typeof location === 'undefined' || new URLSearchParams(location.search).get('lazy') !== '0';
 const memoAllowed = () => typeof location === 'undefined' || new URLSearchParams(location.search).get('nocache') !== '1';
 const readMemo = () => { try { return localStorage.getItem(VERIFIED_KEY); } catch { return null; } };
 const writeMemo = value => { try { localStorage.setItem(VERIFIED_KEY, value); } catch { /* sin localStorage: se verifica siempre */ } };
 
 /** Cache immutable local pack blobs and preload verified files into synchronous memory. */
 export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo = memoAllowed(), cachesImpl = globalThis.caches,
-  storage = globalThis.navigator?.storage, cleanup = memo, cacheMaxBytes = CACHE_MAX_BYTES, onProgress = () => {} } = {}) {
+  storage = globalThis.navigator?.storage, cleanup = memo, cacheMaxBytes = CACHE_MAX_BYTES, onProgress = () => {}, lazy = lazyAllowed(), chunkCache = memo } = {}) {
   const response = await fetch(indexUrl, { cache:'no-cache' });
   if (!response.ok) throw new Error(`Pack index HTTP ${response.status}`);
   const indexBytes = await response.arrayBuffer();
@@ -66,7 +69,9 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo =
     throw new Error('Pack preload exceeds VFS memory budget');
   const base = new URL(indexUrl, location.href);
   const cache = await cachesImpl.open(CACHE_NAME);
-  const needsOpfs = index.packs.some(pack => pack.bytes > cacheMaxBytes);
+  // Un pack perezoso solo se baja entero si el modo perezoso está apagado; si no, sus datos se piden por tramos al leerlos.
+  const isLazy = pack => lazy && pack.lazy === true;
+  const needsOpfs = index.packs.some(pack => !isLazy(pack) && pack.bytes > cacheMaxBytes);
   const opfs = needsOpfs ? await opfsDirectory(storage) : null;
   const opfsWrites = [];
   const pending = [];
@@ -74,7 +79,7 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo =
   // read from media/anims/bob lowercase fallback): it is verified once and counted once, as the VFS does for its views.
   const verifiedRanges = new Map();
   // Pantalla de carga: bytes leidos (red o Cache API) sobre el total que declara el indice.
-  const progress = { phase:'download', loaded:0, total:index.packs.reduce((sum, pack) => sum + pack.bytes, 0) };
+  const progress = { phase:'download', loaded:0, total:index.packs.reduce((sum, pack) => sum + (isLazy(pack) ? 0 : pack.bytes), 0) };
   onProgress({ ...progress });
   const inFlight = { set:new Set(), bytes:0 };
   const valid = async (bytes, pack) => bytes.byteLength === pack.bytes && await digest(bytes) === pack.sha256;
@@ -85,6 +90,7 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo =
   const loadPack = async pack => {
     if (!/^[a-f0-9]{64}\.bin$/.test(pack.name) || pack.name !== `${pack.sha256}.bin`)
       throw new Error('Invalid pack name');
+    if (isLazy(pack)) return null;
     const url = new URL(pack.name, base);
     if (url.origin !== location.origin) throw new Error('Packs must be local and same-origin');
     const large = pack.bytes > cacheMaxBytes;
@@ -120,14 +126,22 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo =
     return bytes;
   };
   const packBytes = await Promise.all(index.packs.map(loadPack));
+  const bytesByName = new Map(index.packs.map((pack, i) => [pack.name, packBytes[i]]));
   progress.phase = skipFileDigests ? 'mount' : 'verify';
   onProgress({ ...progress });
+  const lazyMounts = []; // [path, LazyFile]
+  const lazyStore = lazy && index.files.some(file => file.lazy) ? new ChunkStore({ cachesImpl }) : null;
   for (const [packIndex, pack] of index.packs.entries()) {
     const bytes = packBytes[packIndex];
+    const files = index.files.filter(file => file.pack === pack.name);
+    if (isLazy(pack)) {
+      // Pack perezoso: ni el blob ni sus archivos se verifican enteros aqui; cada tramo se verifica contra su sha256 cuando se trae.
+      for (const file of files) lazyMounts.push([file.path, buildLazyFile(file, pack, bytesByName, base, vfs, lazyStore)]);
+      continue;
+    }
     // One view over the whole downloaded blob; every mounted file is a subarray of it, so the
     // blob's bytes are resident exactly once (a copy per file would double a 321 MB pack).
     const blob = new Uint8Array(bytes);
-    const files = index.files.filter(file => file.pack === pack.name);
     for (const file of files) {
       if (!Number.isSafeInteger(file.offset) || !Number.isSafeInteger(file.length) || file.offset < 0 || file.length < 0 || file.offset + file.length > blob.byteLength)
         throw new Error('Invalid file bounds in pack');
@@ -147,18 +161,29 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo =
       if (await verifiedRanges.get(range) !== file.sha256) throw new Error(`File integrity mismatch: ${file.path}`);
     }
   }
-  if (pending.length !== index.files.length || new Set(pending.map(([path]) => path)).size !== pending.length)
+  if (pending.length + lazyMounts.length !== index.files.length || new Set([...pending, ...lazyMounts].map(([path]) => path)).size !== index.files.length)
     throw new Error('Missing or duplicate pack entries');
   // Validate all paths and total memory before mutating the VFS.
-  for (const [path] of pending) if (!mountablePath(path) || path.split('/').some(p => p === '..' || p === '.'))
+  for (const [path] of [...pending, ...lazyMounts]) if (!mountablePath(path) || path.split('/').some(p => p === '..' || p === '.'))
     throw new Error('Invalid mounted resource path');
   // Views, not copies: the blob stays alive because every mounted file is a subarray of it, so a
   // 321 MB pack (media/texturepacks/Tiles2x.pack, which the game always asks for) costs its own
   // bytes once instead of blob + per-file slices.
   const counted = new Set();
-  const total = pending.reduce((n, [, , , length, range]) => counted.has(range) ? n : (counted.add(range), n + length), 0);
+  const total = pending.reduce((n, [, , , length, range]) => counted.has(range) ? n : (counted.add(range), n + length), 0)
+    + lazyMounts.reduce((n, [, file]) => n + file.length, 0); // el peor caso de un archivo perezoso: leido entero
   if (total > vfs.maxBytes) throw new Error('Pack files exceed VFS memory budget');
   for (const [path, blob, offset, length] of pending) vfs.mountView(path, blob, offset, length);
+  if (lazyMounts.length) {
+    // Lo guardado de una carga anterior se trae a memoria ahora (verificado por WebCrypto): la lectura de la VFS es sincrona y la Cache API no.
+    if (lazyStore && chunkCache) {
+      try { await lazyStore.open(); stats.lazyStore = await lazyStore.restore(lazyMounts.map(([, file]) => file)); }
+      catch (error) { stats.lazyStoreError = String(error); lazyStore.cache = null; }
+    }
+    for (const [path, file] of lazyMounts) vfs.mountLazy(path, file);
+    globalThis.pzLazyFiles = Object.fromEntries(lazyMounts); globalThis.pzLazyStore = lazyStore;
+    stats.lazy = { files: lazyMounts.length, chunks: lazyMounts.reduce((n, [, file]) => n + file.stats.chunks, 0), bytes: lazyMounts.reduce((n, [, file]) => n + file.stats.totalBytes, 0) };
+  }
   if (!skipFileDigests && memo) writeMemo(indexHash);
   // Packs of older indexes (every repack changes their content-addressed names) would otherwise pile up forever:
   // a 321 MB stale copy per repack. Only entries absent from this verified index are removed, in the background.
@@ -166,7 +191,7 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo =
     .catch(error => { stats.lastCleanupError = String(error); });
   stats.opfsDone = Promise.all(opfsWrites);
   stats.ms = performance.now() - stats.t0;
-  return { files:pending.length, bytes:total, fileDigests:stats.fileDigests };
+  return { files:pending.length + lazyMounts.length, bytes:total, fileDigests:stats.fileDigests };
 }
 
 async function removeStalePacks(cache, opfs, current, stats) {
@@ -178,4 +203,24 @@ async function removeStalePacks(cache, opfs, current, stats) {
   for await (const name of opfs.keys()) {
     if (!current.has(name)) { await opfs.removeEntry(name).catch(() => {}); stats.removed++; }
   }
+}
+
+// Un archivo del índice con `lazy: { head, parts }` -> LazyFile. `head` es el nombre de un blob chico (ya bajado y verificado) con los bytes de
+// cabecera; `parts` son [at, length, sha256|null] contiguas. El blob grande (`pack`) solo se pide con Range, por tramos.
+function buildLazyFile(file, pack, bytesByName, base, vfs, store) {
+  const lazy = file.lazy;
+  if (!lazy || typeof lazy.head !== 'string' || !Array.isArray(lazy.parts) || file.offset !== 0 || file.length !== pack.bytes)
+    throw new Error(`Invalid lazy pack entry: ${file.path}`);
+  const headBytes = bytesByName.get(lazy.head);
+  if (!headBytes) throw new Error(`Lazy pack head missing: ${lazy.head}`);
+  for (const part of lazy.parts) if (!Array.isArray(part) || part.length !== 3 || (part[2] !== null && !/^[a-f0-9]{64}$/.test(part[2])))
+    throw new Error(`Invalid lazy part: ${file.path}`);
+  const url = new URL(pack.name, base);
+  if (url.origin !== location.origin) throw new Error('Packs must be local and same-origin');
+  let lazyFile;
+  lazyFile = new LazyFile({ length: file.length, parts: lazy.parts, head: new Uint8Array(headBytes), url: url.href,
+    syncGet: (target, start, end) => vfs.syncRange(target, start, end, file.path),
+    takePrefetched: (target, range) => vfs.takePrefetched(target, range),
+    onFetch: (chunk, bytes) => store?.record(lazyFile, chunk, bytes) });
+  return lazyFile;
 }

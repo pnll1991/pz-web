@@ -9,7 +9,7 @@ cd "$PZ_WEB_ROOT"
 PORT=8199; W=${PZ_DEV_WEB:-/tmp/pz86/web}; LOG=/tmp/pz86/web.log
 sync_dev() {
   mkdir -p "$W/runtime"
-  [[ -d "$W/release-minpulse" ]] || rsync -a --exclude=/game --exclude=/release --exclude=/release-noopt --exclude=/simple-o2 port/target/web/ "$W/"
+  [[ -d "$W/release-minpulse" ]] || rsync -a --exclude=/game --exclude=/release --exclude=/release-noopt --exclude=/simple-o2 "${PZ_BUILD_WEB:-port/target/web}/" "$W/"
   for f in port/web/*; do [[ -f "$f" ]] || continue; cmp -s "$f" "$W/$(basename -- "$f")" || { cp "$f" "$W/$(basename -- "$f")"; echo "  sync $(basename -- "$f")"; }; done
   for f in port/runtime/*.mjs; do cmp -s "$f" "$W/runtime/$(basename -- "$f")" || { cp "$f" "$W/runtime/$(basename -- "$f")"; echo "  sync runtime/$(basename -- "$f")"; }; done
 }
