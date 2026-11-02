@@ -43,6 +43,9 @@ def main():
     ap.add_argument('--zombie-anims', action='store_true',
                     help='also dump every clip of media/anims_X/Zombie (the zombie AnimSets: walk, lunge, attack, hit reactions...); '
                          'without them zombies have no pose (not drawn) and no root motion (do not move)')
+    ap.add_argument('--weapon-meshes', action='store_true',
+                    help='also dump every .x mesh under media/models_X/weapons (melee/firearm models): the game only lets the player attack when the '
+                         'model of the weapon in hand is loaded (IsoGameCharacter.isWeaponReady -> primaryHandModel.model.isReady); the .fbx ones are skipped')
     ap.add_argument('mesh', nargs='*', help='extra media-relative .x paths (models_X/...)')
     a = ap.parse_args()
     home = Path(a.pz_home).expanduser().resolve()
@@ -52,7 +55,12 @@ def main():
     classes = ROOT / 'port/target/classes/port/natives/JassimpCacheReader.class'
     if not classes.is_file():
         raise SystemExit('port/target/classes is not built (needed for --verify): run scripts/build.sh')
-    meshes = list(dict.fromkeys(list(MESHES) + a.mesh))
+    extra = []
+    if a.weapon_meshes:
+        wdir = home / 'media' / 'models_X' / 'weapons'
+        extra = sorted(f'models_X/weapons/{f.relative_to(wdir).as_posix()}' for f in wdir.rglob('*') if f.is_file() and f.suffix == '.x')
+        print(f'weapon-meshes: {len(extra)} .x meshes from {wdir}')
+    meshes = list(dict.fromkeys(list(MESHES) + extra + a.mesh))
     for rel in meshes:
         if not rel.startswith('models_X/') or not rel.endswith('.x') or not (home / 'media' / rel).is_file():
             raise SystemExit(f'Not a pinned models_X .x file: media/{rel}')
