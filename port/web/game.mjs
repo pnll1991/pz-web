@@ -155,13 +155,13 @@ try {
   const sqliteReady = sqliteBridge(vfsInstance), bulletReady = bulletBridge();
   sqliteReady.catch(() => {}); bulletReady.catch(() => {});
   // Ronda 81 (frente 2): páginas de texturas decodificadas por el juego, guardadas en IndexedDB y
-  // reutilizadas en el arranque siguiente (port.runtime.PackImageCache). Clave = ETag de boot.wasm (el
-  // build) + SHA-256 del PNG; activa por defecto (?nocache=1 / ?texcache=0 la apagan), ?texcache=verify compara sin usarla.
+  // reutilizadas en el arranque siguiente (port.runtime.PackImageCache). Ronda 89: clave = CODEC_VERSION (texcache.mjs)
+  // + SHA-256 del PNG, no el build (?texcache=build lo vuelve a llavear por ETag de boot.wasm); activa por defecto (?nocache=1 / ?texcache=0 la apagan), ?texcache=verify compara sin usarla.
   // Si IndexedDB falla el juego sigue con el call() original (modo 0) y el error queda en stats.
   const texCache = TextureCache.fromLocation(location.search, '');
   const texCacheReady = texCache.mode === 0 ? Promise.resolve() : (async () => {
     try {
-      texCache.build = await buildId();
+      if (texCache.keying === 'build') texCache.build = await buildId();
       await texCache.open();
     } catch (error) {
       texCache.stats.lastError = String(error); texCache.mode = 0;
@@ -237,9 +237,13 @@ try {
     // los rangos que sesiones reales pidieron, en orden de uso (/warm-media.json); se traen ya, en paralelo y en segundo plano
     // (no se espera: lo que no llego a tiempo se lee como siempre). Cada entrada se usa una vez; lo que sobra se descarta a los
     // 10 min. Con ?prefetch=1 (o https) el camino de autojoin de abajo si espera a que termine. ?prefetch=0 / ?nocache=1 lo apagan.
-    const prefetchParam = new URLSearchParams(location.search).get('prefetch');
-    if (prefetchParam !== '0' && prefetchParam !== '1' && location.protocol !== 'https:' && new URLSearchParams(location.search).get('nocache') !== '1') {
-      globalThis.pzPrefetchBackground = prefetchMedia(vfs, { concurrency: 8, onFetched: vfs.onRemoteFetch ?? undefined })
+    const prefetchQuery = new URLSearchParams(location.search);
+    if (prefetchQuery.get('prefetch') !== '0' && prefetchQuery.get('nocache') !== '1') {
+      // Ronda 89: la precarga va por lotes (/media-ranges; ?prefetchbatch=0 vuelve a un fetch por rango) y es una sola: el camino de
+      // autojoin de abajo (https o ?prefetch=1) espera esta misma promesa en vez de lanzar otra, y la barra sigue su progreso.
+      globalThis.pzPrefetchProgress = () => {};
+      globalThis.pzPrefetchBackground = prefetchMedia(vfs, { concurrency: 8, batch: prefetchQuery.get('prefetchbatch') !== '0',
+        onFetched: vfs.onRemoteFetch ?? undefined, onProgress: f => globalThis.pzPrefetchProgress(f) })
         .then(stats => { console.log(`prefetch-bg ${JSON.stringify(stats)}`); return stats; }, error => ({ error: String(error) }));
     }
     // Lo precargado (red o caché persistente) que el juego no usó en 10 min se descarta: es memoria, no datos.
@@ -281,19 +285,23 @@ try {
     label.style.cssText = 'position:fixed;left:8px;bottom:4px;z-index:3;font:12px sans-serif;color:#bbb;pointer-events:none;text-shadow:0 0 3px #000';
     document.body.appendChild(label);
     const text = { installed: 'Preparando…', 'script-loaded': 'Preparando…', 'tos-accepted': 'Términos aceptados', menu: 'Menú', spawn: 'Aparición',
-      profession: 'Creando personaje', character: 'Creando personaje', loaded: 'Mundo cargado', ingame: '' };
+      profession: 'Creando personaje', character: 'Creando personaje', world: 'Cargando el mundo…', loaded: 'Mundo cargado', ingame: '' };
     const show = state => { label.textContent = state.startsWith('connect-failed') ? `No se pudo conectar (${state.slice(15)}); reintentando…`
       : state.startsWith('connect') ? `Conectando como ${auto.user}…` : (text[state] ?? state) && `${text[state] ?? state} · ${auto.user}`; };
     watchConsole(auto, { onState: state => { if (!state.startsWith('connect')) { bootMark(`play:${state}`); bootReport(); } show(state); if (state === 'loaded') clickUntilIngame(auto, pzRuntime.input, canvas); } });
     show('installed');
+    auto.show = show; // ronda 89: el bucle de abajo muestra 'world' al entrar GameLoadingState
     // Over the public https tunnel (or ?prefetch=1) bring the media the game will read in parallel first: one round trip per read is too slow.
     if (location.protocol === 'https:' || new URLSearchParams(location.search).get('prefetch') === '1') {
       loading.step('prefetch', 'active');
-      const stats = pzRuntime.prefetchStats = await prefetchMedia(vfs, { onFetched: vfs.onRemoteFetch ?? undefined, onProgress: f => {
+      const onProgress = f => {
         label.textContent = `Precargando recursos… ${Math.round(f * 100)} %`;
         loading.step('prefetch', 'active', `${Math.round(f * 100)} %`);
         loading.bar(f, 'Precargando el mapa…', `${Math.round(f * 100)} %`);
-      } });
+      };
+      if (globalThis.pzPrefetchBackground) globalThis.pzPrefetchProgress = onProgress; // la de arriba, no otra
+      const stats = pzRuntime.prefetchStats = globalThis.pzPrefetchBackground ? await globalThis.pzPrefetchBackground
+        : await prefetchMedia(vfs, { onFetched: vfs.onRemoteFetch ?? undefined, onProgress, batch: new URLSearchParams(location.search).get('prefetchbatch') !== '0' });
       loading.step('prefetch', 'done');
       console.log(`prefetch ${JSON.stringify(stats)}`); show('installed');
     }
@@ -404,11 +412,30 @@ try {
   bootReport();
   // Estado de las cachés de esta carga, una vez que el juego llegó al menú (o a los 3 min).
   const cachesReport = () => console.log(`caches ${JSON.stringify({ packs: globalThis.pzPackStats && { ...globalThis.pzPackStats, cleanup: undefined, opfsDone: undefined },
-    media: globalThis.pzMediaCache?.stats, glsl: shaderCache.stats, tex: pzRuntime.texCache?.stats, earlyCompile: globalThis.pzEarlyCompile })}`);
+    media: globalThis.pzMediaCache?.stats, glsl: shaderCache.stats, tex: pzRuntime.texCache?.stats, earlyCompile: globalThis.pzEarlyCompile,
+    gl: { realGetErrors: pzRuntime.gl?.realGetErrors } })}`);
   let cachesReported = false;
   setTimeout(() => { if (!cachesReported) { cachesReported = true; cachesReport(); } }, 180000);
   const phases = { starting:'Arranque real en curso…', failed:'El arranque encontró un error.', 'main-returned':'El main retornó. Menú todavía no verificado.' };
+  // Ronda 89: marcas de la carga del mundo desde los pulsos de GameLoadingState/IngameState (están también en release-minpulse):
+  // world-load-start (entra GameLoadingState), world-load-end (sale) e ingame-enter. Al entrar, el modo directo muestra 'Cargando el mundo…'.
+  const worldPulses = { 'world-load-start':'zombie.gameStates.GameLoadingState#enter()V:', 'world-load-end':'zombie.gameStates.GameLoadingState#exit()V:',
+    'ingame-enter':'zombie.gameStates.IngameState#enter()V:' };
+  let worldLabels = null;
+  const worldMarks = () => {
+    const labels = globalThis.pzPulseLabels, counts = globalThis.pzGameCounts;
+    if (!labels || !counts) return;
+    worldLabels ??= Object.entries(worldPulses).map(([mark, prefix]) =>
+      [mark, Object.values(labels).filter(label => typeof label === 'string' && label.startsWith(prefix))]);
+    for (const [mark, list] of worldLabels) {
+      if (mark in bootTimings || !list.some(label => counts[label] > 0)) continue;
+      bootMark(mark); bootReport();
+      if (mark === 'world-load-start') pzRuntime.autoJoin?.show?.('world');
+      if (mark === 'world-load-end') cachesReport(); // segunda línea `caches`: lo que la carga del mundo sacó de cada caché
+    }
+  };
   const update = () => {
+    worldMarks();
     const phase = globalThis.pzGame?.phase;
     if (phase && !(`phase:${phase}` in bootTimings)) { bootMark(`phase:${phase}`); bootReport(); }
     if (globalThis.pzGame?.menuRendered && !('menu-rendered' in bootTimings)) {

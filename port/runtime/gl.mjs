@@ -94,6 +94,20 @@ const PORT_PROVIDED = new Set([
 
 const EAGER_ERROR_CALLS = new Set(['texImage2D', 'texSubImage2D', 'readPixels', 'compressedTexImage2D']);
 
+/**
+ * Ronda 89 (frente C): llamadas WebGL2 que la especificación (GLES 3.0 / WebGL 2) define SIN ninguna
+ * condición de error: no pueden dejar nada en la cola, así que marcarlas como "sin comprobar" solo
+ * provoca un getError real (viaje síncrono al proceso de GPU) para encontrar la cola vacía. Lista
+ * cerrada y verificada a mano; ante la duda una llamada NO entra. viewport/scissor solo fallan con
+ * ancho o alto negativos (ver cannotRaiseError). `?glerrors=strict` las trata como cualquier otra.
+ */
+const NO_ERROR_CALLS = new Set(['clearColor', 'clearDepth', 'clearStencil', 'colorMask', 'depthMask',
+  'stencilMask', 'depthRange', 'blendColor', 'polygonOffset', 'lineWidth', 'sampleCoverage', 'flush', 'finish']);
+function cannotRaiseError(name, args) {
+  if (NO_ERROR_CALLS.has(name)) return true;
+  return (name === 'viewport' || name === 'scissor') && args.length >= 4 && args[2] >= 0 && args[3] >= 0;
+}
+
 /** Round 80: column-major copy of `count` row-major size x size matrices (glUniformMatrix transpose). */
 export function transposeMatrices(values, size, count) {
   const out = new Float32Array(count * size * size);
@@ -227,6 +241,10 @@ export class GLBridge {
     // queue otherwise blames whichever call checks first).
     this.pendingErrors = []; // [{seq, name, code}] oldest first
     this.unchecked = null; this.eagerErrors = globalThis.PZ_GL_EAGER_ERRORS === true;
+    // `?glerrors=strict` (o PZ_GL_ERRORS = 'strict'): sin la omisión de NO_ERROR_CALLS, como antes de la ronda 89.
+    this.strictErrors = globalThis.PZ_GL_ERRORS === 'strict'
+      || (typeof location !== 'undefined' && new URLSearchParams(location.search ?? '').get('glerrors') === 'strict');
+    this.realGetErrors = 0; // getError reales (diagnóstico y pruebas: cada uno es un viaje síncrono a la GPU)
     // Round 80 (front I): buffer diagnostic rings (sync GPU queries) only on request.
     this.bufferDiag = globalThis.PZ_GL_BUFFER_DIAG === true
       || (typeof location !== 'undefined' && new URLSearchParams(location.search ?? '').has('glBufferDiag'));
@@ -308,7 +326,8 @@ export class GLBridge {
     // invalidates the colour applyColor last uploaded; applyColor re-records it after its own call.
     if (name.charCodeAt(0) === 118 && GLBridge.ATTRIB_CONSTANT_SETTERS.test(name)) this.appliedColor = null;
     this.recordAttrib(name, args);
-    if (eager) this.drainQueue(name, this.callSeq); else this.unchecked = { seq: this.callSeq, name };
+    if (eager) this.drainQueue(name, this.callSeq);
+    else if (this.strictErrors || !cannotRaiseError(name, args)) this.unchecked = { seq: this.callSeq, name };
     return result;
   }
   // WebGL2 generic-attribute constant setters (vertexAttrib1f..4fv, vertexAttribI4i/ui[v]).
@@ -334,6 +353,7 @@ export class GLBridge {
     const gl = this.context;
     if (typeof gl.getError !== 'function') return;
     for (;;) {
+      this.realGetErrors++;
       const code = gl.getError();
       if (code === gl.NO_ERROR || code === undefined) return;
       this.pendingErrors.push({ seq, name, code });

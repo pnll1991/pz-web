@@ -22,7 +22,7 @@ import port.runtime.memory.NativeMemory;
  * {@code port$uncachedCall()} y hace que call() llame a {@link #call(Object)}. Acá:
  *  1. la misma espera del original ({@code waitFileTask}),
  *  2. se leen del mismo stream los bytes exactos del PNG de la página (firma..IEND),
- *  3. clave = SHA-256 de esos bytes + mask + flags + formato del códec + build (en runtime/texcache.mjs),
+ *  3. clave = SHA-256 de esos bytes + mask + flags + formato del códec; la versión del códec (CODEC_VERSION en runtime/texcache.mjs, no el build) la antepone texcache.mjs,
  *  4. acierto: {@link PackImageCodec#restore} arma el mismo ImageData (test JVM campo por campo);
  *     fallo: corre el call() original sin cambios y guarda su resultado (copia síncrona, escritura async).
  * Con {@code ?texcache=verify} un acierto también corre el original, compara byte a byte y devuelve el
@@ -30,6 +30,8 @@ import port.runtime.memory.NativeMemory;
  * La lectura de IndexedDB suspende sólo la corrutina del FileTask (como BrowserPersistence.flush).
  */
 public final class PackImageCache {
+    // Ronda 89: la caché sobrevive a los builds; si cambia el layout que guarda este código o PackImageCodec.FORMAT,
+    // subir también CODEC_VERSION en port/runtime/texcache.mjs (fuente única de la versión que llavea la caché).
     private static final int MAX_PNG_BYTES = 64 << 20;
     private PackImageCache() { }
 

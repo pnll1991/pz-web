@@ -606,3 +606,19 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 - Evidencia: `npm test` 172/175 (fallan solo las 3 de pzbullet, como en la CI; 4 pruebas nuevas en `tests/node/perfhud.test.mjs`). Sin Chrome: en macOS no se levanta nada (`docs/operacion`).
 - Pendiente: probar en 8199 contra el `boot.wasm` compilado y ver que el indicador no tape nada del juego; el panel con todos los jugadores juntos va en un PR aparte porque necesita reiniciar el dev server.
 - 2.ª tanda (rama `feat/panel-jugadores`, encima de la anterior; **necesita reiniciar el dev server**): cada pestaña manda su resumen con `GET /perf/report` cada 5 s (el mismo pedido mide el ping; no se anota en `/tmp/pzweb-access.log`); `GET /perf` devuelve todos los jugadores de los últimos 30 s y el estado de la máquina (carga, memoria libre, RSS del dev server, puentes RakNet); `/jugadores.html` los muestra en una tabla que se actualiza cada 2 s. Nombre = cuenta del modo directo (`p…`) o `web-xxxx` por pestaña. `npm test` 176/179 (las 3 de pzbullet; 4 pruebas nuevas). Pendiente: reiniciar 8098 con OK del dueño y mirar el panel con dos jugadores reales.
+
+
+## Ronda 89: carga del mundo (rama `perf/carga-mundo`)
+- Hecho:
+  - A: caché de texturas llaveada por `CODEC_VERSION` y no por build; sobrevive a los builds nuevos.
+  - B: precarga en lotes por `/media-ranges`, ~48 pedidos en vez de ~4720, también por https.
+  - C: sin `getError` real tras llamadas sin condición de error; nuevo contador `gl.realGetErrors`.
+  - D: los packs de la caché local se validan por tamaño, sin sha256 completo.
+  - E: marcas `world-load-start/end` e `ingame-enter`, segunda línea `caches` al terminar la carga, y cartel "Cargando el mundo…" en el modo directo.
+  - Interruptores para volver atrás: `?texcache=build`, `?prefetchbatch=0`, `?glerrors=strict`, `?packverify=1`. Análisis y protocolo en `docs/analisis-carga-mundo.md`.
+- Evidencia: `npm test` 195/198. Fallan solo las 3 de `pzbullet.test.mjs`, como en la CI. Hay 18 pruebas nuevas, en texcache, media-ranges, gl-error-drain y packs-cache. `node --check` OK.
+- Sin evidencia todavía:
+  - Chrome con el juego y build real: en macOS no se levanta nada.
+  - `PackImageCache.java` solo cambió en un comentario.
+- Pendiente: correr el protocolo de `docs/analisis-carga-mundo.md` en la máquina Linux (frío/caliente, rebuild, verify, túnel) y anotar acá la línea base y el resultado.
+- Pasos manuales: reiniciar el dev server, con OK del dueño, para tener `/media-ranges`. Sin el reinicio, el cliente vuelve solo al modo anterior.
