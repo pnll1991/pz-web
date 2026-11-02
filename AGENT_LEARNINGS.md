@@ -2,6 +2,14 @@
 
 Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoques mejores.
 
+
+## 2026-11-02 — Controles del canvas
+- Error: usé `git stash push -u` para comparar contra la base aun con la advertencia del entorno sobre el stash compartido; salió bien porque lo recuperé por SHA (`stash apply <sha>` + drop de esa entrada), pero fue evitable. Mejor enfoque: comparar con `git worktree add /tmp/x origin/dev` o `git diff` y no tocar el stash; una prueba que falla en la base se confirma en un commit WIP, no con un stash.
+- Error en la prueba propia: en los tests con `EventTarget` falso, `Object.assign(evento, {target})` falla porque `target` es solo de lectura, y el evento `text` que sigue a un `key` desplazaba `events.at(-1)`. Mejor enfoque: `Object.defineProperty` para las propiedades del evento y filtrar por tipo antes de mirar el último.
+- Supuesto falso en la prueba real: asumí que sin gesto el pointer lock siempre falla; Chrome y Firefox lo conceden si la página ya tuvo activación (los clics previos de la prueba cuentan). Mejor enfoque: afirmar lo que el código promete (el estado del juego refleja el del navegador) y no lo que cada navegador decide.
+- Error: en Playwright una segunda pestaña (`newPage` fuera de un contexto propio) lanza "Please use browser.newContext()"; la corrida costaba ~30 min de cola en `chrome.lock`. Mejor enfoque: revisar el flujo completo del script (y probarlo contra Firefox, que no usa el candado) antes de hacer cola; en Chrome headless el cambio de pestaña no emite `blur`.
+- Nota: Playwright 1.56 no soporta Firefox en este SO (ubuntu26.10). Alternativa sin sudo: Firefox portable de Mozilla + geckodriver en `/tmp/pz-fx` y WebDriver clásico (`tests/input-browser.manual.mjs firefox`); fuera del repo.
+
 ## 2026-11-02 — Indicador de fps y ping
 - Error detectado por la prueba: al envolver `swapBuffers` guardé `original.bind(window)` y al restaurar dejé la versión ligada, no el método original (y en `BrowserWindow` el método vive en el prototipo). Mejor enfoque: guardar si la propiedad era propia (`Object.hasOwn`) y restaurar con `delete` cuando venía del prototipo; probar que `stop()` deja el mismo método.
 - Nota: `npm test` sin `node_modules` falla en todas las pruebas de GL/GLSL (falta el parser); `npm ci --ignore-scripts` primero.

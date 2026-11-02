@@ -49,6 +49,9 @@ export class CanvasInput {
     // (listening on the document also covers the HUD/overlay elements and Ctrl+click on macOS); the middle button must not start autoscroll.
     on(document, 'contextmenu', event => event.preventDefault());
     on(canvas, 'auxclick', event => event.preventDefault());
+    // Belt and braces for browsers that still deliver the compatibility mouse events (back/forward buttons navigate on mouseup).
+    on(canvas, 'mousedown', event => event.preventDefault());
+    on(canvas, 'mouseup', event => event.preventDefault());
     on(canvas, 'pointerdown', event => {
       event.preventDefault(); // no text selection/drag; on Linux the context menu opens on pointerdown of the right button
       canvas.focus(); try { canvas.setPointerCapture(event.pointerId); } catch { /* synthetic or already-ended pointer */ }
@@ -63,8 +66,13 @@ export class CanvasInput {
     on(canvas, 'pointermove', event => {
       this.sync(event);
       const rect = canvas.getBoundingClientRect();
-      this.emit({ type:'cursor', x:(event.clientX-rect.left)*canvas.width/rect.width,
-        y:(event.clientY-rect.top)*canvas.height/rect.height, dx:event.movementX, dy:event.movementY });
+      const scaleX = canvas.width/rect.width, scaleY = canvas.height/rect.height;
+      if (this.locked()) {
+        // Pointer lock freezes clientX/Y; GLFW_CURSOR_DISABLED reports an unbounded virtual cursor that moves by the deltas.
+        this.cursorPos = { x:(this.cursorPos?.x ?? canvas.width/2) + (event.movementX || 0)*scaleX,
+          y:(this.cursorPos?.y ?? canvas.height/2) + (event.movementY || 0)*scaleY };
+      } else this.cursorPos = { x:(event.clientX-rect.left)*scaleX, y:(event.clientY-rect.top)*scaleY };
+      this.emit({ type:'cursor', x:this.cursorPos.x, y:this.cursorPos.y, dx:event.movementX, dy:event.movementY });
     });
     on(canvas, 'wheel', event => {
       const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? canvas.clientHeight : 1;
@@ -73,8 +81,18 @@ export class CanvasInput {
     }, { passive:false });
     for (const target of [canvas, window]) on(target, 'blur', () => this.releaseAll());
     on(canvas, 'pointercancel', () => this.releaseAll());
-    on(document, 'visibilitychange', () => { if (document.hidden) this.releaseAll(); });
+    // Focus survives alt-tab / tab switches: the page gets focus back but the canvas (the only key target) does not unless asked.
+    on(document, 'visibilitychange', () => { if (document.hidden) this.releaseAll(); else this.refocus(); });
+    on(window, 'focus', () => this.refocus());
+    // A click on anything else (HUD, overlay) must not leave the keyboard without a target; real form controls keep their focus.
+    on(document, 'pointerdown', event => {
+      if (event.target !== canvas && !event.target?.closest?.('input,textarea,select,button,a,[contenteditable]')) this.refocus();
+    }, { capture:true });
+    // Esc leaves pointer lock without any key event: nothing may stay held when the lock is lost.
+    on(document, 'pointerlockchange', () => { if (!this.locked()) this.releaseAll(); });
   }
+  locked() { return document.pointerLockElement === this.canvas; }
+  refocus() { try { if (document.activeElement !== this.canvas) this.canvas.focus({ preventScroll:true }); } catch { /* canvas not focusable (hidden) */ } }
   // A button whose up/down is missing sticks or vanishes in the game, so under pressure only cursor/scroll events are dropped.
   emit(event) {
     if (event.type === 'cursor') {
