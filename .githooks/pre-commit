@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Hook local opcional (docs/procesos/ramas-y-prs.md). Se activa una vez por clon: bash scripts/install-hooks.sh
+set -euo pipefail
+bash "$(git rev-parse --show-toplevel)/scripts/check-forbidden.sh"
