@@ -28,9 +28,64 @@ local function closeInfo()
         if info and info:isVisible() then info:setVisible(false) end
     end)
 end
+-- Diagnostic: ?cmd=/createhorde 10;/removezombies sends those chat commands once the world is running (the server only obeys an admin).
+local cmdList, cmdTicks, diagTicks = {}, 0, 0
+for c in string.gmatch(CFG.cmd or "", "[^;]+") do table.insert(cmdList, c) end
 local infoTicks = 0
 Events.OnPlayerUpdate.Add(function(player)
     if infoTicks < 240 then infoTicks = infoTicks + 1; if infoTicks % 20 == 0 then closeInfo() end end
+    -- Diagnostic (only with ?cmd=): what zombies does this client know about, and where are they relative to the local player?
+    if (CFG.cmd or "") ~= "" then
+        diagTicks = (diagTicks or 0) + 1
+        if diagTicks % 300 == 0 then
+            pcall(function()
+                local list = getCell():getZombieList()
+                local n, best, info, bestZ = list:size(), 1e9, "", nil
+                for i = 0, n - 1 do
+                    local z = list:get(i)
+                    local d = math.abs(z:getX() - player:getX()) + math.abs(z:getY() - player:getY())
+                    if d < best then best = d; bestZ = z; info = string.format("(%.0f,%.0f,%.0f) remote=%s hp=%s target=%s state=%s", z:getX(), z:getY(), z:getZ(), tostring(z:isRemoteZombie()), tostring(z:getHealth()), tostring(z:getTarget() ~= nil), tostring(z:getCurrentStateName())) end
+                end
+                local function t0(f) local ok, v = pcall(f); return ok and tostring(v) or "ERR" end
+                say(string.format("zombies:%d nearest=%s me=(%.2f,%.2f) health=%s bitten=%s scratched=%s", n, info, player:getX(), player:getY(),
+                    t0(function() return player:getBodyDamage():getHealth() end), t0(function() return player:getBodyDamage():getNumPartsBitten() end),
+                    t0(function() return player:getBodyDamage():getNumPartsScratched() end)))
+                -- render/visibility facts of the nearest zombie, with the local player as the control
+                local function t(f) local ok, v = pcall(f); return ok and tostring(v) or "ERR" end
+                local function facts(c)
+                    local sq = c:getCurrentSquare()
+                    return string.format("model=%s culled=%s onscreen=%s invisible=%s alpha=%s target=%s sqCould=%s sqCan=%s sqSeen=%s",
+                        t(function() return c:hasActiveModel() end), t(function() return c:isSceneCulled() end), t(function() return c:isOnScreen() end),
+                        t(function() return c:isInvisible() end), t(function() return c:getAlpha(0) end), t(function() return c:getTargetAlpha(0) end),
+                        t(function() return sq:isCouldSee(0) end), t(function() return sq:isCanSee(0) end), t(function() return sq:isSeen(0) end))
+                end
+                local function look(c)
+                    return string.format("female=%s skeleton=%s skinIdx=%s skinTex=%s outfit=%s itemVisuals=%s animPlayer=%s ready=%s action=%s onFloor=%s",
+                        t(function() return c:isFemale() end), t(function() return c:getVisual():isSkeleton() end), t(function() return c:getVisual():getSkinTextureIndex() end),
+                        t(function() return c:getVisual():getSkinTexture() end), t(function() return c:getOutfitName() end), t(function() return c:getItemVisuals():size() end),
+                        t(function() return c:hasAnimationPlayer() end), t(function() return c:getAnimationPlayer():isReady() end), t(function() return c:getActionStateName() end),
+                        t(function() return c:isOnFloor() end))
+                end
+                if bestZ then
+                    say("zlook:zombie " .. look(bestZ)); say("zlook:player " .. look(player))
+                    say("zfacts:zombie " .. facts(bestZ)); say("zfacts:player " .. facts(player))
+                    say("zpath:" .. t(function() local b = bestZ:getPathFindBehavior2(); return "goal=" .. tostring(b:getTargetX()) .. "," .. tostring(b:getTargetY()) .. " isMoving=" .. tostring(bestZ:isMoving()) end))
+                end
+            end)
+        end
+    end
+    if #cmdList > 0 then
+        cmdTicks = cmdTicks + 1
+        if cmdTicks == 900 or (cmdTicks > 900 and (cmdTicks - 900) % 300 == 0) then
+            local c = table.remove(cmdList, 1)
+            say("cmd:" .. c)
+            if c == "@path" then -- pathfinding probe: walk the local player 8 tiles east with the game's own path action (the next "me=" lines show whether it moved)
+                pcall(function() ISTimedActionQueue.add(ISPathFindAction:pathToLocationF(player, player:getX() + 8, player:getY(), player:getZ())) end)
+            else
+                pcall(function() SendCommandToServer(c) end)
+            end
+        end
+    end
 end)
 
 Events.OnGameStart.Add(function()
@@ -55,7 +110,7 @@ local function connect()
     local ok, err = pcall(function()
         getCore():setNoSave(false)
         ConnectToServer.instance:connect(MainScreen.instance.multiplayer, CFG.name or "pzweb", CFG.user, CFG.pass,
-            CFG.host or "127.0.0.1", "", tostring(CFG.port or 16261), "", false, true, 0)
+            CFG.host or "127.0.0.1", "", tostring(CFG.port or 16261), "", false, true, CFG.authType or 0)
     end)
     if not ok then say("connect-error:" .. tostring(err)); S.phase = "retry"; S.since = S.t end
 end

@@ -9,7 +9,7 @@ const cryptoBytes = n => globalThis.crypto.getRandomValues(new Uint8Array(n));
 export function playerIdentity(storage = globalThis.localStorage, rand = cryptoBytes) {
   try {
     const saved = JSON.parse(storage.getItem(KEY) || 'null');
-    if (saved && /^[a-z0-9]{6,16}$/.test(saved.user) && /^[0-9a-f]{16,64}$/.test(saved.pass)) return saved;
+    if (saved && /^[a-z0-9]{4,16}$/.test(saved.user) && /^[0-9A-Za-z_-]{6,64}$/.test(saved.pass)) return saved;
   } catch { /* unreadable: replaced below */ }
   const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
   const user = 'p' + Array.from(rand(6), b => alphabet[b % alphabet.length]).join('');
@@ -20,8 +20,8 @@ export function playerIdentity(storage = globalThis.localStorage, rand = cryptoB
 
 const luaString = s => '"' + String(s).replace(/[\\"\n\r\0]/g, c => ({ '\\': '\\\\', '"': '\\"', '\n': '\\n', '\r': '\\r', '\0': '\\0' }[c])) + '"';
 
-export function buildLua(template, { user, pass, host = '127.0.0.1', port = 16261, name = 'pzweb', acceptTos = true }) {
-  return `PZWEB_AUTOJOIN = { user = ${luaString(user)}, pass = ${luaString(pass)}, host = ${luaString(host)}, port = ${Number(port) | 0}, name = ${luaString(name)}, acceptTos = ${acceptTos ? 'true' : 'false'} }\n${template}`;
+export function buildLua(template, { user, pass, host = '127.0.0.1', port = 16261, name = 'pzweb', acceptTos = true, cmd = '', authType = 0 }) {
+  return `PZWEB_AUTOJOIN = { user = ${luaString(user)}, pass = ${luaString(pass)}, host = ${luaString(host)}, port = ${Number(port) | 0}, name = ${luaString(name)}, acceptTos = ${acceptTos ? 'true' : 'false'}, cmd = ${luaString(cmd)}, authType = ${Number(authType) | 0} }\n${template}`;
 }
 
 /** Mounts the generated script as the last file of media/lua/client (the loader lists that directory in order). */
@@ -31,7 +31,7 @@ export async function installAutoJoin(vfs, query, { fetchImpl = globalThis.fetch
   const response = await fetchImpl('/play.lua', { cache: 'no-cache' });
   if (!response.ok) throw new Error(`/play.lua unavailable: HTTP ${response.status}`);
   const lua = buildLua(await response.text(), {
-    ...identity, host: q.get('host') || '127.0.0.1', port: q.get('port') || 16261, acceptTos: q.get('tos') !== '1',
+    ...identity, host: q.get('host') || '127.0.0.1', port: q.get('port') || 16261, acceptTos: q.get('tos') !== '1', cmd: q.get('cmd') || '', authType: q.get('auth') || 0,
   });
   vfs.mount('/media/lua/client/zzz_pzweb_play.lua', new TextEncoder().encode(lua));
   return { user: identity.user, state: 'installed', log: [] };

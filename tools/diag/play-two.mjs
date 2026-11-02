@@ -2,7 +2,7 @@
 // Each must enter the shared world on its own (no menu, no form), and each must see the other. Screenshots go to --out.
 //   node tools/diag/play-two.mjs --out DIR [--page play.html] [--only 1]   (--only 1 = a single client, for a quick check)
 import { chromium } from '@playwright/test';
-import { mkdirSync, appendFileSync, rmSync } from 'node:fs';
+import { mkdirSync, appendFileSync, rmSync, readFileSync } from 'node:fs';
 import { launchOptions } from './chrome-flags.mjs';
 
 const argv = process.argv.slice(2), A = {};
@@ -14,8 +14,13 @@ const t0 = Date.now(), sleep = ms => new Promise(r => setTimeout(r, ms));
 const log = (who, ...a) => { const s = `[+${Math.round((Date.now() - t0) / 1000)}s] ${who}: ${a.join(' ')}`; console.log(s); appendFileSync(`${OUT}/log.txt`, s + '\n'); };
 
 async function open(name) {
-  const c = { name, profile: `/tmp/pz83/profile-${name}`, states: [], ingame: false };
+  const c = { name, profile: `/tmp/pz86/profile-${name}`, states: [], ingame: false };
   if (!A.keep) rmSync(c.profile, { recursive: true, force: true });
+  if (name === 'a' && A.admin) { // Round 86: client "a" logs in as the server's admin account (password from /tmp/pz82/admin.pw)
+    const pass = readFileSync('/tmp/pz82/admin.pw', 'utf8').trim();
+    await (c.context = await chromium.launchPersistentContext(c.profile, { ...launchOptions(), viewport: { width: 1280, height: 720 } }))
+      .addInitScript(p => { localStorage.setItem('pzweb.play.v1', JSON.stringify({ user: 'admin', pass: p })); }, pass);
+  } else
   c.context = await chromium.launchPersistentContext(c.profile, { ...launchOptions(), viewport: { width: 1280, height: 720 } });
   c.page = c.context.pages()[0] || await c.context.newPage();
   c.page.on('console', m => {
@@ -54,6 +59,20 @@ try {
   }));
   await sleep(8000);
   for (const c of clients) await c.shot('1-joined');
+  if (A.fight && clients.length === 2) { // Round 86: the admin (god mode) fights the horde bare-handed: aim (right button held) + left clicks, four directions
+    const a = clients[0];
+    await sleep(25000); await a.shot('fight-0');
+    for (const [dx, dy] of [[90, 50], [-90, 50], [90, -50], [-90, -50], [0, 90], [0, -90]]) {
+      await a.page.mouse.move(640 + dx, 360 + dy); await sleep(300);
+      await a.page.mouse.down({ button: 'right' }); await sleep(400);
+      for (let i = 0; i < 5; i++) { await a.page.mouse.down(); await sleep(150); await a.page.mouse.up(); await sleep(700); }
+      await a.page.mouse.up({ button: 'right' }); await sleep(300);
+    }
+    await a.shot('fight-1'); for (const c of clients) await c.shot('fight-both');
+  }
+  if (A.hold) { // Round 86: watch the world for N seconds (zombies arriving, chasing, attacking): a shot every 15 s
+    for (let t = 15; t <= +A.hold; t += 15) { await sleep(15000); for (const c of clients) await c.shot(`hold-${String(t).padStart(3, '0')}`); }
+  }
   if (clients.length === 2) {
     const [a, b] = clients;
     await b.key('KeyD', 900); await sleep(2500);

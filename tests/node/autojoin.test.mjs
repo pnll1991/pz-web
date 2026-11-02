@@ -21,7 +21,7 @@ test('a corrupted identity is replaced', () => {
 
 test('generated Lua header escapes quotes and backslashes', () => {
   const lua = buildLua('-- body', { user: 'u"1', pass: 'a\\b', host: '127.0.0.1', port: 16261 });
-  assert.match(lua, /^PZWEB_AUTOJOIN = \{ user = "u\\"1", pass = "a\\\\b", host = "127.0.0.1", port = 16261, name = "pzweb", acceptTos = true \}\n-- body$/);
+  assert.match(lua, /^PZWEB_AUTOJOIN = \{ user = "u\\"1", pass = "a\\\\b", host = "127.0.0.1", port = 16261, name = "pzweb", acceptTos = true, cmd = "", authType = 0 \}\n-- body$/);
   assert.match(buildLua('', { user: 'u', pass: 'p', acceptTos: false }), /acceptTos = false/);
 });
 

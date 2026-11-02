@@ -39,6 +39,9 @@ def main():
     ap.add_argument('--bob-anims', choices=('none', 'locomotion'), default='none',
                     help='locomotion = the 240-clip closure of stage_txt.py (AnimSets/player idle/walk/run/'
                          'sprint/turning + runtime sources), dumped with the anim flags (profile x-anim)')
+    ap.add_argument('--zombie-anims', action='store_true',
+                    help='also dump every clip of media/anims_X/Zombie (the zombie AnimSets: walk, lunge, attack, hit reactions...); '
+                         'without them zombies have no pose (not drawn) and no root motion (do not move)')
     ap.add_argument('mesh', nargs='*', help='extra media-relative .x paths (models_X/...)')
     a = ap.parse_args()
     home = Path(a.pz_home).expanduser().resolve()
@@ -64,9 +67,14 @@ def main():
         clips = list(dict.fromkeys(list(stage_txt.ANIMS) + clips))
         print(f'bob-anims=locomotion: {len(clips)} clips; not in anims_X/Bob: {missing}')
         jobs.append(('x-anim', clips, 'anims_X/'))
+    if a.zombie_anims:
+        zdir = home / 'media' / 'anims_X' / 'Zombie'
+        zclips = sorted(f'anims_X/Zombie/{f.name}' for f in zdir.iterdir() if f.is_file() and f.suffix.lower() == '.x')
+        print(f'zombie-anims: {len(zclips)} clips from {zdir}')
+        jobs.append(('x-anim', zclips, 'anims_X/'))
     media = stage / 'media'
     for profile, rels, prefix in jobs:
-        listing = stage / f'{profile}.list'
+        listing = stage / f'{profile}-{len(rels)}.list'
         listing.write_text('\n'.join(rels) + '\n')
         cmd = [a.java, '--enable-native-access=ALL-UNNAMED', f'-Djava.library.path={home / "natives"}',
                '-cp', f'{home / "projectzomboid.jar"}{os.pathsep}{ROOT / "port/target/classes"}',

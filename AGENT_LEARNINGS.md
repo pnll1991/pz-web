@@ -948,3 +948,7 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Error de proceso: probé con la página vieja porque no corrí `sync_web.sh` tras editar JS (la prueba de 10 min fue en vano). Mejor enfoque: `bash scripts/sync_web.sh` y comprobar con `grep` que el archivo servido tiene el cambio ANTES de lanzar una prueba larga.
 - Patrón: el bloqueo de cookies por `Default/Preferences` no se aplicó (`navigator.cookieEnabled` seguía true); para probar el respaldo sin cookies se usa `PZWEB_TEST_NO_COOKIE=1` en el servidor (sólo pruebas).
 - Patrón: "Load failed" de Safari es el TypeError genérico de `fetch` (error de red/recurso); si la página gated se mostró, la cookie sí funcionó y falló un pedido interno. Registrar pedidos públicos (sin clave ni IP) para poder verlo la próxima vez.
+
+## R86
+- Error repetido (3.ª vez): editar `port/web/*` o `port/runtime/*.mjs` y lanzar una prueba larga SIN `bash scripts/sync_web.sh` (el servidor sirve `port/target/web`). Mejor enfoque: encadenar siempre `bash scripts/sync_web.sh && grep -c <cambio> port/target/web/<archivo>` justo antes de la prueba.
+- Patrón: la instancia de prueba del servidor PZ (otro puerto/cachedir vía PZ_MP_DATA/PZ_MP_PORT) permite probar cambios de mundo sin tocar el servidor real mientras hay gente conectada.
