@@ -1,9 +1,10 @@
-// Round 86 scenario for tools/diag/play-repl.mjs (copy to <out>/cmd.js; needs --admin). Both clients are already in the world on the TEST server.
-// a = admin (god mode, real mouse); b = second player (admin too, god mode, so it survives and is only an observer).
-// For every weapon in WEAPONS: equip it on a, pick a STANDING zombie within reach (a sitting/crawling one is out of reach of a swing)
-// that b ALSO has in its list, kill it with the real mouse (right button held = aim, left click = swing) and check, from b's side,
-// that the same zombie id is gone, that b got OnZombieDead for it and that a corpse lies on its square.
-// Prints "RESULT ..." lines (one per weapon) and "SUMMARY".  Edit WEAPONS to test others (Base.<Type>).
+// Round 86 scenario for tools/diag/play-repl.mjs (copy to <out>/cmd.js AFTER the harness prints READY; needs --admin). Both clients are already in the world on a TEST server.
+// a = admin (godmode + invisible, real mouse); b = second player (admin too, godmode) and only an observer.
+// Per weapon in WEAPONS: /removezombies, /createhorde 2, equip, teleport next to the nearest STANDING zombie (a sitting/crawling one is out of reach of a swing),
+// kill it with the real mouse (right button held = aim, left click = swing) and check, from b's side, that the same zombie id (which b already had in its list)
+// is gone, that b got OnZombieDead for it and that a corpse lies on its square. Prints one "RESULT ..." line per weapon and a "SUMMARY".
+// Why the extra setup: with the new density (Zombies=3) the spawn point is crowded and bites cancel every swing before its damage frame.
+// Not covered: firearms (ammo/aim) and melee without godmode. Edit WEAPONS to test others (Base.<Type>). Two clients need ~11-13 GB: close them (create <out>/quit) when done.
 const WEAPONS = ['Base.BaseballBat', 'Base.Axe', 'Base.Crowbar', 'Base.Machete'];
 const MAX_TRIES = 4;
 const LIST = `local list = getCell():getZombieList(); local ids = {}
@@ -54,7 +55,7 @@ for (const W of WEAPONS) {
     const t = { id: g[1], d: +g[2], hp: +g[3], x: +g[4], y: +g[5] };
     const ib = await ids(b);
     log('a', W, 'attempt', n, JSON.stringify(t), 'inB=' + (ib ? ib.has(t.id) : '?'));
-    if (t.d > 1.3) {
+    if (t.d > 1.0) {
       // zombies dropped by /createhorde stand still and the client-side pathfinding did not move 'a': use the admin teleport to stand next to the nearest standing zombie
       await lua(a, `local p = getPlayer(); local list = getCell():getZombieList(); local best, bz = 1e9
 for i = 0, list:size() - 1 do local z = list:get(i); local d = math.abs(z:getX() - p:getX()) + math.abs(z:getY() - p:getY()); if d < best and not z:isDead() and not z:isOnFloor() then best = d; bz = z end end
@@ -65,7 +66,7 @@ if bz then SendCommandToServer("/teleportto " .. string.format("%.1f,%.1f,0", bz
     r.inBbefore = !!ib && ib.has(t.id);
     await a.page.mouse.move(Math.max(5, Math.min(1275, t.x)), Math.max(5, Math.min(715, t.y - 25))); await sleep(400);
     await a.page.mouse.down({ button: 'right' }); await sleep(700);
-    for (let k = 0; k < 4; k++) { await a.page.mouse.down(); await sleep(250); await a.page.mouse.up(); await sleep(1100); }
+    for (let k = 0; k < 7; k++) { await a.page.mouse.down(); await sleep(250); await a.page.mouse.up(); await sleep(1100); }
     await a.page.mouse.up({ button: 'right' }); await sleep(800);
     r.swung = true;
     const after = await ids(a);
