@@ -1,6 +1,6 @@
 # Estado del port personal
 
-Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) archivadas en docs/status-archive.md. Estado vigente: la ronda más reciente abajo. Bloqueo actual: ver docs/CODEX_TASK_CONTINUE.md (TextureFBO / OpenGL30).
+Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) archivadas en docs/status-archive.md. Estado vigente: la ronda más reciente abajo. Bloqueo actual: ninguno (el de TextureFBO / OpenGL30 se resolvió en la ronda 58). Lo pendiente está en la sección "Pendientes vigentes" al final.
 
 ## Ronda 53 (inicio 22:27:41 según supervisor.log, corte duro 02:27)
 - 22:31 Estado de partida: repo limpio (`git status` sin cambios), `boot.wasm` 144.945.224 B del build
@@ -636,3 +636,20 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 - Hecho: causa raíz = faltaban los clips `anims_X/Bob` de trepar/saltar; `stage_jassimp.py --bob-anims mobility` los preconvierte (87 clips, 15,1 MB, salen de `PZ_HOME`, no se versionan). Detalle, tabla de resultados y por qué no se arreglan las demás: `docs/mecanicas-movimiento.md`.
 - Evidencia (Chrome con el juego, instancia de prueba 16281/8201/8202, antes y después con los mismos binarios): ventana — de estado atascado para siempre a `Climb… → Idle` y cruza (1,14 casillas); valla real — el estado ya termina pero el personaje aún no cruza (pendiente). Pared alta, soga y vault con teclado: sin objetivo válido o no concluyente. `npm test` 176/179 (las 3 de pzbullet, como la CI) y `python3 -m unittest tests/python/test_stage_txt.py` OK.
 - Pendiente: aplicar en vivo = ampliar los paquetes con el modo `mobility` en la máquina en vivo (no corta la partida; ~80 MB de presupuesto del VFS libres tras esto); investigar por qué la valla no desplaza; hallazgo aparte: `PZPopMan64: n_init has not run yet` saca al cliente al menú tras `/removezombies`.
+
+## Pendientes vigentes (2/11/2026)
+- En vivo hoy: #25–#28 mergeados en `dev` y publicados con #29 (`dev → main`, merge `f890e7f`); el checkout en vivo está en `f890e7f`. Packs ampliados con los clips `mobility` (#28) y corridos `lazy-packs.mjs` + `precompress.mjs`; 8098 reiniciado con lo precomprimido (`boot.wasm` 134,3 → 19,8 MB en br). Con eso ya están en vivo `/jugadores.html` (#17) y las cabeceras de #9.
+- Medición de la 1.ª carga con el juego real después de publicar (instancia de prueba aparte: web 8211, PZ 16291, loopback): 1.ª carga 642,8 MB transferidos (904,1 MB decodificados), menú a los 82,4 s, dentro del juego a los 300,4 s; 2.ª carga 88,4 MB, dentro del juego a los 211,1 s. Reparto de la 1.ª: tramos de Tiles2x 319,1 MB en 369 pedidos, `/media` 241,8 MB en 4730 pedidos (sin comprimir), packs 65,4 MB, `boot.wasm` 14,2 MB.
+- Ramas: las ya absorbidas se borraron; `perf/carga-1a-compresion` y `feat/service-worker-descartado` también, con copia local. Quedan abiertas #18 (rebase en curso en `perf/carga-mundo-rebased`) y #22 (reemplazado por el PR de esta rama).
+- Decisión del dueño: PR #18 (ronda 89, carga del mundo), con las dos políticas que `docs/analisis-carga-inicial.md` le dejó: no repetir el sha256 de packs cacheados y caché de texturas por versión del códec (se apagan con `?packverify=1` y `?texcache=build`). `/media-ranges` llega con #18 y pide reiniciar 8098 después de mergearlo.
+- Carga: comprimir `/media` (en curso en la rama `perf/media-compression`); medir por el túnel real (lo medido fue en loopback y con 25 Mbps simulados); URL con hash e `immutable` para `boot.wasm` y `/vendor/*` (hoy solo los packs son `immutable`); `scripts/bench.sh --page fast.html`; fps del menú con partida guardada (16 vs 37) y del segundo CONTINUE (37 vs 59).
+- Juego:
+  - Densidad de zombis: sin cambios, por decisión del dueño; `Zombies=3` solo aplica a un mundo nuevo.
+  - Las vallas: el estado de trepar termina, pero el personaje no cruza (`docs/mecanicas-movimiento.md`). Falta ver en la partida en vivo los clips `mobility` (ventanas).
+  - `PZPopMan64: n_init has not run yet` saca al cliente al menú tras `/removezombies`.
+  - La reconexión en la misma página tras una caída queda en «Contacting server…» hasta recargar.
+  - Sin probar: armas de fuego y cuerpo a cuerpo sin godmode (#26 cerró bate, palanca, hacha y machete, y la muerte de zombi vista desde el 2.º cliente).
+  - Faltan vehículos (`Bullet.addVehicle`), voz, `glBegin/glEnd`, la pila de matrices de función fija y la ropa/pelo de `models_X`; siguen simplificados Lighting64, PopMan64, MapCollision64 y BulletWorld.
+- Controles (#25): mirar en vivo que `GLFW_FOCUSED=0` en una pestaña sin foco no cambie nada visible.
+- Clave admin (#23): sin confirmar si el servidor PZ en vivo ya se reinició con el archivo nuevo (el reinicio de 8098 no lo hace); si no, sigue el `NEED RESTART: admin password rotation` de la sección de rotación de arriba.
+- Consejo para instancias de prueba: un mundo de prueba recién creado arranca con `DoLuaChecksum=true` hasta que `mp-server.sh` reescribe el `.ini` en un segundo arranque; ponerlo en `false` antes de conectar o el servidor expulsa al cliente del modo directo.
