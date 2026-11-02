@@ -62,7 +62,8 @@ export class BrowserWindow {
       'BracketLeft','Backslash','BracketRight','Backquote','Escape','Enter','Tab','Backspace',
       'Insert','Delete','ArrowRight','ArrowLeft','ArrowDown','ArrowUp','PageUp','PageDown',
       'Home','End','CapsLock','ScrollLock','NumLock','PrintScreen','Pause','ShiftLeft',
-      'ControlLeft','AltLeft','MetaLeft','ShiftRight','ControlRight','AltRight','MetaRight','ContextMenu'];
+      'ControlLeft','AltLeft','MetaLeft','ShiftRight','ControlRight','AltRight','MetaRight','ContextMenu',
+      'NumpadDecimal','NumpadDivide','NumpadMultiply','NumpadSubtract','NumpadAdd','NumpadEnter','NumpadEqual','IntlBackslash'];
     for (let n=65;n<=90;n++) codes.push(`Key${String.fromCharCode(n)}`);
     for (let n=0;n<=9;n++) codes.push(`Digit${n}`,`Numpad${n}`);
     for (let n=1;n<=25;n++) codes.push(`F${n}`);
@@ -126,7 +127,10 @@ export class BrowserWindow {
   }
   key(windowHandle,key) {
     this.requireWindow(windowHandle);
-    return this.input.keys.has(key) ? 1 : 0;
+    // Same latch as button(): a tap (e.g. Space = pause) whose press and release land between two per-update samples must still read as down once.
+    const latched = this.input.latchedKeys?.has(key);
+    if (latched) this.input.latchedKeys.delete(key);
+    return this.input.keys.has(key) || latched ? 1 : 0;
   }
   button(windowHandle,button) {
     this.requireWindow(windowHandle);
@@ -397,8 +401,8 @@ export class BrowserWindow {
     this.dispatchedEvents++;
     (this.kindStats ??= {})[event.type] = (this.kindStats[event.type] ?? 0) + 1;
     const fields = [kind, 1];
-    if (event.type === 'key') fields.push(event.key, event.key, event.action, 0);
-    else if (event.type === 'button') fields.push(event.button, event.action, 0);
+    if (event.type === 'key') fields.push(event.key, event.key, event.action, event.mods ?? 0);
+    else if (event.type === 'button') fields.push(event.button, event.action, event.mods ?? 0);
     else if (event.type === 'cursor') fields.push(event.x, event.y);
     else if (event.type === 'scroll') fields.push(event.x, event.y);
     else fields.push(event.text);
