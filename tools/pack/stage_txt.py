@@ -54,8 +54,19 @@ COMBAT_ANIMSETS = tuple(f'AnimSets/player/{d}/**/*.xml' for d in (
     'falldown', 'getup', 'onground', 'death', 'deadbody', 'bumped', 'collide'))
 
 
+# Round 88 (movement mechanics): clips of the player AnimSets that move the character through the world. Without them the state that
+# plays them never finishes (same failure as the combat clips): vaulting/climbing a fence, climbing through or over a window, climbing a
+# wall or a sheet rope up/down, opening/closing/smashing a window, falling (off a roof or a fence), and throwing a body over a fence/out a window.
+MOBILITY_ANIMSETS = tuple(f'AnimSets/player/{d}/**/*.xml' for d in (
+    'climbfence', 'climbwall', 'climbwindow', 'climbrope', 'climbdownrope', 'openwindow', 'closewindow', 'smashwindow', 'falling',
+    'throwBodyOverFence-HeadEnd-onBack', 'throwBodyOverFence-HeadEnd-onFront', 'throwBodyOverFence-LegsEnd-onBack',
+    'throwBodyOverFence-LegsEnd-onFront', 'throwBodyOutWindow-HeadEnd-onBack', 'throwBodyOutWindow-HeadEnd-onFront',
+    'throwBodyOutWindow-LegsEnd-onBack', 'throwBodyOutWindow-LegsEnd-onFront'))
+ANIMSET_MODES = {'locomotion': LOCOMOTION_ANIMSETS, 'combat': COMBAT_ANIMSETS, 'mobility': MOBILITY_ANIMSETS}
+
+
 def bob_clips(media, mode):
-    """Relative .x paths under anims_X/Bob for the requested set ('locomotion', 'combat' or 'all')."""
+    """Relative .x paths under anims_X/Bob for the requested set ('locomotion', 'combat', 'mobility' or 'all')."""
     import re
     tree = {}
     for src in sorted((media / 'anims_X/Bob').rglob('*.x')):
@@ -63,10 +74,10 @@ def bob_clips(media, mode):
     if mode == 'all':
         return sorted(tree.values()), []
     names = set()
-    for pattern in (COMBAT_ANIMSETS if mode == 'combat' else LOCOMOTION_ANIMSETS):
+    for pattern in ANIMSET_MODES[mode]:
         for xml in sorted(media.glob(pattern)):
             names |= set(re.findall(r'<m_AnimName>\s*([^<\s]+)\s*</m_AnimName>', xml.read_text(errors='replace')))
-    for script in (RUNTIME_ANIMATION_SCRIPTS if mode != 'combat' else ()):
+    for script in (RUNTIME_ANIMATION_SCRIPTS if mode == 'locomotion' else ()):
         if (media / script).is_file():
             names |= set(re.findall(r'\bsource\s*=\s*([A-Za-z0-9_]+)', (media / script).read_text(errors='replace')))
     found = sorted({tree[n.lower()] for n in names if n.lower() in tree})

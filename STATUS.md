@@ -631,3 +631,8 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 - Pendiente: `/media` (241 MB, 4730 Range) sigue sin comprimir; medir por el túnel real (la simulación es de 25 Mbps).
 - **Para publicar**: JS nuevo (`sync_web`) y `lazy-packs.mjs` + `precompress.mjs` sin cortar nada; **reiniciar 8098** para servir lo comprimido (`NEED RESTART`, OK del dueño).
 
+
+## Mecánicas de movimiento (rama `fix/mecanicas-saltar-trepar`, 2/11/2026)
+- Hecho: causa raíz = faltaban los clips `anims_X/Bob` de trepar/saltar; `stage_jassimp.py --bob-anims mobility` los preconvierte (87 clips, 15,1 MB, salen de `PZ_HOME`, no se versionan). Detalle, tabla de resultados y por qué no se arreglan las demás: `docs/mecanicas-movimiento.md`.
+- Evidencia (Chrome con el juego, instancia de prueba 16281/8201/8202, antes y después con los mismos binarios): ventana — de estado atascado para siempre a `Climb… → Idle` y cruza (1,14 casillas); valla real — el estado ya termina pero el personaje aún no cruza (pendiente). Pared alta, soga y vault con teclado: sin objetivo válido o no concluyente. `npm test` 176/179 (las 3 de pzbullet, como la CI) y `python3 -m unittest tests/python/test_stage_txt.py` OK.
+- Pendiente: aplicar en vivo = ampliar los paquetes con el modo `mobility` en la máquina en vivo (no corta la partida; ~80 MB de presupuesto del VFS libres tras esto); investigar por qué la valla no desplaza; hallazgo aparte: `PZPopMan64: n_init has not run yet` saca al cliente al menú tras `/removezombies`.
