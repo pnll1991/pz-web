@@ -1001,3 +1001,8 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 ## 2026-11-02 — Conflictos de solo agregado en STATUS/decisions/AGENT_LEARNINGS
 - Error: resolví con un `perl -0pi` que usaba `$1` después de otro `=~` en el reemplazo; el segundo match pisó las capturas y borró ambos lados del conflicto (lo vi en `git diff origin/dev`, no en el resultado del rebase).
 - Mejor enfoque: estos archivos solo crecen al final; reconstruirlos con `git show origin/dev:<f>` + las líneas `+` de `git diff origin/dev...<rama> -- <f>`, y revisar siempre `git diff origin/dev -- <f>` antes de seguir. Al mergear PRs en serie, rebasar el siguiente después de cada merge: dos PRs que agregan al final del mismo archivo chocan.
+
+## 2026-11-02 — Rama vieja que revertiría PRs ya mergeados
+- Error: `feat/service-worker` (bc3be1d) se guardó en curso sobre una base anterior al PR #9 y siguió viva sin rebasear; mergearla habría revertido #9 (mediacache, loading, glslcache, perfhud) por el solo hecho de no tenerlos. Lo único nuevo eran `sw.js` y `sw-register.mjs`, y #9 ya cubría la caché sin service worker.
+- Causa: una rama larga que no se rebasea sobre `dev` muestra como "borrado" todo lo que entró después de su base; el diff contra `dev` engaña igual que un merge ciego.
+- Mejor enfoque: antes de integrar una rama guardada, mirar `git diff --stat origin/dev...<rama>` y `git diff --stat origin/dev <rama>`; si el segundo borra mucho más que el primero, la rama está atrasada. Se rescata solo lo nuevo (`git diff <base>..<rama>`) en una rama desde `dev`, o se descarta con un PR cerrado sin mergear y su motivo (PR #19).
