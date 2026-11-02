@@ -21,7 +21,8 @@ function MOB_SNAP(tag)
   local clm = t(function() return p:isClimbing() end)
   local q = t(function() return ISTimedActionQueue.isPlayerDoingAction(p) end)
   say(string.format("mob-snap:%s x=%.2f y=%.2f z=%.2f", tag, p:getX(), p:getY(), p:getZ()))
-  say("mob-snap2:" .. tag .. " state=" .. st .. " action=" .. act .. " climbing=" .. clm .. " queue=" .. q)
+  say("mob-snap2:" .. tag .. " state=" .. st .. " action=" .. act)
+  say("mob-snap3:" .. tag .. " climbing=" .. clm .. " queue=" .. q)
 end
 function MOB_SCAN(kind, z, radius)
   local p = getPlayer()
@@ -64,19 +65,28 @@ function MOB_PLACE(kind, flip, far)
   local x, y = t.sq:getX() + 0.5, t.sq:getY() + 0.5
   local off = far or 0.1
   if t.dir == "N" then y = flip and (y - 1.0) or (y + off) else x = flip and (x - 1.0) or (x + off) end
-  p:setX(x); p:setY(y); p:setLx(x); p:setLy(y); p:setZ(t.sq:getZ())
+  p:setX(x); p:setY(y); p:setLastX(x); p:setLastY(y); p:setZ(t.sq:getZ())
   say(string.format("mob-place:%s at %.2f,%.2f,%d", kind, x, y, t.sq:getZ()))
 end
 `);
 
+// Preparación: modo dios e invisible (el escenario no es de combate). No se usa /removezombies: en las corridas de prueba el cliente salió al menú con "PZPopMan64: n_init has not run yet" poco después.
+await lua(a, `
+  local p = getPlayer()
+  pcall(function() p:setGodMod(true) end)
+  pcall(function() p:setInvisible(true) end)
+  say("mob-prep:god=" .. tostring(p:isGodMod()))`, 20000);
+take('mob-prep');
+await sleep(2000);
+
 async function sample(tag, seconds, until) {
   const out = [];
-  const end = Date.now() + seconds * 1000;
+  const t0 = Date.now(), end = t0 + seconds * 1000;
   while (Date.now() < end) {
     await lua(a, `MOB_SNAP("${tag}")`, 8000);
     const s = take('mob-snap'); out.push(...s);
     const st = (s.find(x => x.startsWith('mob-snap2')) || '').match(/state=(\S+)/)?.[1];
-    if (until && st && until(st)) break;
+    if (until && st && Date.now() - t0 > 6000 && until(st)) break; // la acción tarda en arrancar: no dar por terminado antes de ~6 s
     await sleep(250);
   }
   return out;
@@ -85,7 +95,7 @@ const parse = s => { const m = /x=([\d.]+) y=([\d.]+) z=([\d.]+)/.exec(s); retur
 const STUCK = /Climb|Vault|Fall|Jump/i;
 async function runOne(name, scan, place, act, expect) {
   if (MECHANICS.length && !MECHANICS.includes(name)) return;
-  await lua(a, scan); const tg = take('mob-target')[0] || '';
+  await lua(a, scan, 90000); const tg = take('mob-target')[0] || '';
   if (!tg || / none/.test(tg)) { log('both', `MOB-RESULT ${name} no-target (${tg})`); return; }
   await lua(a, place); await sleep(1500); take('mob-place');
   await sample('pre-' + name, 2);
@@ -103,20 +113,39 @@ async function runOne(name, scan, place, act, expect) {
   log('both', `MOB-RESULT ${name} ${ok ? 'ok' : 'FAIL'} states=${states} last=${lastSt} moved=${moved.toFixed(2)} dz=${((last?.z ?? 0) - (first?.z ?? 0)).toFixed(2)} ${seen.join(' ')} samples=${snaps.length}`);
 }
 
+// 0) valla propia: el mapa cerca del punto de aparición no trae vallas bajas, así que se construye una con el mismo código que usa el juego en sus
+//    escenarios de depuración (IsoThumpable + setIsHoppable) a 4 pasos del jugador, borde norte de la casilla.
+await lua(a, `
+  local p = getPlayer()
+  local x, y, z = math.floor(p:getX()) + 3, math.floor(p:getY()) + 3, 0
+  local sq = getCell():getGridSquare(x, y, z)
+  if not sq then say("mob-build:no-square"); return end
+  local th = IsoThumpable.new(getCell(), sq, "fencing_01_66", nil, true, nil)
+  th:setIsHoppable(true)
+  sq:AddSpecialObject(th)
+  MOB_TARGET = MOB_TARGET or {}
+  MOB_TARGET.fence = { sq = sq, o = th, dir = "N" }
+  say("mob-build:fence " .. x .. "," .. y .. " hop=" .. tostring(th:isHoppable()))`, 30000);
+log('both', 'MOB-INFO ' + (take('mob-build')[0] || 'sin-build'));
+
 // 1) saltar una valla (ISClimbOverFence, la misma acción del menú "Saltar valla")
-await runOne('fence', `MOB_SCAN("fence", 0, 25)`, `MOB_PLACE("fence", false)`, `
+await runOne('fence', `if MOB_TARGET and MOB_TARGET.fence then say("mob-target:fence built") else MOB_SCAN("fence", 0, 25) end`, `MOB_PLACE("fence", false)`, `
   local t = MOB_TARGET.fence; local p = getPlayer()
   local dir = (t.dir == "N") and IsoDirections.N or IsoDirections.W
-  say("mob-act:fence-queued " .. tostring(t.o:getObjectIndex()) .. " dir=" .. t.dir)
-  ISTimedActionQueue.add(ISClimbOverFence:new(p, t.o, dir))`, 'move');
+  say("mob-act:fence-direct dir=" .. t.dir)
+  p:faceDirection(dir)
+  p:climbOverFence(dir)`, 'move'); // lo que hace ISClimbOverFence:perform(); la acción en cola no arranca con la valla sintética (sin bandera Hoppable de sprite)
 // 2) trepar por una ventana (ISClimbThroughWindow); se abre primero si está cerrada
 await runOne('window', `MOB_SCAN("window", 0, 40)`, `MOB_PLACE("window", false)`, `
   local t = MOB_TARGET.window; local p = getPlayer()
   local w = t.o
-  pcall(function() if not w:IsOpen() and not w:isDestroyed() then w:setIsLocked(false); w:ToggleWindow(p) end end)
+  pcall(function() w:setIsLocked(false) end)
+  if not w:IsOpen() then pcall(function() w:ToggleWindow(p) end) end
+  if not w:IsOpen() then pcall(function() w:smashWindow(true) end) end
   local can = false
   pcall(function() can = w:canClimbThrough(p) end)
-  say("mob-act:window-open=" .. tostring(w:IsOpen()) .. " destroyed=" .. tostring(w:isDestroyed()) .. " canClimbThrough=" .. tostring(can))
+  say("mob-act:window-open=" .. tostring(w:IsOpen()))
+  say("mob-act2:smashed=" .. tostring(w:isSmashed()) .. " can=" .. tostring(can))
   ISTimedActionQueue.add(ISClimbThroughWindow:new(p, w, 20))`, 'move');
 // 3) pared/valla alta (climbOverWall, con la misma acción ISClimbOverFence)
 await runOne('wall', `MOB_SCAN("tall", 0, 40)`, `MOB_PLACE("tall", false)`, `

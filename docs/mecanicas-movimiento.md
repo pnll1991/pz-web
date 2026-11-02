@@ -38,7 +38,25 @@ Presupuesto del VFS del navegador (`vfs.mjs`, 640 MiB): paquetes 576,0 → 591,3
 
 ## Resultados
 
-RESULTADOS_PLACEHOLDER
+Instancia de prueba propia (servidor PZ 16281, webs 8201 "antes" con los paquetes originales y 8202 "después" con `--bob-anims mobility`), un cliente headless como `admin` en modo dios e invisible, 2/11/2026. Mismo código y mismo mundo; solo cambian los paquetes. Nivel de evidencia: **Chrome con el juego** (build `boot.wasm` de la copia viva, sin recompilar nada). Logs y capturas en `~/pzshots/r88-mecanicas/` (no se suben).
+
+| Mecánica | Antes (paquetes originales) | Después (+87 clips) | Veredicto |
+|---|---|---|---|
+| Trepar por una ventana (`ISClimbThroughWindow`) | `ClimbThroughWindowState` **para siempre** (15 muestras, ~20 s, posición sin cambio) | `ClimbThroughWindowState → IdleState` en ~3 s, avanza 1,14 casillas al otro lado | **Arreglada** |
+| Saltar una valla real (`ISClimbOverFence`, valla `12056,6806` borde norte) | `ClimbOverFenceState` **para siempre** (20 muestras, ~25 s, posición sin cambio) | `ClimbOverFenceState → IdleState` (resultado del motor `success`, `ClimbFenceStarted=true`), el jugador no queda atascado | **Arreglada a medias**: el estado ya termina, pero el personaje no atraviesa la valla (4/4 intentos: avanza 0,6–0,8 casillas hacia ella y queda del lado de partida). Pendiente de investigar (ver abajo) |
+| Valla alta / pared (`climbOverWall`) | sin objetivo válido | sin objetivo válido | **No probada**: el único objeto "alto" cercano al punto de aparición responde `canClimbOverWall=false` en las cuatro direcciones |
+| Soga (subir/bajar) | sin objetivo válido | sin objetivo válido | **No probada**: la ventana del 2.º piso encontrada no deja `canClimbDownSheetRope`/`canClimbSheetRope` en true tras `addSheetRope`; hace falta un edificio de dos pisos preparado |
+| Vault corriendo contra la valla (teclado Shift+W+D) | — | el personaje avanza ~1 casilla y se detiene | **No concluyente**: el personaje se detuvo tras ~1 casilla con las teclas sostenidas (no se investigó si es el arnés o el juego) y no llegó a la valla |
+| Abrir/cerrar/romper ventana, caída, mover cuerpos | no probadas | no probadas | **Sin probar**: sus clips quedaron incluidos en el paquete, pero el escenario no las ejercita |
+
+Lo que **no** es de esta tarea y apareció al probar:
+- `PZPopMan64: n_init has not run yet` (`IllegalStateException`) saca al cliente de la partida al menú (`exit IngameState`) en algunas corridas, poco después de ejecutar `/removezombies` o de un salto de posición del jugador. Es la nativa de población de zombis (`PopMan`) y no tiene relación con los clips; el escenario evita `/removezombies`. Queda como hallazgo abierto.
+- La carga fría con un perfil de Chrome limpio fallaba con `VFS memory budget exceeded` por una llamada duplicada a `preloadPacks` en `game.mjs` (PR #12 sobre #10). Ya está arreglado en `dev` (PR #26); lo reproduje antes de ese arreglo.
+
+### Por qué la valla todavía no cruza
+
+El estado termina porque el motor recibe los eventos del clip (`SetState`, `VaultOverStarted`…), así que ya hay clips. Lo que falta es el desplazamiento: `ClimbOverFenceState.execute` mueve al personaje por X/Y según las variables de animación y los eventos; con la valla real el personaje se queda a 0,6 casillas del borde. Hipótesis sin probar: (1) el desplazamiento de raíz de los clips `Bob_ClimbFence_*` / `Bob_VaultOver_*` no pasa por la caché de `jassimp` igual que el de la ventana; (2) la animación termina antes por un evento temprano. Siguiente paso: volcar `deferredFrames`/`animationError` con la sonda de jugador (`?probe=1`, `PlayerProbe`) durante el salto y comparar contra el clip.
+
 
 ## Mecánicas con clips ausentes que no se arreglaron (inventario)
 
@@ -66,7 +84,7 @@ PZ_MP_DATA=/tmp/pzmec/zomboid PZ_MP_PORT=16281 PZ_MP_UDPPORT=16282 PZ_MP_LOG=/tm
 # web con los paquetes originales (antes) y con los de mobility (después)
 PORT=8201 PZWEB_WEB_ROOT=/tmp/pzmec/web PZ_PACKS=/tmp/pzmec/packs-orig node dev-server/server.mjs &
 PORT=8202 PZWEB_WEB_ROOT=/tmp/pzmec/web PZ_PACKS=/tmp/pzmec/packs     node dev-server/server.mjs &
-flock /tmp/pz80-locks/chrome.lock node tools/diag/play-repl.mjs --url http://127.0.0.1:8202/play.html --port 16281 --admin --only 1 --out /tmp/pzmec/after --profiles /tmp/pzmec --console &
+pz-chrome-slot node tools/diag/play-repl.mjs --url http://127.0.0.1:8202/play.html --port 16281 --admin --only 1 --out /tmp/pzmec/after --console &
 cp tools/diag/mobility-scenario.js /tmp/pzmec/after/cmd.js   # cuando el cliente está en el mundo; MOB_ONLY=fence,window,... filtra
 ```
 
