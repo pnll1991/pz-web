@@ -1,6 +1,6 @@
 // Prueba manual de controles en navegadores reales (no corre en la CI). Carga port/runtime/input.mjs y window.mjs en una página sintética
 // (canvas + registro visible) y la maneja con eventos reales del navegador: clic derecho, rueda, teclas, foco y pointer lock.
-//   Chrome:  node tests/input-browser.manual.mjs chrome            (flock /tmp/pz80-locks/chrome.lock; CHROME_PATH=/usr/bin/google-chrome)
+//   Chrome:  node tests/input-browser.manual.mjs chrome            (~/.local/bin/pz-chrome-slot node tests/input-browser.manual.mjs chrome; CHROME_PATH=/usr/bin/google-chrome)
 //   Firefox: node tests/input-browser.manual.mjs firefox           (FIREFOX_BIN y GECKODRIVER_BIN: Firefox portable fuera del repo; WebDriver clásico)
 // Salida: test-results/input/<navegador>.json y <navegador>-*.png (ignorados por git). Sale con 1 si algún chequeo falla.
 import http from 'node:http';
