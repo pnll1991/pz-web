@@ -1,4 +1,5 @@
 import { normalizePath, READ_ONLY_MOUNTABLE } from './vfs.mjs';
+import { readWithProgress } from './loading.mjs';
 
 const hex = bytes => [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
 const digest = async bytes => hex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
@@ -43,7 +44,7 @@ const writeMemo = value => { try { localStorage.setItem(VERIFIED_KEY, value); } 
 
 /** Cache immutable local pack blobs and preload verified files into synchronous memory. */
 export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo = memoAllowed(), cachesImpl = globalThis.caches,
-  storage = globalThis.navigator?.storage, cleanup = memo, cacheMaxBytes = CACHE_MAX_BYTES } = {}) {
+  storage = globalThis.navigator?.storage, cleanup = memo, cacheMaxBytes = CACHE_MAX_BYTES, onProgress = () => {} } = {}) {
   const response = await fetch(indexUrl, { cache:'no-cache' });
   if (!response.ok) throw new Error(`Pack index HTTP ${response.status}`);
   const indexBytes = await response.arrayBuffer();
@@ -72,6 +73,9 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo =
   // Round 80 (front H): several paths may alias one pack range (a clip listed in media/anims_X/Bob and
   // read from media/anims/bob lowercase fallback): it is verified once and counted once, as the VFS does for its views.
   const verifiedRanges = new Map();
+  // Pantalla de carga: bytes leidos (red o Cache API) sobre el total que declara el indice.
+  const progress = { phase:'download', loaded:0, total:index.packs.reduce((sum, pack) => sum + pack.bytes, 0) };
+  onProgress({ ...progress });
   const inFlight = { set:new Set(), bytes:0 };
   const valid = async (bytes, pack) => bytes.byteLength === pack.bytes && await digest(bytes) === pack.sha256;
   // Ronda 88: los packs se descargaban (o leian de la Cache API), se hasheaban y se guardaban uno tras otro. Son
@@ -89,19 +93,19 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo =
       const cached = await cache.match(url);
       if (cached) {
         bytes = await cached.arrayBuffer();
-        if (await valid(bytes, pack)) { stats.sources.cache++; return bytes; }
+        if (await valid(bytes, pack)) { stats.sources.cache++; progress.loaded += pack.bytes; onProgress({ ...progress }); return bytes; }
         stats.corrupt++; await cache.delete(url);
       }
     } else if (opfs) {
       bytes = await opfsRead(opfs, pack.name, pack.bytes);
       if (bytes) {
-        if (await valid(bytes, pack)) { stats.sources.opfs++; return bytes; }
+        if (await valid(bytes, pack)) { stats.sources.opfs++; progress.loaded += pack.bytes; onProgress({ ...progress }); return bytes; }
         stats.corrupt++; await opfs.removeEntry(pack.name).catch(() => {});
       }
     }
     const downloaded = await fetch(url);
     if (!downloaded.ok) throw new Error(`Pack HTTP ${downloaded.status}`);
-    bytes = await downloaded.arrayBuffer();
+    bytes = await readWithProgress(downloaded, pack.bytes, n => { progress.loaded += n; onProgress({ ...progress }); });
     if (!await valid(bytes, pack)) throw new Error(`Pack integrity mismatch: ${pack.name}`);
     stats.sources.network++;
     if (!large) {
@@ -116,6 +120,8 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo =
     return bytes;
   };
   const packBytes = await Promise.all(index.packs.map(loadPack));
+  progress.phase = skipFileDigests ? 'mount' : 'verify';
+  onProgress({ ...progress });
   for (const [packIndex, pack] of index.packs.entries()) {
     const bytes = packBytes[packIndex];
     // One view over the whole downloaded blob; every mounted file is a subarray of it, so the
