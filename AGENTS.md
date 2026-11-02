@@ -43,6 +43,7 @@
 |---|---|
 | Crear una rama, commitear, pushear, abrir o mergear un PR, publicar `dev → main` | `docs/procesos/ramas-y-prs.md` · skill `ramas-y-prs` |
 | Empezar una ronda, escribir un brief, lanzar un subagente o integrar lo que devolvió | `docs/procesos/trabajo-con-agentes.md` · skill `trabajo-con-agentes` |
+| Mandar a la partida en vivo un cambio que no necesita build (`port/web/*`, `port/runtime/*.mjs`) | `docs/procesos/updates-sin-build.md` · skill `updates-sin-build` |
 | Tocar algo que está en vivo (dev server, servidor PZ, túnel) | `docs/HANDOFF-T3.md` |
 
 Proceso nuevo = documento en `docs/procesos/` + skill (o sección en una existente) + fila en esta tabla, en el mismo PR.
