@@ -42,6 +42,16 @@ Arranca sin Steam, sin UPnP, sin voz y **sin vehículos** (`Bullet.addVehicle` t
 PZ_MP_DATA=/tmp/pz86/zomboid PZ_MP_PORT=16271 PZ_MP_UDPPORT=16272 PZ_MP_LOG=/tmp/pz86/server.log bash scripts/mp-server.sh start
 ```
 
+### Densidad de zombis: necesita un mundo nuevo
+
+`scripts/mp-server.sh` fija `Zombies=3` (alta), `Distribution=2`, `ZombieRespawn=2` y `PlayerSpawnZombieRemoval=4` cada vez que arranca, y el servidor reescribe `pzweb_SandboxVars.lua` con esos valores. **Eso no repuebla lo que ya está guardado**: la población inicial de cada celda del mapa se genera la primera vez que alguien la visita y queda en `Saves/Multiplayer/pzweb/zpop/zpop_<x>_<y>.bin`. En el mundo en vivo (`/tmp/pz82/zomboid`) esos archivos son de la noche del 1/11, antes del cambio de densidad: las celdas ya visitadas conservan la densidad vieja y la nueva solo se nota en celdas que nadie pisó. Para tener la densidad nueva en todo el mapa hay que crear un mundo nuevo:
+
+```bash
+bash scripts/mp-server.sh stop && bash scripts/mp-server.sh reset-world && bash scripts/mp-server.sh start
+```
+
+`reset-world` **borra la partida guardada** (casas, inventarios, personajes): es el mismo corte que cualquier reinicio del servidor más la pérdida del progreso. Necesita OK explícito del dueño y mirar antes `/tmp/pzweb-access.log`; no se hace en vivo por iniciativa de un agente. Probar la densidad sin tocar la partida: instancia de prueba con otros puertos y otra carpeta (`PZ_MP_DATA`, `PZ_MP_PORT`, `PZ_MP_UDPPORT`, `PZ_MP_LOG`); un `reset-world` con esas variables solo borra la carpeta de prueba.
+
 ## Túnel público
 
 Abre **solo** el dev server 8098 a internet por Cloudflare (`trycloudflare.com`), protegido con una clave (`?k=` o cookie). Quien no la tenga recibe 403. El servidor PZ y los puentes siguen en loopback.

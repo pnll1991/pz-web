@@ -8,7 +8,7 @@ Todo cambio entra por PR a `dev` y llega a lo que está en vivo cuando el dueño
 | `docs/`, `*.md`, `tests/`, `.github/`, `.claude/` | Nada | No |
 | `port/src`, `port/config`, `port/pom.xml`, `tools/compatibility`, `tools/exposure`, `tools/glgen` (Java, TeaVM, transformers) | Build: `bash scripts/fast.sh rebuild` (versión rápida) y/o `bash scripts/build.sh --with-game` (dev); después recargar | No: el `boot.wasm` se reemplaza de forma atómica al final |
 | `dev-server/*.mjs` | `bash scripts/dev_server_8098.sh restart` (con el túnel abierto, ver [manejar.md](manejar.md#dev-server-8098)) | Sí, unos segundos; los jugadores recargan |
-| `scripts/mp-server.sh` o la configuración del mundo | `bash scripts/mp-server.sh stop && bash scripts/mp-server.sh start` (y `reset-world` si cambia algo que solo se aplica al crear el mundo) | Sí: todos se desconectan |
+| `scripts/mp-server.sh` o la configuración del mundo | `bash scripts/mp-server.sh stop && bash scripts/mp-server.sh start` (y `reset-world` si cambia algo que solo se aplica al crear el mundo, p. ej. la densidad de zombis: [manejar.md](manejar.md#densidad-de-zombis-necesita-un-mundo-nuevo); `reset-world` borra la partida) | Sí: todos se desconectan |
 | `tools/mp-bridge/` | `bash scripts/mp-bridge.sh build`; cada conexión nueva usa el puente nuevo | Las conexiones abiertas siguen con el viejo |
 | `tools/pack/` o recursos empaquetados | Rehacer o ampliar los paquetes ([levantar.md](levantar.md#6-paquetes-de-recursos)); conservar el `index.json` anterior como respaldo | No; la primera carga siguiente baja los paquetes nuevos |
 | `package.json` / `package-lock.json` | `npm ci --ignore-scripts --no-audit --no-fund` | No |
