@@ -196,6 +196,7 @@ try {
     catch (error) { shaderCache.stats.lastError = String(error); shaderCache.mode = 0; console.warn('glslcache apagada:', error); }
   })();
   const vfs = await vfsInstance.open();
+  bootMark('vfs');
   // La barra sigue los bytes de los packs; los eventos llegan por bloque, se pintan una vez por cuadro.
   let packProgress = null, packFrame = 0;
   const paintPacks = () => {
@@ -208,12 +209,10 @@ try {
   };
   await preloadPacks(vfs, undefined, { onProgress: p => { packProgress = p; packFrame ||= requestAnimationFrame(paintPacks); } });
   cancelAnimationFrame(packFrame);
+  bootMark('packs');
   loading.step('packs', 'done');
   loading.step('prepare', 'active');
   loading.bar(null, 'Preparando gráficos, guardado y física…');
-  bootMark('vfs');
-  await preloadPacks(vfs);
-  bootMark('packs');
   // Round 79: the rest of PZ_HOME/media (maps are 4.3 GB) is read on demand from the local dev
   // server; the manifest only lists names and sizes. '?remote=0' keeps the packs-only behaviour.
   if (mediaReady) {
