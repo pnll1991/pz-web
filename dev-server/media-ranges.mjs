@@ -7,6 +7,8 @@
 // Cuerpo: [u32le largoCabecera][JSON {served, entries:[[url, range, size], ...]}][bytes de las entradas con size >= 0, en orden].
 // size -1 = no disponible (el cliente la cuenta como fallida y el juego la lee como siempre). `served` = cuántos de los índices pedidos
 // se resolvieron antes de llegar al tope de bytes de la respuesta (el cliente pide el resto en otro lote).
+// Ronda 91: server.mjs comprime el cuerpo entero (br/gzip según Accept-Encoding); el formato es el de los bytes ya descomprimidos.
+// `compressibleBytes` cuenta los bytes de entradas cuya extensión no está en `incompressible`, para no gastar CPU en lotes de png/pack.
 import { realpath, open } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -17,6 +19,14 @@ const inside = (parent, child) => {
   const relative = path.relative(parent, child);
   return !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
 };
+
+/** Extensión en minúsculas ('.png') de una entrada del warm-list; los bundles cuentan con su `ext`. */
+export function extensionOf(url) {
+  try {
+    const parsed = new URL(url, 'http://x');
+    return parsed.pathname === '/media-bundle' ? `.${(parsed.searchParams.get('ext') ?? '').toLowerCase()}` : path.extname(parsed.pathname).toLowerCase();
+  } catch { return ''; }
+}
 
 /** "3,4,9" -> [3,4,9]; null si no es una lista de enteros >= 0 (o pasa de MAX_INDICES). */
 export function parseIndices(text) {
@@ -74,9 +84,9 @@ async function readEntry({ mediaRoot, bundle }, url, range) {
  * entries: warm.list() ([[url, range], ...]); indices: enteros pedidos por el cliente.
  * Devuelve { body: Buffer, served, bytes }. maxBytes acota la respuesta (siempre se resuelve al menos una entrada).
  */
-export async function buildRangesResponse({ mediaRoot, bundle, entries, indices, maxBytes = 24 << 20 }) {
+export async function buildRangesResponse({ mediaRoot, bundle, entries, indices, maxBytes = 24 << 20, incompressible = new Set() }) {
   const meta = [], parts = [];
-  let bytes = 0, served = 0;
+  let bytes = 0, served = 0, compressibleBytes = 0;
   for (const index of indices) {
     if (served > 0 && bytes >= maxBytes) break;
     served++;
@@ -87,8 +97,9 @@ export async function buildRangesResponse({ mediaRoot, bundle, entries, indices,
     try { data = await readEntry({ mediaRoot, bundle }, url, range); } catch { data = null; }
     if (!data) { meta.push([url, range, -1]); continue; }
     meta.push([url, range, data.length]); parts.push(data); bytes += data.length;
+    if (!incompressible.has(extensionOf(url))) compressibleBytes += data.length;
   }
   const header = Buffer.from(JSON.stringify({ served, entries: meta })), length = Buffer.alloc(4);
   length.writeUInt32LE(header.length);
-  return { body: Buffer.concat([length, header, ...parts]), served, bytes };
+  return { body: Buffer.concat([length, header, ...parts]), served, bytes, compressibleBytes };
 }

@@ -24,7 +24,7 @@ curl -s http://127.0.0.1:8098/perf           # fps, ping y memoria de cada jugad
 
 Lee cada archivo en cada pedido (`Cache-Control: no-cache`): un JS o un `boot.wasm` nuevo se ven al recargar la página **sin reiniciar**. Solo hace falta reiniciar si cambió `dev-server/*.mjs` o el manifiesto de media (se calcula al arrancar). Si el túnel está abierto, un `restart` directo levanta el server **sin la clave**: pasar por `public-tunnel.sh stop/start` (cambia la URL) o arrancar con `PZWEB_PUBLIC_KEY="$(cat /tmp/pzweb-public.key)" bash scripts/dev_server_8098.sh restart`.
 
-Variables: `PORT`, `PZ_HOME`, `PZ_PACKS` (por defecto `build/real-browser/packs`), `PZWEB_WEB_ROOT` (raíz web alternativa), `PZWEB_PUBLIC_KEY` (modo público), `PZWEB_ACCESS_LOG`, `PZWEB_WARM_FILE`.
+Variables: `PORT`, `PZ_HOME`, `PZ_PACKS` (por defecto `build/real-browser/packs`), `PZWEB_WEB_ROOT` (raíz web alternativa), `PZWEB_PUBLIC_KEY` (modo público), `PZWEB_ACCESS_LOG`, `PZWEB_WARM_FILE`, `PZWEB_MEDIA_CACHE_MB` (caché de tramos de `/media` comprimidos), `PZWEB_RANGES_CACHE_MB` (caché de lotes de `/media-ranges` comprimidos).
 
 ## Servidor PZ
 
