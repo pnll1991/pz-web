@@ -216,6 +216,13 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
       if (pathname.includes('\0') || pathname.includes('\\') || pathname.split('/').includes('..')) {
         respond(400, 'Invalid path'); return;
       }
+      // La raíz es el juego: / y /index.html redirigen a /play.html con la query tal cual llegó (?k=… incluido). Va después del
+      // gate (sin clave → 403, nunca un redirect) y del chequeo same-origin; el hash no llega al servidor y lo conserva index.html.
+      if (pathname === '/' || pathname === '/index.html') {
+        const query = req.url.indexOf('?');
+        res.writeHead(302, { ...headers, Location: '/play.html' + (query < 0 ? '' : req.url.slice(query)), 'Cache-Control': 'no-store', 'Content-Length': 0 });
+        res.end(); return;
+      }
       if (pathname === '/warm-media.json') { // Round 84: ranges real sessions asked for (see dev-server/warm-list.mjs)
         const body = JSON.stringify(warm.list());
         await sendText(`warm|${warm.size()}`, body, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); return;
@@ -285,7 +292,7 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
         res.writeHead(range ? 206 : 200, { ...headers, 'Content-Type':'application/octet-stream', 'Content-Length':content.length, 'Accept-Ranges':'bytes', ETag:etag, ...(range ? {'Content-Range':`bytes ${range.start}-${range.end}/${bytes.length}`} : {}) });
         res.end(req.method === 'HEAD' ? undefined : content); return;
       }
-      let base = webRoot, relative = pathname === '/' ? 'index.html' : pathname.slice(1);
+      let base = webRoot, relative = pathname.slice(1);
       if (pathname === '/media' || pathname.startsWith('/media/')) {
         if (!mediaRoot) { respond(404, 'PZ_HOME not mounted'); return; }
         base = mediaRoot; relative = pathname.slice('/media/'.length);
