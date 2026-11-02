@@ -61,3 +61,15 @@ test('numpad keys map to GLFW, modifiers travel with the event, held-before-focu
   fire(canvas, 'keydown', { code: 'NumpadEnter', key: 'Enter', repeat: true });
   assert.equal(input.events.at(-1).action, 2);
 });
+
+test('a left press while the right button is held (a chord: only a pointermove with new event.buttons) reaches the game as button 0', () => {
+  const { input, canvas, fire, buttons } = setup();
+  fire(canvas, 'pointerdown', { button: 2, buttons: 2, pointerId: 1 });
+  fire(canvas, 'pointermove', { buttons: 3, clientX: 10, clientY: 10, movementX: 0, movementY: 0 }); // left joins
+  assert.ok(input.buttons.has(0) && input.buttons.has(1));
+  assert.ok(input.latched.has(0));
+  fire(canvas, 'pointermove', { buttons: 2, clientX: 10, clientY: 10, movementX: 0, movementY: 0 }); // left released, right still held
+  assert.ok(!input.buttons.has(0) && input.buttons.has(1));
+  fire(canvas, 'pointerup', { button: 2, buttons: 0, pointerId: 1 });
+  assert.deepEqual(buttons(), ['1:1', '0:1', '0:0', '1:0']);
+});

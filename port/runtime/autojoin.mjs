@@ -20,8 +20,8 @@ export function playerIdentity(storage = globalThis.localStorage, rand = cryptoB
 
 const luaString = s => '"' + String(s).replace(/[\\"\n\r\0]/g, c => ({ '\\': '\\\\', '"': '\\"', '\n': '\\n', '\r': '\\r', '\0': '\\0' }[c])) + '"';
 
-export function buildLua(template, { user, pass, host = '127.0.0.1', port = 16261, name = 'pzweb', acceptTos = true, cmd = '', authType = 0 }) {
-  return `PZWEB_AUTOJOIN = { user = ${luaString(user)}, pass = ${luaString(pass)}, host = ${luaString(host)}, port = ${Number(port) | 0}, name = ${luaString(name)}, acceptTos = ${acceptTos ? 'true' : 'false'}, cmd = ${luaString(cmd)}, authType = ${Number(authType) | 0} }\n${template}`;
+export function buildLua(template, { user, pass, host = '127.0.0.1', port = 16261, name = 'pzweb', acceptTos = true, cmd = '', authType = 0, repl = false }) {
+  return `PZWEB_AUTOJOIN = { user = ${luaString(user)}, pass = ${luaString(pass)}, host = ${luaString(host)}, port = ${Number(port) | 0}, name = ${luaString(name)}, acceptTos = ${acceptTos ? 'true' : 'false'}, cmd = ${luaString(cmd)}, authType = ${Number(authType) | 0}, repl = ${repl ? 'true' : 'false'} }\n${template}`;
 }
 
 /** Mounts the generated script as the last file of media/lua/client (the loader lists that directory in order). */
@@ -31,9 +31,10 @@ export async function installAutoJoin(vfs, query, { fetchImpl = globalThis.fetch
   const response = await fetchImpl('/play.lua', { cache: 'no-cache' });
   if (!response.ok) throw new Error(`/play.lua unavailable: HTTP ${response.status}`);
   const lua = buildLua(await response.text(), {
-    ...identity, host: q.get('host') || '127.0.0.1', port: q.get('port') || 16261, acceptTos: q.get('tos') !== '1', cmd: q.get('cmd') || '', authType: q.get('auth') || 0,
+    ...identity, host: q.get('host') || '127.0.0.1', port: q.get('port') || 16261, acceptTos: q.get('tos') !== '1', cmd: q.get('cmd') || '', authType: q.get('auth') || 0, repl: q.get('repl') === '1',
   });
   vfs.mount('/media/lua/client/zzz_pzweb_play.lua', new TextEncoder().encode(lua));
+  if (q.get('repl') === '1') vfs.mount('/media/lua/client/zzz_pzweb_dbg.lua', new TextEncoder().encode('-- empty\n')); // diagnostic REPL placeholder (see play.lua)
   return { user: identity.user, state: 'installed', log: [] };
 }
 

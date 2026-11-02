@@ -21,7 +21,7 @@ def main():
     ap.add_argument('--stage', type=Path, required=True)
     ap.add_argument('--prefix', action='append', required=True)
     ap.add_argument('--add', action='store_true', help='also add staged files missing from the index')
-    ap.add_argument('--max-bytes', type=int, default=512 * 1024 * 1024, help='VFS budget (vfs.mjs maxBytes)')
+    ap.add_argument('--max-bytes', type=int, default=640 * 1024 * 1024, help='VFS budget (vfs.mjs maxBytes)')
     a = ap.parse_args()
     index_path = a.packs / 'index.json'
     index = json.loads(index_path.read_text())

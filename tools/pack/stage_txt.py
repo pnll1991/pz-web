@@ -45,10 +45,17 @@ LOCOMOTION_ANIMSETS = ('AnimSets/player/idle.xml', 'AnimSets/player/idle/*.xml',
                        'AnimSets/player/turning/*.xml', 'AnimSets/player/turningAim180/*.xml',
                        'AnimSets/player/turningIdle180/*.xml', 'AnimSets/player/turningMovement180/*.xml')
 RUNTIME_ANIMATION_SCRIPTS = ('scripts/generated/animations.txt',)
+# Round 86: combat clips of the player. Without Bob_BiteReact_*/Bob_Hit* the hit-reaction state never ends (the clip that finishes it is
+# not there): after the first bite the character stays in PlayerHitReactionState for good and can neither aim nor attack. Same closure
+# of m_AnimName over the AnimSets that cover being hit/knocked down/getting up, aiming and melee/shove/stomp attacks.
+COMBAT_ANIMSETS = tuple(f'AnimSets/player/{d}/**/*.xml' for d in (
+    'aim', 'aim-strafe', 'melee', 'shove', 'shoveAim', 'stomp', 'hitreaction', 'hitreaction-bite', 'hitreaction-biteGeneric',
+    'hitreaction-crawlerBite', 'hitreaction-endDeath', 'hitreaction-hit', 'hitreaction-shot', 'hitreactionpvp', 'knockeddown',
+    'falldown', 'getup', 'onground', 'death', 'deadbody', 'bumped', 'collide'))
 
 
 def bob_clips(media, mode):
-    """Relative .x paths under anims_X/Bob for the requested set ('locomotion' or 'all')."""
+    """Relative .x paths under anims_X/Bob for the requested set ('locomotion', 'combat' or 'all')."""
     import re
     tree = {}
     for src in sorted((media / 'anims_X/Bob').rglob('*.x')):
@@ -56,10 +63,10 @@ def bob_clips(media, mode):
     if mode == 'all':
         return sorted(tree.values()), []
     names = set()
-    for pattern in LOCOMOTION_ANIMSETS:
+    for pattern in (COMBAT_ANIMSETS if mode == 'combat' else LOCOMOTION_ANIMSETS):
         for xml in sorted(media.glob(pattern)):
             names |= set(re.findall(r'<m_AnimName>\s*([^<\s]+)\s*</m_AnimName>', xml.read_text(errors='replace')))
-    for script in RUNTIME_ANIMATION_SCRIPTS:
+    for script in (RUNTIME_ANIMATION_SCRIPTS if mode != 'combat' else ()):
         if (media / script).is_file():
             names |= set(re.findall(r'\bsource\s*=\s*([A-Za-z0-9_]+)', (media / script).read_text(errors='replace')))
     found = sorted({tree[n.lower()] for n in names if n.lower() in tree})

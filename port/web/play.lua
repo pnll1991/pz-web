@@ -9,6 +9,7 @@ local CFG = PZWEB_AUTOJOIN
 if not CFG then return end
 
 local function say(s) print("PZWEB-STATE:" .. s) end
+PZWEB_SAY = say
 
 -- Terms of Service: the game raises OnGameStateEnter for its Java state and its Lua UI creates the modal.
 if CFG.acceptTos then
@@ -120,6 +121,32 @@ Events.OnPlayerUpdate.Add(function(player)
         end
     end
 end)
+
+-- Diagnostic REPL (only with ?repl=1): the test harness (tools/diag/play-repl.mjs) mounts code into media/lua/client/zzz_pzweb_dbg.lua
+-- and this poll re-runs that file about once a second, so a test can be iterated without reloading the page (a load takes ~7 min).
+if CFG.repl then
+    local replTicks = 0
+    Events.OnPlayerUpdate.Add(function(player)
+        replTicks = replTicks + 1
+        if replTicks % 60 == 0 then
+            local ok, err = pcall(reloadLuaFile, "media/lua/client/zzz_pzweb_dbg.lua")
+            if not ok and not PZWEB_REPL_ERR then PZWEB_REPL_ERR = true; say("repl-error:" .. tostring(err)) end
+        end
+    end)
+    -- Recorder for combat tests (a handler added from the reloaded file does not fire, so it lives here): set PZW_REC = true from the REPL.
+    local last = ""
+    Events.OnPlayerUpdate.Add(function(p)
+        if not PZW_REC then return end
+        local function t(f) local ok, v = pcall(f); return ok and tostring(v) or "ERR" end
+        local s = t(function() return p:getActionStateName() end) .. "/" .. t(function() return p:getCurrentStateName() end) .. " perf=" .. t(function() return p:isPerformingAttackAnimation() end)
+            .. " L=" .. t(function() return Mouse.isLeftDown() end) .. " R=" .. t(function() return Mouse.isRightDown() end) .. " aim=" .. t(function() return p:isAiming() end)
+        if s ~= last then last = s; say("rec " .. s) end
+    end)
+    local function on(name, f) local ev = Events[name]; if ev then ev.Add(f) else say("no-event:" .. name) end end
+    on("OnWeaponSwing", function(p, w) if PZW_REC then say("evt:swing weapon=" .. tostring(w and w:getType())) end end)
+    on("OnHitZombie", function(z, a, part, w) if PZW_REC then say("evt:hitzombie id=" .. tostring(z:getOnlineID()) .. " hp=" .. tostring(z:getHealth())) end end)
+    on("OnZombieDead", function(z) if PZW_REC then say("evt:zombiedead id=" .. tostring(z:getOnlineID())) end end)
+end
 
 Events.OnGameStart.Add(function()
     say("ingame")

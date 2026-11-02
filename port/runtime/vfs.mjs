@@ -71,7 +71,7 @@ export class VirtualFileSystem {
   // always mounts the 2x tile packs and media/texturepacks/Tiles2x.pack alone is 321 MB. The pack
   // files are mounted as views over the fetched blob (mountReadOnlyView), so the budget counts the
   // blob bytes once instead of blob + copies.
-  constructor({ name = 'pz-web-saves-v1', maxBytes = 512 * 1024 * 1024 } = {}) {
+  constructor({ name = 'pz-web-saves-v1', maxBytes = 640 * 1024 * 1024 } = {}) {
     this.name = name; this.maxBytes = maxBytes;
     this.childIndex = new ChildIndex(this);
     this.files = new IndexedMap(this.childIndex); this.database = null; this.pending = Promise.resolve();

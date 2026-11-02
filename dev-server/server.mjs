@@ -235,7 +235,8 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT || 8090);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PORT');
-  const server = await createDevServer();
+  // PZWEB_WEB_ROOT: raiz web alternativa (pruebas en un puerto temporal sin tocar port/target/web, que sirve el 8098 en vivo)
+  const server = await createDevServer(process.env.PZWEB_WEB_ROOT ? { webRoot: process.env.PZWEB_WEB_ROOT } : {});
   server.listen(port, '127.0.0.1', () => console.log(`PZ platform development: http://127.0.0.1:${port}`));
   server.on('error', error => { console.error(error.message); process.exitCode = 1; });
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => server.close());

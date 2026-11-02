@@ -30,3 +30,5 @@ supervisor.log
 local-run-*.log
 
 /--method=*/
+/-jnounc=0/
+/MENU_REACHED

@@ -89,9 +89,15 @@ export class CanvasInput {
     this.events.push(event);
   }
   // Release buttons the browser stopped reporting (up outside the page, chords): event.buttons bits 0/1/2 = GLFW 0/1/2.
+  // Round 86: and press the ones it never announced. Pointer Events send a second button pressed while another is held (aim with the right
+  // button, attack with the left) as a pointermove with a new event.buttons, not as a pointerdown: without this Mouse.isLeftDown() stayed
+  // false while aiming and no melee/firearm attack could ever start.
   sync(event) {
     if (typeof event.buttons !== 'number') return;
     for (const button of [...this.buttons]) if (button < 3 && !((event.buttons >> button) & 1)) { this.buttons.delete(button); this.emit({ type:'button', button, action:0 }); }
+    for (let button = 0; button < 3; button++) if (((event.buttons >> button) & 1) && !this.buttons.has(button)) {
+      this.buttons.add(button); (this.latched ??= new Set()).add(button); this.emit({ type:'button', button, action:1, mods:mods(event) });
+    }
   }
   drain() { return this.events.splice(0); }
   releaseAll() {

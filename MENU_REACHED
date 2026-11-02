@@ -1,5 +1,0 @@
-screenshot: test-results/menu-reached.png (copy: /home/agente47/pzshots/menu-reached-r78.png)
-pixel stats: test-results/menu-reached.json (logo 0.334, buttons 0.054, pageErrors [])
-test: tests/browser/menu.spec.mjs "real main menu is drawn after accepting the terms of service"
-command: PZ_HOME=<pz> npx playwright test -c playwright.menu.config.mjs  -> 1 passed (5.4m), 2026-10-31 00:18 -03
-build: commit 75681cb
