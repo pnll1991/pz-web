@@ -12,6 +12,7 @@ import { TextureCache } from '/runtime/texcache.mjs';
 import { MediaCache, mediaCacheVersion } from '/runtime/mediacache.mjs';
 import { LoadingScreen, formatMB } from '/runtime/loading.mjs';
 import { ShaderCache, translatorVersion } from '/runtime/glslcache.mjs';
+import { installPerfHud } from '/runtime/perfhud.mjs';
 
 const status = document.getElementById('game-status');
 // Pantalla de carga: tapa la página hasta que el juego dibuja su primer cuadro (BrowserWindow.swapCount).
@@ -310,6 +311,8 @@ try {
   }
   pzRuntime.window = new BrowserWindow(canvas,pzRuntime.gl,pzRuntime.input);
   await pzRuntime.window.prepare();
+  // fps, peor cuadro, tiempo ocupado y ping arriba a la derecha (queda debajo de la pantalla de carga). ?hud=0 lo apaga.
+  if (new URLSearchParams(location.search).get('hud') !== '0') pzRuntime.perfHud = installPerfHud(pzRuntime.window);
   pzRuntime.sqlite = await sqliteReady;
   bootMark('sqlite');
   // The wasm32 Bullet module is the only library this runtime honestly provides.
