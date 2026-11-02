@@ -13,7 +13,7 @@ Plantilla de PR (docs/procesos/ramas-y-prs.md). Vale para personas y agentes.
 ## Reglas del port
 
 - [ ] El diff no trae archivos del juego, `.jar`, `.class`, `.so`, `media/`, `.bank`, mapas, packs, código decompilado ni derivado del juego (`bash scripts/check-forbidden.sh origin/dev`).
-- [ ] No hay claves, contraseñas, URLs del túnel ni rutas a datos privados (`/tmp/pzweb-public.key`, `admin.pw`…).
+- [ ] No hay claves, contraseñas, URLs del túnel ni rutas a datos privados (`/tmp/pzweb-public.key`, `admin.pw`, `admin-pass`…).
 - [ ] Las nativas nuevas o tocadas que faltan lanzan una excepción con su nombre JNI; nada simula éxito.
 - [ ] No cambia reglas del juego: solo plataforma, archivos, gráficos, input, audio, red o nativas.
 - [ ] El servidor sigue escuchando solo en `127.0.0.1` (o el cambio de exposición está aprobado por el dueño y anotado en `docs/decisions.md`).

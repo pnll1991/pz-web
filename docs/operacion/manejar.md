@@ -33,7 +33,8 @@ Variables: `PORT`, `PZ_HOME`, `PZ_PACKS` (por defecto `build/real-browser/packs`
 | Arrancar | `bash scripts/mp-server.sh start`; esperar `SERVER STARTED` en `/tmp/pz82/server.log` |
 | Parar | `bash scripts/mp-server.sh stop` (corta a todos los jugadores) |
 | Borrar el mundo | `bash scripts/mp-server.sh stop && bash scripts/mp-server.sh reset-world` (borra la partida guardada en `/tmp/pz82/zomboid`) |
-| Admin | usuario `admin`, contraseña en `/tmp/pz82/admin.pw` |
+| Admin | usuario `admin`; contraseña en `~/.config/pz-web/admin-pass` (600, persiste a reinicios; si no existe, el viejo `/tmp/pz82/admin.pw`). `bash scripts/mp-server.sh admin-pass-file` dice cuál usará `start`; nunca imprime la clave |
+| Rotar la clave admin | `bash scripts/mp-server.sh gen-admin-pass --force` escribe una nueva sin mostrarla. **No cambia nada hasta el próximo `start`**: el servidor en marcha sigue con la anterior. Se reaplica sobre el mundo existente (verificado), así que basta con parar y arrancar; el reinicio corta la partida y va agrupado con otros (OK del dueño) |
 
 Arranca sin Steam, sin UPnP, sin voz y **sin vehículos** (`Bullet.addVehicle` todavía no existe en el navegador). La configuración del mundo se aplica en `scripts/mp-server.sh` (`apply_config`). Para probar cambios de mundo sin tocar la partida en vivo, la instancia de prueba:
 

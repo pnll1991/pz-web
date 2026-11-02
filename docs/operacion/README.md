@@ -43,7 +43,7 @@ Todo escucha en `127.0.0.1`. Lo único que sale a internet es 8098, por el túne
 | `/tmp/pz80-server.log` | Log del dev server 8098 |
 | `/tmp/pzweb-access.log` | Accesos al dev server: quién está jugando |
 | `/tmp/pz82/server.log`, `/tmp/pz82/zomboid` | Log y datos del servidor PZ en vivo |
-| `/tmp/pz82/admin.pw` | Contraseña admin del servidor PZ (600). No se comparte |
+| `~/.config/pz-web/admin-pass` | Contraseña admin del servidor PZ (600). No se comparte. `/tmp/pz82/admin.pw` es el anterior, que `mp-server.sh` usa solo si falta este |
 | `/tmp/pzweb-public.key`, `/tmp/pzweb-tunnel.{log,url,pid}` | Clave y estado del túnel. La clave no se comparte ni se versiona |
 | `/tmp/pz80-locks/{chrome,build}.lock` | Candados: un Chrome de prueba y un build a la vez |
 | `~/pzshots/` | Capturas y reportes de rondas (`CLAUDE_REPORT_R*.md`). No se suben |
