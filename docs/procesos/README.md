@@ -8,4 +8,6 @@ Cómo se trabaja en este repo. Cada proceso tiene su documento acá y, si lo usa
 | [trabajo-con-agentes.md](trabajo-con-agentes.md) | Briefs, worktrees, recursos compartidos, niveles de evidencia, contexto y aprendizajes |
 | [updates-sin-build.md](updates-sin-build.md) | Cambios de `port/web` y `port/runtime` que llegan a la partida en vivo con un reload, sin compilar; `scripts/publicar_web.sh` |
 
+Cómo se levanta, se maneja y se actualiza el proyecto (comandos, puertos, logs): [`../operacion/`](../operacion/README.md).
+
 Referencias que ya existían: [`../verification.md`](../verification.md) (evidencia de la ronda 5), [`../decisions.md`](../decisions.md), [`../HANDOFF-T3.md`](../HANDOFF-T3.md) (reglas de lo que está en vivo).
