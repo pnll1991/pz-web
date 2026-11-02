@@ -1,6 +1,6 @@
 # Estado del port personal
 
-Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) archivadas en docs/status-archive.md. Estado vigente: la ronda más reciente abajo. Bloqueo actual: ver docs/CODEX_TASK_CONTINUE.md (TextureFBO / OpenGL30).
+Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) archivadas en docs/status-archive.md. Estado vigente: la ronda más reciente abajo. Bloqueo actual: ninguno (el de TextureFBO / OpenGL30 se resolvió en la ronda 58). Lo pendiente está en la sección "Pendientes vigentes" al final.
 
 ## Ronda 53 (inicio 22:27:41 según supervisor.log, corte duro 02:27)
 - 22:31 Estado de partida: repo limpio (`git status` sin cambios), `boot.wasm` 144.945.224 B del build
@@ -606,3 +606,11 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 - Evidencia: `npm test` 172/175 (fallan solo las 3 de pzbullet, como en la CI; 4 pruebas nuevas en `tests/node/perfhud.test.mjs`). Sin Chrome: en macOS no se levanta nada (`docs/operacion`).
 - Pendiente: probar en 8199 contra el `boot.wasm` compilado y ver que el indicador no tape nada del juego; el panel con todos los jugadores juntos va en un PR aparte porque necesita reiniciar el dev server.
 - 2.ª tanda (rama `feat/panel-jugadores`, encima de la anterior; **necesita reiniciar el dev server**): cada pestaña manda su resumen con `GET /perf/report` cada 5 s (el mismo pedido mide el ping; no se anota en `/tmp/pzweb-access.log`); `GET /perf` devuelve todos los jugadores de los últimos 30 s y el estado de la máquina (carga, memoria libre, RSS del dev server, puentes RakNet); `/jugadores.html` los muestra en una tabla que se actualiza cada 2 s. Nombre = cuenta del modo directo (`p…`) o `web-xxxx` por pestaña. `npm test` 176/179 (las 3 de pzbullet; 4 pruebas nuevas). Pendiente: reiniciar 8098 con OK del dueño y mirar el panel con dos jugadores reales.
+
+## Pendientes vigentes (2/11/2026)
+- Decisión del dueño: PR #18 (ronda 89, carga del mundo). Incluye dos políticas que `docs/analisis-carga-inicial.md` dejó al dueño: no repetir el sha256 de packs cacheados y caché de texturas por versión del códec (se apagan con `?packverify=1` y `?texcache=build`).
+- En vivo, con OK del dueño: un solo reinicio del dev server 8098 para `/jugadores.html` (#17), `/media-ranges` (#18) y las cabeceras de #9; confirmar que la máquina Linux tenga publicado `main`; cambiar la contraseña admin del mundo viejo si es `pzweb82`.
+- Medición en la máquina Linux (nunca se corrió con el juego): protocolos de `docs/analisis-carga-inicial.md` y `docs/analisis-carga-mundo.md`, `scripts/bench.sh --page fast.html`, indicador de fps en 8199 y panel con dos jugadores.
+- Optimización sin empezar: primera carga de 841 MB (carga del mapa y los packs por partes), URL con hash e `immutable` para `boot.wasm` y `/vendor/*`, fps del menú con partida guardada (16 vs 37) y del segundo CONTINUE (37 vs 59).
+- Juego: muerte de zombi vista desde el 2.º cliente, armas distintas del bate, vehículos (`Bullet.addVehicle`), voz, `glBegin/glEnd`, pila de matrices de función fija, ropa/pelo de `models_X`; siguen simplificadas Lighting64, PopMan64, MapCollision64 y BulletWorld.
+
