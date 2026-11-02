@@ -249,6 +249,8 @@ try {
     // packs carry the game's own .txt mesh/anim format instead (round 60), so those trees stay hidden.
     const assimpOnly = /^(models_X|anims_X)\//;
     vfs.bundleEnabled = new URLSearchParams(location.search).get('nocache') !== '1' && new URLSearchParams(location.search).get('bundle') !== '0';
+    // Ronda 90: tramos sin Range (comprimibles) solo si el dev server lo anuncia; ?slices=0 vuelve a Range.
+    vfs.remoteSlices = listed.slices === 1 && new URLSearchParams(location.search).get('slices') !== '0';
     globalThis.pzRemoteMedia = vfs.attachRemote(listed.files.filter(([name]) => !assimpOnly.test(name)));
     // Ronda 88: cada lectura sincrona de /media que no esta en los packs es un XHR (~2150 en una carga). El dev server recuerda
     // los rangos que sesiones reales pidieron, en orden de uso (/warm-media.json); se traen ya, en paralelo y en segundo plano

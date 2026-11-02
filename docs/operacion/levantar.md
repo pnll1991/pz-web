@@ -80,6 +80,10 @@ node scripts/precompress.mjs       # deja .br y .gz al lado de cada pack comprim
 
 Cada repaquetado cambia los nombres por hash: hay que volver a correrlos (son idempotentes y rápidos si no cambió nada; `lazy-packs.mjs --undo` vuelve al índice anterior). Sin ellos todo sigue funcionando como antes: el índice sin `lazy` baja los packs enteros y el dev server sirve el original sin comprimir.
 
+### `/media` comprimido (ronda 90)
+
+No hay paso previo: el dev server comprime al vuelo los tramos de `PZ_HOME/media` (nunca escribe en `PZ_HOME` ni en `build/`) y guarda lo comprimido en memoria, con la clave ruta + tamaño + mtime + tramo. `PZWEB_MEDIA_CACHE_MB` (por defecto 256) acota esa caché. El navegador pide cada tramo como `/media/<archivo>?r=<inicio>-<fin>` **sin** cabecera Range (con Range, Chrome manda `Accept-Encoding: identity` y no se puede comprimir); lo hace solo si `/media-manifest.json` trae `"slices":1`, así que una página nueva contra un dev server viejo sigue usando Range. `?slices=0` en la URL de la página vuelve a Range. Los tipos ya comprimidos (png, pack, ogg, bank, bik, zip, glb…) se mandan tal cual; la lista y las razones medidas están en `dev-server/server.mjs` (`MEDIA_INCOMPRESSIBLE`) y en `docs/analisis-carga-inicial.md`.
+
 ## 7. Arrancar todo
 
 ```bash

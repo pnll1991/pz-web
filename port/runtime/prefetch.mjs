@@ -11,6 +11,12 @@
 // /media-ranges solo sirve /media/ y /media-bundle. El resto del warm-list (los tramos `/packs/<sha>.bin` de los packs perezosos, #27) va
 // siempre por el camino de a uno, y ahí pasa primero por onEntry (lazypack.mjs), que los trae como tramos verificados. Los dos caminos corren
 // a la vez y comparten limitBytes (bytes de vfs.prefetched + bytes de tramos perezosos).
+// Ronda 90: si el VFS usa tramos sin Range (vfs.remoteSlices), una entrada `/media/…?r=a-b` + `bytes=a-(b-1)` se pide igual que la
+// pediría fetchRange: sin Range, para que llegue comprimida. La clave `${url}|${range}` no cambia (la caché de media sigue valiendo).
+export function sliceEntry(url, range) {
+  const q = /^\/media\/[^?]*\?(?:.*&)?r=(\d+)-(\d+)(?:&|$)/.exec(url), m = /^bytes=(\d+)-(\d+)$/.exec(range || '');
+  return !!(q && m && q[1] === m[1] && Number(q[2]) === Number(m[2]) + 1);
+}
 const BATCH_SIZES = [32, 64, 128]; // el resto va de a 128; el servidor además corta cada respuesta a ~24 MiB
 
 function parseBatch(buffer) {
@@ -57,10 +63,13 @@ export async function prefetchMedia(vfs, { fetchImpl = globalThis.fetch.bind(glo
         }
         if (vfs.prefetched.has(`${url}|${range}`)) { stats.cached++; continue; }
         try {
-          const r = await fetchImpl(url, { cache: 'no-store', headers: range ? { Range: range } : {} });
+          const slice = vfs.remoteSlices && sliceEntry(url, range);
+          const r = await fetchImpl(url, { cache: 'no-store', headers: range && !slice ? { Range: range } : {} });
           stats.requests++;
-          if (r.status !== 200 && r.status !== 206) throw new Error(`HTTP ${r.status}`);
-          keep(url, range, new Uint8Array(await r.arrayBuffer()));
+          if (slice ? r.status !== 200 : r.status !== 200 && r.status !== 206) throw new Error(`HTTP ${r.status}`);
+          const bytes = new Uint8Array(await r.arrayBuffer());
+          if (slice) { const m = /^bytes=(\d+)-(\d+)$/.exec(range); if (bytes.length !== m[2] - m[1] + 1) throw new Error('short slice'); }
+          keep(url, range, bytes);
         } catch { stats.failed++; }
         done++;
         if (done % 50 === 0) progress();

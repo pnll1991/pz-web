@@ -673,3 +673,8 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 - Controles (#25): mirar en vivo que `GLFW_FOCUSED=0` en una pestaña sin foco no cambie nada visible.
 - Clave admin (#23): sin confirmar si el servidor PZ en vivo ya se reinició con el archivo nuevo (el reinicio de 8098 no lo hace); si no, sigue el `NEED RESTART: admin password rotation` de la sección de rotación de arriba.
 - Consejo para instancias de prueba: un mundo de prueba recién creado arranca con `DoLuaChecksum=true` hasta que `mp-server.sh` reescribe el `.ini` en un segundo arranque; ponerlo en `false` antes de conectar o el servidor expulsa al cliente del modo directo.
+
+## R90 (2/11/2026): `/media` comprimido (rama `perf/media-compression`)
+- Hecho: tramos de `/media` pedidos como `?r=a-b` sin Range (solo si el manifest trae `slices:1`), comprimidos al vuelo con br/gzip y una caché en memoria por ruta+tamaño+mtime+tramo; los bundles de lotheader también se comprimen. Con Range todo sigue como antes. Diseño y razones por tipo en `docs/analisis-carga-inicial.md`.
+- Evidencia (juego real, instancia propia 8221 + PZ 16301, `load-bytes.mjs --runs 2`): 1.ª carga 642,8 → 557,8 MB (`/media` 241,8 → 156,7 MB), ingame 300,4 → 321,8 s en loopback (una corrida, máquina con carga ~4); 2.ª carga 88,4 → 49,2 MB, 211,1 → 209,6 s. `npm test` 218/221 (fallan solo las 3 de pzbullet, como en la CI; 12 pruebas nuevas en `tests/node/server-media-compress.test.mjs`).
+- Pendiente: **NEED RESTART: dev server 8098** + `sync_web.sh` para publicarlo (con el server viejo o la página vieja todo sigue con Range, sin comprimir). Medir por el túnel real. `.pack` (108 MB del warm-list, 0,94) y `.png` (34 MB) siguen sin comprimir.
