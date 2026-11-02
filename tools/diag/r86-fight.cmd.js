@@ -5,7 +5,7 @@
 // that the same zombie id is gone, that b got OnZombieDead for it and that a corpse lies on its square.
 // Prints "RESULT ..." lines (one per weapon) and "SUMMARY".  Edit WEAPONS to test others (Base.<Type>).
 const WEAPONS = ['Base.BaseballBat', 'Base.Axe', 'Base.Crowbar', 'Base.Machete'];
-const MAX_TRIES = 6;
+const MAX_TRIES = 4;
 const LIST = `local list = getCell():getZombieList(); local ids = {}
 for i = 0, list:size() - 1 do local z = list:get(i); if not z:isDead() then ids[#ids + 1] = tostring(z:getOnlineID()) end end
 say("IDS " .. table.concat(ids, ","))`;
@@ -21,6 +21,8 @@ async function grab(c, code, re) {
   c.page.on('console', h); await lua(c, code); c.page.off('console', h); return got;
 }
 const ids = async c => { const g = await grab(c, LIST, /PZWEB-STATE:IDS (\S*)/); return g ? new Set(g[1].split(',').filter(Boolean)) : null; };
+const CLEAR = async () => { await lua(a, `SendCommandToServer("/removezombies -remove true -radius 80")`); await sleep(6000); };
+const EQUIP = (type) => `local p = getPlayer(); local it = p:getInventory():getFirstTypeRecurse("${type}"); if it then p:setPrimaryHandItem(it); p:setSecondaryHandItem(it); say("EQUIPPED " .. it:getType() .. " twoHand=" .. tostring(it:isTwoHandWeapon())) else say("EQUIPPED none") end`;
 const deadEvents = { a: new Set(), b: new Set() };
 for (const [n, c] of [['a', a], ['b', b]]) c.page.on('console', m => { const g = /PZWEB-STATE:evt:zombiedead id=(\S+)/.exec(m.text()); if (g) deadEvents[n].add(g[1]); });
 
@@ -29,29 +31,35 @@ await lua(a, `SendCommandToServer("/godmode -true")`);
 await lua(a, `SendCommandToServer("/setaccesslevel \\"${bu}\\" admin")`);
 await sleep(3000);
 await lua(b, `SendCommandToServer("/godmode -true")`);
+// zombies that bite interrupt every swing before its damage frame (PlayerHitReactionState), so 'a' is also made invisible to them: they stay where /createhorde left them
+await lua(a, `SendCommandToServer("/invisible -true")`); await sleep(2000);
 await lua(a, `PZW_REC = true`); await lua(b, `PZW_REC = true`);
-await lua(a, `SendCommandToServer("/createhorde 12")`);
-await sleep(12000);
+await CLEAR();
+log('both', 'zombies near after clear: a=' + (await ids(a))?.size + ' b=' + (await ids(b))?.size);
 
 const results = [];
 for (const W of WEAPONS) {
   const type = W.replace(/^Base\./, ''), r = { weapon: W, equipped: false, swung: false, killed: null, inBbefore: false, goneFromB: false, bDeadEvent: false, bCorpse: -1, aDeadEvent: false };
   await lua(a, `SendCommandToServer("/additem \\"admin\\" \\"${W}\\" 1")`);
   await sleep(3000);
-  const eq = await grab(a, `local p = getPlayer(); local it = p:getInventory():getFirstTypeRecurse("${type}"); if it then p:setPrimaryHandItem(it); p:setSecondaryHandItem(it); say("EQUIPPED " .. it:getType() .. " twoHand=" .. tostring(it:isTwoHandWeapon())) else say("EQUIPPED none") end`, /PZWEB-STATE:EQUIPPED (.*)/);
+  await CLEAR();
+  await lua(a, `SendCommandToServer("/createhorde 2")`); await sleep(10000);
+  const eq = await grab(a, EQUIP(type), /PZWEB-STATE:EQUIPPED (.*)/);
   log('a', W, 'equip:', eq?.[1]); r.equipped = !!eq && !/none/.test(eq[1]);
   if (!r.equipped) { results.push(r); continue; }
   for (let n = 0; n < MAX_TRIES && !r.killed; n++) {
+    await grab(a, EQUIP(type), /PZWEB-STATE:EQUIPPED (.*)/); // the hit reactions can drop the weapon from the hands
     const g = await grab(a, TARGET, /PZWEB-STATE:TARGET (\S+) (\S+) (\S+) (\S+) (\S+)/);
     if (!g) { log('a', 'no standing zombie, waiting'); await sleep(8000); continue; }
     const t = { id: g[1], d: +g[2], hp: +g[3], x: +g[4], y: +g[5] };
     const ib = await ids(b);
     log('a', W, 'attempt', n, JSON.stringify(t), 'inB=' + (ib ? ib.has(t.id) : '?'));
-    if (t.d > 2.2) {
+    if (t.d > 1.3) {
+      // zombies dropped by /createhorde stand still and the client-side pathfinding did not move 'a': use the admin teleport to stand next to the nearest standing zombie
       await lua(a, `local p = getPlayer(); local list = getCell():getZombieList(); local best, bz = 1e9
 for i = 0, list:size() - 1 do local z = list:get(i); local d = math.abs(z:getX() - p:getX()) + math.abs(z:getY() - p:getY()); if d < best and not z:isDead() and not z:isOnFloor() then best = d; bz = z end end
-if bz then ISTimedActionQueue.add(ISPathFindAction:pathToLocationF(p, bz:getX() - 1.3, bz:getY(), 0)) end`);
-      await sleep(6000); continue;
+if bz then SendCommandToServer("/teleportto " .. string.format("%.1f,%.1f,0", bz:getX() - 0.6, bz:getY())) end`);
+      await sleep(4000); continue;
     }
     const pos = await grab(a, TARGET, /PZWEB-STATE:TPOS (\S+) (\S+)/);
     r.inBbefore = !!ib && ib.has(t.id);
