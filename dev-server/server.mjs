@@ -42,18 +42,24 @@ export function parseRange(value, size) {
   return { start, end };
 }
 
-/** Round 79: [[path relative to media/, size], ...] for every regular file (symlinks followed only inside media). */
+/** Round 79: [[path relative to media/, size], ...] for every regular file (symlinks followed only inside media).
+ *  `version` (sha256 of names, sizes and mtimes) keys the browser's persistent media cache (port/runtime/mediacache.mjs):
+ *  any change in PZ_HOME/media invalidates it. Returned with a strong ETag so a reload revalidates with a 304. */
 async function buildManifest(mediaRoot) {
-  const out = [];
+  const out = [], hash = createHash('sha256');
   async function walk(dir, rel) {
-    for (const entry of await readdir(dir, { withFileTypes:true })) {
+    for (const entry of (await readdir(dir, { withFileTypes:true })).sort((a, b) => (a.name < b.name ? -1 : 1))) {
       const full = path.join(dir, entry.name), name = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isDirectory()) await walk(full, name);
-      else if (entry.isFile()) out.push([name, (await stat(full)).size]);
+      else if (entry.isFile()) {
+        const info = await stat(full);
+        out.push([name, info.size]); hash.update(`${name}\0${info.size}\0${info.mtimeMs}\n`);
+      }
     }
   }
   await walk(mediaRoot, '');
-  return JSON.stringify({ schema_version:1, files:out });
+  const body = JSON.stringify({ schema_version:1, version:`media:${hash.digest('hex')}`, files:out });
+  return { body, etag:`"${createHash('sha256').update(body).digest('hex')}"` };
 }
 /** Round 81: [u32le headerLength][JSON [[name,size],...]][file bytes in header order]; same bytes as GET /media/<dir>/<name>. */
 async function buildBundle(mediaRoot, folder, ext) {
@@ -149,8 +155,9 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
       if (pathname === '/media-manifest.json') { // Round 79: every PZ_HOME/media file with its size, for on-demand reads
         if (!mediaRoot) { respond(404, 'PZ_HOME not mounted'); return; }
         manifest ??= buildManifest(mediaRoot);
-        const body = await manifest;
-        res.writeHead(200, { ...headers, 'Content-Type':'application/json', 'Content-Length':Buffer.byteLength(body) });
+        const { body, etag } = await manifest;
+        if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ...headers, ETag:etag }); res.end(); return; }
+        res.writeHead(200, { ...headers, 'Content-Type':'application/json', 'Content-Length':Buffer.byteLength(body), ETag:etag });
         res.end(req.method === 'HEAD' ? undefined : body); return;
       }
       if (pathname === '/media-bundle') { // Round 81 (front 2): every direct child of media/<dir> with one extension, in one response
@@ -202,6 +209,9 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
         const modified = info.mtime.toUTCString();
         const fileHeaders = { ...headers, 'Content-Type': types.get(path.extname(resolved).toLowerCase()) || 'application/octet-stream',
           'Accept-Ranges': 'bytes', ETag: etag, 'Last-Modified': modified };
+        // Packs are content-addressed (<sha256>.bin, checked again by port/runtime/packs.mjs): a name never changes bytes,
+        // so the browser may keep them without revalidating. index.json and everything else keep no-cache.
+        if (pathname.startsWith('/packs/') && /^[a-f0-9]{64}\.bin$/.test(relative)) fileHeaders['Cache-Control'] = 'public, max-age=31536000, immutable';
         const candidates = req.headers['if-none-match']?.split(',').map(s => s.trim().replace(/^W\//, ''));
         if (candidates?.includes('*') || candidates?.includes(etag.replace(/^W\//, ''))) {
           res.writeHead(304, fileHeaders); res.end(); return;

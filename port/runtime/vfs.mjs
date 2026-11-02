@@ -97,6 +97,13 @@ export class VirtualFileSystem {
     this.bundleStats = { requests:0, files:0, bytes:0, ms:0, hits:0, mismatches:0, failed:0 };
     // Round 84: responses fetched ahead (port/runtime/prefetch.mjs), keyed `${url}|${Range}`; each is used once, so memory is returned.
     this.prefetched = new Map(); this.prefetchHits = 0;
+    // Bytes que se acaban de traer de la red (url, Range, bytes): port/runtime/mediacache.mjs los guarda para la recarga
+    // siguiente. Un error del callback nunca afecta la lectura.
+    this.onRemoteFetch = null;
+  }
+  noteRemoteFetch(url, range, bytes) {
+    if (!this.onRemoteFetch) return;
+    try { this.onRemoteFetch(url, range, bytes); } catch { /* la caché es opcional */ }
   }
   takePrefetched(url, range = '') {
     const key = `${url}|${range}`, bytes = this.prefetched.get(key);
@@ -124,6 +131,7 @@ export class VirtualFileSystem {
         if (xhr.status !== 200) throw new Error(`HTTP ${xhr.status}`);
         const text = xhr.responseText; bytes = new Uint8Array(text.length);
         for (let i = 0; i < bytes.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
+        this.noteRemoteFetch(url, '', bytes);
       }
       const headerLength = new DataView(bytes.buffer).getUint32(0, true);
       const listed = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + headerLength)));
@@ -182,6 +190,7 @@ export class VirtualFileSystem {
     const out = new Uint8Array(n);
     for (let i = 0; i < n; i++) out[i] = text.charCodeAt(i) & 0xff;
     const s = this.remoteStats; s.requests++; s.bytes += n; s.ms += performance.now() - t0;
+    this.noteRemoteFetch(url, `bytes=${start}-${end - 1}`, out);
     return out;
   }
   remoteBlock(path, index) {
