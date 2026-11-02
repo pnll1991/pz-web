@@ -5,6 +5,7 @@ import { createPublicGate } from './public-mode.mjs';
 import { createWarmList } from './warm-list.mjs';
 import { createPlayerBoard } from './players.mjs';
 import { acceptedCodings, createCompressor } from './compress.mjs';
+import { buildRangesResponse, parseIndices } from './media-ranges.mjs';
 import { appendFile } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { realpath, stat, open, readFile, readdir } from 'node:fs/promises';
@@ -21,6 +22,15 @@ const types = new Map(Object.entries({
   '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.ogg': 'audio/ogg',
 }));
 const TEXTUAL = new Set(['.html', '.js', '.mjs', '.css', '.json', '.txt', '.svg']);
+// Ronda 90: /media ya comprimido de por sí. Medido con br q5 / gzip 6 sobre bloques de 1 MB de PZ_HOME/media (docs/analisis-carga-inicial.md):
+// png 0,99, pack 0,94, ogg 0,99, bank 0,98, bik 0,98, zip 0,98, glb 0,96, dat/bk2/backup 1,00, jpg 1,00. No se intenta: es CPU sin ganancia.
+// El resto se comprime si baja al menos MEDIA_MIN_SAVING (txt 0,21, lua 0,17, xml 0,28, lotpack 0,10, lotheader 0,11, bin 0,08, tiles 0,03,
+// x 0,22, wav 0,76…); lo que no baja queda anotado en la caché como "no vale la pena" y no se vuelve a probar.
+export const MEDIA_INCOMPRESSIBLE = new Set(['.png', '.jpg', '.jpeg', '.ogg', '.ogv', '.mp3', '.bank', '.bik', '.bk2', '.pack',
+  '.zip', '.gz', '.br', '.7z', '.glb', '.dat', '.backup', '.webm', '.webp', '.woff2']);
+export const MEDIA_MIN_SAVING = 0.1;
+// Un tramo más grande que esto se manda sin comprimir (stream directo del disco, sin armar el tramo en memoria).
+export const MEDIA_SLICE_COMPRESS_MAX = 32 << 20;
 const headers = {
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Embedder-Policy': 'require-corp',
@@ -30,6 +40,17 @@ const headers = {
 };
 
 export { acceptedCodings };
+
+/** Ronda 90: tramo de /media pedido como `?r=<inicio>-<fin>` (fin exclusivo, el formato que ya usa vfs.fetchRange) y SIN cabecera Range.
+ *  undefined si no hay `r`; null si es inválido o se sale del archivo. */
+export function parseSlice(value, size) {
+  if (value == null) return undefined;
+  const match = /^(\d+)-(\d+)$/.exec(value);
+  if (!match) return null;
+  const start = Number(match[1]), end = Number(match[2]);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start >= end || end > size) return null;
+  return { start, end };
+}
 
 export function parseRange(value, size) {
   const match = /^bytes=(\d*)-(\d*)$/.exec(value);
@@ -50,7 +71,7 @@ export function parseRange(value, size) {
 /** Round 79: [[path relative to media/, size], ...] for every regular file (symlinks followed only inside media).
  *  `version` (sha256 of names, sizes and mtimes) keys the browser's persistent media cache (port/runtime/mediacache.mjs):
  *  any change in PZ_HOME/media invalidates it. Returned with a strong ETag so a reload revalidates with a 304. */
-async function buildManifest(mediaRoot) {
+async function buildManifest(mediaRoot, extra = {}) {
   const out = [], hash = createHash('sha256');
   async function walk(dir, rel) {
     for (const entry of (await readdir(dir, { withFileTypes:true })).sort((a, b) => (a.name < b.name ? -1 : 1))) {
@@ -63,7 +84,8 @@ async function buildManifest(mediaRoot) {
     }
   }
   await walk(mediaRoot, '');
-  const body = JSON.stringify({ schema_version:1, version:`media:${hash.digest('hex')}`, files:out });
+  // `slices: 1` (ronda 90): este servidor entiende /media/<archivo>?r=a-b sin Range (y lo comprime); el cliente solo lo usa si lo ve.
+  const body = JSON.stringify({ schema_version:1, version:`media:${hash.digest('hex')}`, ...extra, files:out });
   return { body, etag:`"${createHash('sha256').update(body).digest('hex')}"` };
 }
 /** Round 81: [u32le headerLength][JSON [[name,size],...]][file bytes in header order]; same bytes as GET /media/<dir>/<name>. */
@@ -91,6 +113,24 @@ function accessLog(req, status) {
   appendFile(ACCESS_LOG, line, () => {});
 }
 
+/** Ronda 90: respuesta de un tramo de /media (ver parseSlice). ETag débil con tamaño, mtime, tramo y codificación. */
+async function sendSlice(req, res, file, resolved, info, { start, end }, mediaCompressor) {
+  const ext = path.extname(resolved).toLowerCase(), length = end - start;
+  const coding = !MEDIA_INCOMPRESSIBLE.has(ext) && length <= MEDIA_SLICE_COMPRESS_MAX ? acceptedCodings(req.headers['accept-encoding'])[0] : undefined;
+  const read = async () => { const buf = Buffer.alloc(length); const { bytesRead } = await file.read(buf, 0, length, start); return buf.subarray(0, bytesRead); };
+  const packed = coding ? await mediaCompressor.get(`${resolved}|${info.size}|${info.mtimeMs}|${start}-${end}`, coding, read, length) : null;
+  const etag = `W/"${info.size.toString(16)}-${info.mtimeMs.toString(16)}-${start.toString(16)}-${end.toString(16)}${packed ? '-' + coding : ''}"`;
+  const out = { ...headers, 'Content-Type': types.get(ext) || 'application/octet-stream', ETag: etag, 'Last-Modified': info.mtime.toUTCString(),
+    'X-PZ-Slice': `${start}-${end}/${info.size}`, ...(MEDIA_INCOMPRESSIBLE.has(ext) ? {} : { Vary: 'Accept-Encoding' }),
+    ...(packed ? { 'Content-Encoding': coding } : {}) };
+  const candidates = req.headers['if-none-match']?.split(',').map(s => s.trim().replace(/^W\//, ''));
+  if (candidates?.includes('*') || candidates?.includes(etag.replace(/^W\//, ''))) { res.writeHead(304, out); res.end(); return; }
+  res.writeHead(200, { ...out, 'Content-Length': packed ? packed.length : length });
+  if (req.method === 'HEAD') { res.end(); return; }
+  if (packed) { res.end(packed); return; }
+  await pipeline(file.createReadStream({ start, end: end - 1, autoClose: false }), res);
+}
+
 /** El <archivo>.br / .gz más conveniente (más nuevo que el original y más chico) para este Accept-Encoding, o null. Devuelve el handle abierto. */
 async function pickPrecompressed(resolved, info, acceptEncoding) {
   for (const coding of acceptedCodings(acceptEncoding)) {
@@ -109,6 +149,8 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
   const gate = createPublicGate({ key: publicKey });
   const warm = createWarmList({ file: warmFile });
   const compressor = createCompressor();
+  // Ronda 90: tramos de /media y bundles de lotheader. Clave = ruta + tamaño + mtime + tramo: un archivo que cambia en PZ_HOME no reusa nada.
+  const mediaCompressor = createCompressor({ maxBytes: Number(process.env.PZWEB_MEDIA_CACHE_MB || 256) << 20, minSaving: MEDIA_MIN_SAVING });
   let bridge = null;
   const board = createPlayerBoard({ bridges: () => bridge?.sessions.size ?? null });
   webRoot = await realpath(webRoot).catch(() => { throw new Error('Build missing. Run scripts/build.sh first.'); });
@@ -141,9 +183,9 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
       res.end(req.method === 'HEAD' ? undefined : message);
     };
     // Ronda 89: respuesta de texto en memoria con br/gzip si el navegador lo acepta (cacheada por `key`). `etag` (opcional) lleva el coding.
-    const sendText = async (key, body, extra, etag) => {
+    const sendText = async (key, body, extra, etag, using = compressor) => {
       const coding = req.method === 'GET' || req.method === 'HEAD' ? acceptedCodings(req.headers['accept-encoding'])[0] : undefined;
-      const packed = coding ? await compressor.get(key, coding, Buffer.from(body)) : null;
+      const packed = coding ? await using.get(key, coding, Buffer.isBuffer(body) ? body : Buffer.from(body)) : null;
       const out = { ...headers, ...extra, Vary: 'Accept-Encoding', ...(packed ? { 'Content-Encoding': coding } : {}) };
       const tag = etag && packed ? etag.replace(/"$/, `-${coding}"`) : etag;
       if (tag) out.ETag = tag;
@@ -178,7 +220,11 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
         const body = JSON.stringify(warm.list());
         await sendText(`warm|${warm.size()}`, body, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); return;
       }
-      if (req.method === 'GET' && (pathname === '/media-bundle' || ((pathname.startsWith('/media/') || /^\/packs\/[a-f0-9]{64}\.bin$/.test(pathname)) && req.headers.range) && !/[?&]fill=1\b/.test(req.url))) warm.record(req.url, req.headers.range || '');
+      // Ronda 90: un tramo pedido sin Range (?r=a-b) se anota con el Range equivalente, igual que lo anotaba un cliente viejo:
+      // la misma entrada sirve a los dos y la clave `${url}|${range}` de la caché de media no cambia.
+      const sliceQuery = pathname.startsWith('/media/') && !req.headers.range ? /^(\d+)-(\d+)$/.exec(new URL(req.url, 'http://x').searchParams.get('r') ?? '') : null;
+      const warmRange = req.headers.range || (sliceQuery && Number(sliceQuery[2]) > Number(sliceQuery[1]) ? `bytes=${sliceQuery[1]}-${Number(sliceQuery[2]) - 1}` : '');
+      if (req.method === 'GET' && (pathname === '/media-bundle' || ((pathname.startsWith('/media/') || /^\/packs\/[a-f0-9]{64}\.bin$/.test(pathname)) && warmRange) && !/[?&]fill=1\b/.test(req.url))) warm.record(req.url, warmRange);
       if (pathname === '/perf/report') { // reporte de rendimiento de una pestaña (dev-server/players.mjs)
         const ok = board.report(new URL(req.url, 'http://x').searchParams);
         res.writeHead(ok ? 204 : 400, { ...headers, 'Cache-Control': 'no-store' }); res.end(); return;
@@ -195,7 +241,7 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
       }
       if (pathname === '/media-manifest.json') { // Round 79: every PZ_HOME/media file with its size, for on-demand reads
         if (!mediaRoot) { respond(404, 'PZ_HOME not mounted'); return; }
-        manifest ??= buildManifest(mediaRoot);
+        manifest ??= buildManifest(mediaRoot, { slices: 1 });
         const { body, etag } = await manifest;
         await sendText(`manifest|${etag}`, body, { 'Content-Type': 'application/json' }, etag); return;
       }
@@ -209,6 +255,15 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
         const key = `${folder}\0${ext}`;
         bundles.has(key) || bundles.set(key, buildBundle(mediaRoot, folder, ext));
         const body = await bundles.get(key);
+        // Ronda 90: los lotheader bajan a ~0,11 con br; el bundle se arma una vez por proceso, así que la clave es la del bundle.
+        await sendText(`bundle|${key}`, body, { 'Content-Type':'application/octet-stream', 'Cache-Control':'no-store' }, undefined, mediaCompressor); return;
+      }
+      if (pathname === '/media-ranges') { // Ronda 89: varias entradas del warm-list en una respuesta (ver dev-server/media-ranges.mjs)
+        if (!mediaRoot) { respond(404, 'PZ_HOME not mounted'); return; }
+        const indices = parseIndices(new URL(req.url, `http://${authority}`).searchParams.get('i'));
+        if (!indices) { respond(400, 'Invalid ranges request'); return; }
+        const { body } = await buildRangesResponse({ mediaRoot, entries: warm.list(), indices,
+          bundle: (folder, ext) => { const key = `${folder}\0${ext}`; bundles.has(key) || bundles.set(key, buildBundle(mediaRoot, folder, ext)); return bundles.get(key); } });
         res.writeHead(200, { ...headers, 'Content-Type':'application/octet-stream', 'Content-Length':body.length, 'Cache-Control':'no-store' });
         res.end(req.method === 'HEAD' ? undefined : body); return;
       }
@@ -249,6 +304,12 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
         // más nuevo que el original y más chico. Con Range se sirve el original (un rango sobre un cuerpo codificado no significa lo
         // mismo: los chunks de un pack perezoso se piden con Range). El ETag lleva el codec para no mezclar los cuerpos.
         const isPack = pathname.startsWith('/packs/') && /^[a-f0-9]{64}\.bin$/.test(relative);
+        // Ronda 90: tramo de /media sin Range (?r=a-b, fin exclusivo): 200 con exactamente esos bytes, comprimido con br/gzip si el
+        // navegador lo acepta y el tipo lo vale. Con Range (clientes viejos, packs perezosos) todo sigue como antes y sin comprimir:
+        // Chrome manda `Accept-Encoding: identity` en todo pedido con Range, así que comprimir ahí no es posible.
+        const slice = base === mediaRoot && !req.headers.range ? parseSlice(new URL(req.url, 'http://x').searchParams.get('r'), info.size) : undefined;
+        if (slice === null) { respond(416, 'Unsatisfiable slice', { 'Content-Range': `bytes */${info.size}` }); return; }
+        if (slice) { await sendSlice(req, res, file, resolved, info, slice, mediaCompressor); return; }
         const compressible = path.extname(resolved).toLowerCase() === '.wasm' || isPack;
         const encoded = compressible && !req.headers.range ? await pickPrecompressed(resolved, info, req.headers['accept-encoding']) : null;
         const etag = `W/"${info.size.toString(16)}-${info.mtimeMs.toString(16)}${encoded ? '-' + encoded.coding : ''}"`;

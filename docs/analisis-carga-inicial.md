@@ -155,3 +155,42 @@ Lo esperado en la segunda carga con el mismo build y la misma copia: `pzPackStat
 - **Con solo `sync_web` + recarga** (`port/web/*`, `port/runtime/*.mjs`) el juego sigue funcionando y no cambia nada visible: sin `lazy` en el índice se baja todo como antes.
 - Para la compresión y los tramos hay que correr `node scripts/lazy-packs.mjs && node scripts/precompress.mjs` sobre `build/real-browser/packs` (no corta la partida; con el JS nuevo ya publicado primero) y **reiniciar el dev server 8098** (`dev-server/*.mjs` nuevos: sin reinicio no se sirve lo precomprimido ni el texto comprimido ni se anotan los tramos en el warm-list). Reiniciar corta la partida: necesita OK del dueño.
 
+
+## Ronda 90: `/media` comprimido (rama `perf/media-compression`)
+
+### Diseño
+- El navegador lee `/media` con XHR síncronos con `Range` (bloques de 1 MB, `?r=a-b` en la URL). Con `Range`, Chrome manda `Accept-Encoding: identity`, así que esos pedidos no se pueden comprimir. Por eso, si `/media-manifest.json` trae `"slices":1`, el cliente (`vfs.fetchRange`, `prefetch.mjs`) pide el mismo tramo **sin** Range: `GET /media/<archivo>?r=<inicio>-<fin>` (fin exclusivo) → 200 con exactamente esos bytes, en br o gzip si conviene (`X-PZ-Slice: a-b/tamaño`, `Vary: Accept-Encoding`, ETag débil con tamaño, mtime, tramo y codificación).
+- Con Range todo sigue igual que antes (206 sin comprimir): clientes viejos, packs perezosos. Una página nueva contra un servidor viejo no ve `slices` y sigue con Range. `?slices=0` fuerza Range.
+- Compresión al vuelo (br q5 / gzip 6) con caché en memoria (`PZWEB_MEDIA_CACHE_MB`, 256 por defecto) por ruta + tamaño + mtime + tramo + codificación. Un archivo que cambia en `PZ_HOME` no reusa nada. Los pedidos simultáneos del mismo tramo comparten la compresión. Lo que no baja al menos 10 % queda anotado como "no vale la pena". No se escribe en `PZ_HOME` ni en `build/`: no hace falta paso previo.
+- El warm-list anota el tramo sin Range con el Range equivalente. La entrada y la clave `${url}|${range}` de la caché de media son las mismas que antes, así que la caché del navegador no se invalida.
+- Los bundles de `.lotheader` (`/media-bundle`) también salen comprimidos (no usan Range).
+
+### Razones medidas (br q5 / gzip 6, bloques de 1 MB del medio de cada archivo, muestra de hasta 24 MB por tipo de `PZ_HOME/media`)
+| tipo | br | gzip | | tipo | br | gzip |
+|---|---|---|---|---|---|---|
+| lotpack | 0,10 | 0,10 | | png | 0,99 | 0,99 |
+| lotheader | 0,11 | 0,14 | | pack | 0,94 | 0,94 |
+| bin | 0,08 | 0,09 | | ogg | 0,99 | 0,99 |
+| tiles | 0,03 | 0,04 | | bank | 0,98 | 0,98 |
+| txt | 0,21 | 0,24 | | bik | 0,98 | 0,98 |
+| lua | 0,17 | 0,19 | | zip | 0,98 | 0,99 |
+| xml | 0,28 | 0,34 | | glb | 0,96 | 0,96 |
+| json | 0,31 | 0,33 | | dat / bk2 / backup / jpg | 1,00 | 1,00 |
+| x | 0,22 | 0,24 | | | | |
+| fbx | 0,38 | 0,39 | | | | |
+| pzby | 0,17 | 0,20 | | | | |
+| wav | 0,76 | 0,78 | | | | |
+
+Los de la derecha no se intentan (`MEDIA_INCOMPRESSIBLE`). En el warm-list real, 108 MB de los ~175 MB con Range son `.pack` y 34 MB son `.png`: por eso `/media` baja un 35 % y no más.
+
+### Resultado (juego real, instancia propia web 8221 + PZ 16301, packs en vivo de solo lectura, copia del warm-list en vivo, `load-bytes.mjs --runs 2`, loopback)
+| | antes (dev) | después |
+|---|---|---|
+| 1.ª carga, total | 642,8 MB | 557,8 MB |
+| 1.ª carga, `/media` | 241,8 MB / 4730 pedidos | 156,7 MB (238,9 MB descomprimidos) / 4730 |
+| 1.ª carga, ingame | 300,4 s | 321,8 s |
+| 2.ª carga, total | 88,4 MB | 49,2 MB |
+| 2.ª carga, `/media` | 88,3 MB | 49,1 MB (85,5 MB descomprimidos) / 629 |
+| 2.ª carga, ingame | 211,1 s | 209,6 s |
+
+En loopback los segundos no mejoran: la 1.ª carga tardó 21 s más, en una máquina compartida con carga ~4 y una sola corrida. El servidor gastó 12,9 s de CPU en toda la 1.ª carga, con compresión incluida. La ganancia de bytes se nota por el túnel, que no se midió.

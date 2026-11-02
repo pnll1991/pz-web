@@ -8,6 +8,7 @@ Todo cambio entra por PR a `dev` y llega a lo que está en vivo cuando el dueño
 | `docs/`, `*.md`, `tests/`, `.github/`, `.claude/` | Nada | No |
 | `port/src`, `port/config`, `port/pom.xml`, `tools/compatibility`, `tools/exposure`, `tools/glgen` (Java, TeaVM, transformers) | Build: `bash scripts/fast.sh rebuild` (versión rápida) y/o `bash scripts/build.sh --with-game` (dev); después recargar | No: el `boot.wasm` se reemplaza de forma atómica al final |
 | `dev-server/*.mjs` | `bash scripts/dev_server_8098.sh restart` (con el túnel abierto, ver [manejar.md](manejar.md#dev-server-8098)) | Sí, unos segundos; los jugadores recargan |
+| `/media` comprimido (ronda 90: `dev-server/server.mjs` + `port/runtime/vfs.mjs`, `prefetch.mjs`, `port/web/game.mjs`) | Las dos filas de arriba, en cualquier orden: `sync_web.sh` y reiniciar el dev server. Una página vieja contra el server nuevo sigue con Range (sin comprimir) y una página nueva contra el server viejo también (no ve `slices` en el manifest); comprime recién con los dos y una recarga. El warm-list y la caché de media del navegador siguen valiendo | Sí, por el reinicio del dev server |
 | `scripts/mp-server.sh` o la configuración del mundo | `bash scripts/mp-server.sh stop && bash scripts/mp-server.sh start` (y `reset-world` si cambia algo que solo se aplica al crear el mundo, p. ej. la densidad de zombis: [manejar.md](manejar.md#densidad-de-zombis-necesita-un-mundo-nuevo); `reset-world` borra la partida) | Sí: todos se desconectan |
 | `tools/mp-bridge/` | `bash scripts/mp-bridge.sh build`; cada conexión nueva usa el puente nuevo | Las conexiones abiertas siguen con el viejo |
 | `scripts/precompress.mjs`, `scripts/lazy-packs.mjs` | Correrlos sobre `build/real-browser/packs` ([levantar.md](levantar.md#paquetes-comprimidos-y-tiles2x-perezoso-ronda-89)); el `index.json` perezoso se ve al recargar. Para que el dev server sirva lo comprimido y anote los tramos en el warm-list hay que reiniciarlo (fila `dev-server/*.mjs`) | No, salvo el reinicio del dev server |
@@ -49,6 +50,16 @@ Un build a la vez (`/tmp/pz80-locks/build.lock`). Con `PZ_NO_SWAP=1` el resultad
 - Build: rehacer el build en el commit anterior; no hay copia del `boot.wasm` previo salvo que se haya guardado a mano.
 - Paquetes: restaurar el `index.json` de respaldo (los blobs anteriores se conservan).
 
+## Caché de texturas: cuándo subir `CODEC_VERSION`
+
+Desde la ronda 89 las páginas decodificadas en IndexedDB se llavean por `CODEC_VERSION` (`port/runtime/texcache.mjs`) y no por el build, así que sobreviven a un `boot.wasm` nuevo. La clave tiene el PNG de entrada, pero no el código que lo decodifica: si ese código cambia y nadie sube la versión, los navegadores siguen usando páginas viejas sin aviso. Hay que subir `CODEC_VERSION` en el mismo PR cuando:
+
+- cambia la copia fijada del juego (`PZ_HOME`, `~/pz-pinned/<build>`), aunque los PNG parezcan iguales;
+- cambia el decode o la serialización: `PackImageCodec`/`PackImageCache` (incluido `PackImageCodec.FORMAT`), la máscara, los mipmaps, el alfa premultiplicado, o un shim/transformer que altere `FileTask_LoadPackImage.call()`;
+- hay duda. Antes de publicar se puede comparar con `?texcache=verify`.
+
+Al subirla, cada jugador vacía su caché una vez y tiene una carga del mundo en frío (~945 MB se vuelven a decodificar). Conviene avisar.
+
 ## Actualizar la versión del juego
 
-Una versión nueva de PZ es un proyecto aparte, no una actualización: copia fijada nueva en `~/pz-pinned/<build>`, inventario (`tools/inventory/run.sh`), revisar transformers y nativas contra las firmas nuevas, paquetes nuevos y un build completo. El servidor y todos los clientes tienen que usar la misma versión. Se planifica con un brief en `docs/briefs/` y nunca sobre la copia en uso.
+Una versión nueva de PZ es un proyecto aparte, no una actualización: copia fijada nueva en `~/pz-pinned/<build>`, inventario (`tools/inventory/run.sh`), revisar transformers y nativas contra las firmas nuevas, paquetes nuevos, subir `CODEC_VERSION` (ver arriba) y un build completo. El servidor y todos los clientes tienen que usar la misma versión. Se planifica con un brief en `docs/briefs/` y nunca sobre la copia en uso.

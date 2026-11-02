@@ -88,6 +88,9 @@ export class VirtualFileSystem {
     // read on demand with synchronous Range requests (the game's java.io is synchronous) and kept in
     // a bounded block cache. Paths and sizes come from the dev server's /media-manifest.json.
     this.remote = new Map(); this.remoteBase = '/media/';
+    // Ronda 90: con el dev server que lo anuncia (/media-manifest.json `slices: 1`) los tramos se piden como `?r=a-b` SIN cabecera
+    // Range: Chrome manda `Accept-Encoding: identity` en todo pedido con Range y así el servidor puede mandarlos con br/gzip.
+    this.remoteSlices = false;
     // Ronda 89: archivos de pack perezosos (port/runtime/lazypack.mjs): se registran también en `remote` (tamaño, existencia) pero se leen por tramos.
     this.lazy = new Map();
     this.blockCache = new Map(); this.blockCacheBytes = 0; this.blockCacheMax = 384 * 1024 * 1024;
@@ -135,7 +138,7 @@ export class VirtualFileSystem {
         for (let i = 0; i < bytes.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
         this.noteRemoteFetch(url, '', bytes);
       }
-      const headerLength = new DataView(bytes.buffer).getUint32(0, true);
+      const headerLength = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true);
       const listed = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + headerLength)));
       let offset = 4 + headerLength;
       for (const [name, size] of listed) {
@@ -189,13 +192,27 @@ export class VirtualFileSystem {
     for (let i = 0; i < n; i++) out[i] = text.charCodeAt(i) & 0xff;
     return out;
   }
+  /** Ronda 90: GET síncrono de un tramo `?r=a-b` sin Range (el navegador descomprime br/gzip); `length` bytes exactos o EIO. */
+  syncSlice(url, length, label = url) {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', url, false);
+    xhr.overrideMimeType('text/plain; charset=x-user-defined');
+    xhr.setRequestHeader('Cache-Control', 'no-store');
+    xhr.send();
+    if (xhr.status !== 200) throw new Error(`EIO: ${label} HTTP ${xhr.status}`);
+    const text = xhr.responseText;
+    if (text.length !== length) throw new Error(`EIO: slice length ${label} ${text.length}/${length}`);
+    const out = new Uint8Array(length);
+    for (let i = 0; i < length; i++) out[i] = text.charCodeAt(i) & 0xff;
+    return out;
+  }
   /** Synchronous Range GET of [start, end) of a remote media file. */
   fetchRange(path, start, end) {
     const t0 = performance.now();
     const url = this.remoteBase + path.slice('/media/'.length).split('/').map(encodeURIComponent).join('/') + `?r=${start}-${end}`;
     const ahead = this.takePrefetched(url, `bytes=${start}-${end - 1}`);
     if (ahead && ahead.length === end - start) { const s = this.remoteStats; s.requests++; s.bytes += ahead.length; return ahead; }
-    const out = this.syncRange(url, start, end, path);
+    const out = this.remoteSlices ? this.syncSlice(url, end - start, path) : this.syncRange(url, start, end, path);
     const s = this.remoteStats; s.requests++; s.bytes += out.length; s.ms += performance.now() - t0;
     this.noteRemoteFetch(url, `bytes=${start}-${end - 1}`, out);
     return out;
