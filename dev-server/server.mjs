@@ -218,16 +218,37 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
         const info = await file.stat();
         if (!info.isFile()) { respond(404, 'No directory listing'); return; }
         // Metadata validator is deliberately weak; never accept it as a strong If-Range validator.
-        const etag = `W/"${info.size.toString(16)}-${info.mtimeMs.toString(16)}"`;
+        // Ronda 87: boot.wasm / *.wasm y packs con nombre por hash pueden tener un <archivo>.br al lado (scripts/precompress.mjs, fuera de git). Si el
+        // navegador acepta br, no pide un rango y el .br no es más viejo ni más grande que el original, se sirve ese con Content-Encoding. Con Range se
+        // sirve siempre el original (un rango sobre un cuerpo codificado no significa lo mismo). El ETag lleva "-br" para no mezclar los dos cuerpos.
+        const compressible = path.extname(resolved).toLowerCase() === '.wasm' || (pathname.startsWith('/packs/') && /^[a-f0-9]{64}\.bin$/.test(relative));
+        let br = null;
+        if (compressible && !req.headers.range && /\bbr\b/.test(req.headers['accept-encoding'] || '')) {
+          const brFile = await open(`${resolved}.br`, 'r').catch(() => null);
+          if (brFile) {
+            const brInfo = await brFile.stat();
+            if (brInfo.isFile() && brInfo.mtimeMs >= info.mtimeMs && brInfo.size < info.size) br = { file: brFile, size: brInfo.size };
+            else await brFile.close();
+          }
+        }
+        const etag = `W/"${info.size.toString(16)}-${info.mtimeMs.toString(16)}${br ? '-br' : ''}"`;
         const modified = info.mtime.toUTCString();
         const fileHeaders = { ...headers, 'Content-Type': types.get(path.extname(resolved).toLowerCase()) || 'application/octet-stream',
-          'Accept-Ranges': 'bytes', ETag: etag, 'Last-Modified': modified };
+          'Accept-Ranges': 'bytes', ETag: etag, 'Last-Modified': modified, ...(compressible ? { Vary: 'Accept-Encoding' } : {}),
+          ...(br ? { 'Content-Encoding': 'br' } : {}) };
         // Packs are content-addressed (<sha256>.bin, checked again by port/runtime/packs.mjs): a name never changes bytes,
         // so the browser may keep them without revalidating. index.json and everything else keep no-cache.
         if (pathname.startsWith('/packs/') && /^[a-f0-9]{64}\.bin$/.test(relative)) fileHeaders['Cache-Control'] = 'public, max-age=31536000, immutable';
         const candidates = req.headers['if-none-match']?.split(',').map(s => s.trim().replace(/^W\//, ''));
         if (candidates?.includes('*') || candidates?.includes(etag.replace(/^W\//, ''))) {
-          res.writeHead(304, fileHeaders); res.end(); return;
+          await br?.file.close(); res.writeHead(304, fileHeaders); res.end(); return;
+        }
+        if (br) {
+          try {
+            res.writeHead(200, { ...fileHeaders, 'Content-Length': br.size });
+            if (req.method === 'HEAD') { res.end(); return; }
+            await pipeline(br.file.createReadStream({ autoClose: false }), res); return;
+          } finally { await br.file.close(); }
         }
         let range;
         const ifRange = req.headers['if-range'];
