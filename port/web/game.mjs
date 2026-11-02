@@ -8,6 +8,7 @@ import { CanvasInput } from '/runtime/input.mjs';
 import { BrowserWindow } from '/runtime/window.mjs';
 import { VirtualFileSystem, normalizePath } from '/runtime/vfs.mjs';
 import { preloadPacks } from '/runtime/packs.mjs';
+import { claimPrefetch } from '/runtime/lazypack.mjs';
 import { TextureCache } from '/runtime/texcache.mjs';
 import { MediaCache, mediaCacheVersion } from '/runtime/mediacache.mjs';
 import { LoadingScreen, formatMB } from '/runtime/loading.mjs';
@@ -197,6 +198,22 @@ try {
   })();
   const vfs = await vfsInstance.open();
   bootMark('vfs');
+  // Ronda 89: Tiles2x se lee entero durante la carga del mundo (medido: el juego pide los 369 PNG), asi que no hay bytes que ahorrar, pero si tiempo:
+  // en vez de bajar 321 MB antes de arrancar, los tramos se bajan en paralelo (en el orden del archivo, que es el que lee el juego) mientras
+  // arranca el resto. Lo que el juego pida antes de que llegue se lee con un XHR sincrono (verificado igual). ?lazyfill=0 lo apaga.
+  let lazyFillStarted = false;
+  const startLazyFill = () => {
+    if (lazyFillStarted || new URLSearchParams(location.search).get('lazyfill') === '0') return;
+    lazyFillStarted = true;
+    (async () => {
+      for (const file of Object.values(globalThis.pzLazyFiles ?? {})) {
+        const result = await file.fill({ concurrency: 4 }).catch(error => ({ error: String(error) }));
+        console.log(`lazyfill ${JSON.stringify({ ...result, ...file.stats, touched: file.touched.size })}`);
+      }
+      await globalThis.pzLazyStore?.flush?.();
+    })();
+  };
+  const lazyClaim = () => { const files = Object.values(globalThis.pzLazyFiles ?? {}); return files.length ? claimPrefetch(files) : undefined; };
   // La barra sigue los bytes de los packs; los eventos llegan por bloque, se pintan una vez por cuadro.
   let packProgress = null, packFrame = 0;
   const paintPacks = () => {
@@ -213,6 +230,7 @@ try {
   loading.step('packs', 'done');
   loading.step('prepare', 'active');
   loading.bar(null, 'Preparando gráficos, guardado y física…');
+  startLazyFill();
   // Round 79: the rest of PZ_HOME/media (maps are 4.3 GB) is read on demand from the local dev
   // server; the manifest only lists names and sizes. '?remote=0' keeps the packs-only behaviour.
   if (mediaReady) {
@@ -238,7 +256,7 @@ try {
     // 10 min. Con ?prefetch=1 (o https) el camino de autojoin de abajo si espera a que termine. ?prefetch=0 / ?nocache=1 lo apagan.
     const prefetchParam = new URLSearchParams(location.search).get('prefetch');
     if (prefetchParam !== '0' && prefetchParam !== '1' && location.protocol !== 'https:' && new URLSearchParams(location.search).get('nocache') !== '1') {
-      globalThis.pzPrefetchBackground = prefetchMedia(vfs, { concurrency: 8, onFetched: vfs.onRemoteFetch ?? undefined })
+      globalThis.pzPrefetchBackground = prefetchMedia(vfs, { concurrency: 8, onFetched: vfs.onRemoteFetch ?? undefined, onEntry: lazyClaim() })
         .then(stats => { console.log(`prefetch-bg ${JSON.stringify(stats)}`); return stats; }, error => ({ error: String(error) }));
     }
     // Lo precargado (red o caché persistente) que el juego no usó en 10 min se descarta: es memoria, no datos.
@@ -288,7 +306,7 @@ try {
     // Over the public https tunnel (or ?prefetch=1) bring the media the game will read in parallel first: one round trip per read is too slow.
     if (location.protocol === 'https:' || new URLSearchParams(location.search).get('prefetch') === '1') {
       loading.step('prefetch', 'active');
-      const stats = pzRuntime.prefetchStats = await prefetchMedia(vfs, { onFetched: vfs.onRemoteFetch ?? undefined, onProgress: f => {
+      const stats = pzRuntime.prefetchStats = await prefetchMedia(vfs, { onFetched: vfs.onRemoteFetch ?? undefined, onEntry: lazyClaim(), onProgress: f => {
         label.textContent = `Precargando recursos… ${Math.round(f * 100)} %`;
         loading.step('prefetch', 'active', `${Math.round(f * 100)} %`);
         loading.bar(f, 'Precargando el mapa…', `${Math.round(f * 100)} %`);

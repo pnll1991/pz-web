@@ -88,6 +88,8 @@ export class VirtualFileSystem {
     // read on demand with synchronous Range requests (the game's java.io is synchronous) and kept in
     // a bounded block cache. Paths and sizes come from the dev server's /media-manifest.json.
     this.remote = new Map(); this.remoteBase = '/media/';
+    // Ronda 89: archivos de pack perezosos (port/runtime/lazypack.mjs): se registran también en `remote` (tamaño, existencia) pero se leen por tramos.
+    this.lazy = new Map();
     this.blockCache = new Map(); this.blockCacheBytes = 0; this.blockCacheMax = 384 * 1024 * 1024;
     this.remoteStats = { requests:0, bytes:0, ms:0 };
     // Round 81 (front 2): the world load opens ~4000 tiny media/maps/<map>/*.lotheader files, one synchronous
@@ -155,7 +157,7 @@ export class VirtualFileSystem {
     this.remoteBase = base;
     for (const [relative, size] of entries) {
       const path = normalizePath('/media/' + relative);
-      if (this.files.has(path) || this.directories.has(path) || !Number.isSafeInteger(size) || size < 0) continue;
+      if (this.files.has(path) || this.lazy.has(path) || this.directories.has(path) || !Number.isSafeInteger(size) || size < 0) continue;
       this.remote.set(path, size); this.childIndex.link(path);
       for (let dir = parent(path); !this.directories.has(dir); dir = parent(dir)) {
         this.directories.add(dir);
@@ -168,12 +170,8 @@ export class VirtualFileSystem {
   /** 0 missing, 1 file, 2 directory (the java.io shim's contract). */
   kind(path) { return this.directories.has(path) ? 2 : (this.files.has(path) || this.remote.has(path) ? 1 : 0); }
   size(path) { const b = this.files.get(path); return b ? b.length : (this.remote.get(path) ?? 0); }
-  /** Synchronous Range GET of [start, end) of a remote media file. */
-  fetchRange(path, start, end) {
-    const t0 = performance.now();
-    const url = this.remoteBase + path.slice('/media/'.length).split('/').map(encodeURIComponent).join('/') + `?r=${start}-${end}`;
-    const ahead = this.takePrefetched(url, `bytes=${start}-${end - 1}`);
-    if (ahead && ahead.length === end - start) { const s = this.remoteStats; s.requests++; s.bytes += ahead.length; return ahead; }
+  /** Synchronous Range GET of [start, end) of `url` (bytes exactly as the server holds them: never a content-encoded body). */
+  syncRange(url, start, end, label = url) {
     const xhr = new XMLHttpRequest();
     // One URL per range (the dev server ignores the query): Chrome otherwise reuses a cached partial
     // entry, revalidates it with If-Range and the server answers 200 with the whole file.
@@ -184,12 +182,21 @@ export class VirtualFileSystem {
     // server then answers 200 with the whole file (seen for a 165 MB zip). Blocks are cached here.
     xhr.setRequestHeader('Cache-Control', 'no-store');
     xhr.send();
-    if (xhr.status !== 206 && !(xhr.status === 200 && start === 0)) throw new Error(`EIO: ${path} HTTP ${xhr.status}`);
+    if (xhr.status !== 206 && !(xhr.status === 200 && start === 0)) throw new Error(`EIO: ${label} HTTP ${xhr.status}`);
     const text = xhr.responseText, n = Math.min(text.length, end - start);
-    if (n !== end - start) throw new Error(`EIO: short read ${path} ${n}/${end - start}`);
+    if (n !== end - start) throw new Error(`EIO: short read ${label} ${n}/${end - start}`);
     const out = new Uint8Array(n);
     for (let i = 0; i < n; i++) out[i] = text.charCodeAt(i) & 0xff;
-    const s = this.remoteStats; s.requests++; s.bytes += n; s.ms += performance.now() - t0;
+    return out;
+  }
+  /** Synchronous Range GET of [start, end) of a remote media file. */
+  fetchRange(path, start, end) {
+    const t0 = performance.now();
+    const url = this.remoteBase + path.slice('/media/'.length).split('/').map(encodeURIComponent).join('/') + `?r=${start}-${end}`;
+    const ahead = this.takePrefetched(url, `bytes=${start}-${end - 1}`);
+    if (ahead && ahead.length === end - start) { const s = this.remoteStats; s.requests++; s.bytes += ahead.length; return ahead; }
+    const out = this.syncRange(url, start, end, path);
+    const s = this.remoteStats; s.requests++; s.bytes += out.length; s.ms += performance.now() - t0;
     this.noteRemoteFetch(url, `bytes=${start}-${end - 1}`, out);
     return out;
   }
@@ -207,6 +214,8 @@ export class VirtualFileSystem {
     return block;
   }
   readRemoteInto(path, position, target) {
+    const lazy = this.lazy.get(path);
+    if (lazy) return lazy.read(position, target);
     const BLOCK = 1 << 20, size = this.remote.get(path);
     const whole = this.bundled(path);
     if (whole) {
@@ -225,6 +234,8 @@ export class VirtualFileSystem {
     return count;
   }
   readRemoteFile(path) {
+    const lazy = this.lazy.get(path);
+    if (lazy) return lazy.readAll();
     const whole = this.bundled(path);
     if (whole) return whole.slice();
     const size = this.remote.get(path), out = new Uint8Array(size), CHUNK = 16 << 20;
@@ -358,6 +369,17 @@ export class VirtualFileSystem {
     this.readOnlyMounted.add(path);
     this.changed(path, existed ? 'modify' : 'create');
     ringTrace(`vfs#mountView ${path} bytes=${length}`);
+  }
+  /** Ronda 89: monta un archivo de /media que se lee por tramos (LazyFile). Solo lectura; cuenta como remoto para el resto de la VFS. */
+  mountLazy(path, lazyFile) {
+    path = normalizePath(path);
+    if (!path.startsWith('/media/')) throw new Error(`Lazy files are only allowed under /media: ${path}`);
+    if (this.directories.has(path) || this.files.has(path)) throw new Error(`Cannot mount lazy file over ${path}`);
+    this.ensureParents(path);
+    this.lazy.set(path, lazyFile); this.remote.set(path, lazyFile.length); this.childIndex.link(path);
+    this.metadata.set(path, { directory:false, modified:Date.now(), readOnly:true });
+    this.readOnlyMounted.add(path);
+    ringTrace(`vfs#mountLazy ${path} bytes=${lazyFile.length}`);
   }
   isReadOnlyMounted(path) { return this.readOnlyMounted.has(normalizePath(path)); }
   exists(path) { path = normalizePath(path); return this.files.has(path) || this.directories.has(path) || this.remote.has(path); }
