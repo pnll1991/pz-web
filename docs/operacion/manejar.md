@@ -6,7 +6,7 @@ Lo que está en vivo (dev server 8098, servidor PZ, túnel) **no se reinicia ni 
 
 ```bash
 bash scripts/dev_server_8098.sh status       # dev server en vivo
-bash scripts/mp-server.sh status             # servidor PZ (pid y si llegó a "SERVER STARTED")
+bash scripts/mp-server.sh status             # servidor PZ: corre/detenido y último evento del log (sale 1 si está caído)
 bash scripts/public-tunnel.sh status         # túnel, modo público y clave
 bash scripts/dev_web_8199.sh status          # web de pruebas
 tail -20 /tmp/pzweb-access.log               # últimos accesos: quién está jugando

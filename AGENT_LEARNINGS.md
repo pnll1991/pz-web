@@ -970,3 +970,8 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Patrón: un zombi sentado/en el suelo no recibe golpes de bate: elegir objetivos `not isOnFloor()` en las pruebas.
 - Error: recargar la página de prueba ~8 veces dejó un renderer de Chrome en 5 GB y se cayó (PAGE-CRASH). Reiniciar el arnés cada pocas recargas.
 - Error de proceso: `sync_web.sh` escribe en `port/target/web`, que sirve el 8098 en vivo: para probar sin tocar lo vivo usar `scripts/dev_web_8199.sh` (raíz propia en /tmp) y una copia de los packs.
+
+## 2026-11-02 — `mp-server.sh status` mudo con el servidor caído
+- Error: con `set -euo pipefail`, `p=$(pid)` falla cuando `grep` no encuentra el proceso y el script termina sin imprimir nada (rc=1); el servidor en vivo estaba caído y `status` no lo decía.
+- Evitar: funciones de búsqueda de pid con `grep` en un pipeline sin `|| true` bajo `pipefail`.
+- Mejor enfoque: que la función devuelva vacío con éxito y que `status` diga "detenido" y el último evento del log (`SERVER STARTED`/`Server exited`); confirmar con `ss -ulnp | grep <puerto>`.
