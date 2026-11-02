@@ -84,6 +84,8 @@ Cada repaquetado cambia los nombres por hash: hay que volver a correrlos (son id
 
 No hay paso previo: el dev server comprime al vuelo los tramos de `PZ_HOME/media` (nunca escribe en `PZ_HOME` ni en `build/`) y guarda lo comprimido en memoria, con la clave ruta + tamaño + mtime + tramo. `PZWEB_MEDIA_CACHE_MB` (por defecto 256) acota esa caché. El navegador pide cada tramo como `/media/<archivo>?r=<inicio>-<fin>` **sin** cabecera Range (con Range, Chrome manda `Accept-Encoding: identity` y no se puede comprimir); lo hace solo si `/media-manifest.json` trae `"slices":1`, así que una página nueva contra un dev server viejo sigue usando Range. `?slices=0` en la URL de la página vuelve a Range. Los tipos ya comprimidos (png, pack, ogg, bank, bik, zip, glb…) se mandan tal cual; la lista y las razones medidas están en `dev-server/server.mjs` (`MEDIA_INCOMPRESSIBLE`) y en `docs/analisis-carga-inicial.md`.
 
+Los lotes de la precarga (`/media-ranges`, ronda 91) también salen con br/gzip si el navegador lo acepta (`Vary: Accept-Encoding`, `Cache-Control: no-store`, sin ETag). Se comprime el cuerpo entero una vez y se guarda en memoria con la clave sha256 del cuerpo sin comprimir; `PZWEB_RANGES_CACHE_MB` (por defecto 128) acota esa caché. Un lote con menos del 10 % de bytes de tipos comprimibles (`RANGES_MIN_COMPRESSIBLE`) o que no baja al menos 10 % se manda tal cual. El cliente no cambia: `fetch` descomprime y `prefetch.mjs` mide el cuerpo ya descomprimido.
+
 ## 7. Arrancar todo
 
 ```bash
