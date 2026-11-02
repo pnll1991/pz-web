@@ -3,6 +3,7 @@
 Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoques mejores.
 
 ## 2026-11-02 — Carga inicial (caché persistente)
+- Error detectado por la prueba: llamé `translate` al método nuevo de `GLBridge` y ya existía `translate` (glTranslate, definido más abajo), que lo pisaba en silencio: los shaders habrían pasado por la multiplicación de matrices. Mejor enfoque: antes de agregar un método a una clase grande, `grep -n '^  <nombre>(' archivo`; probar el método por el prototipo y afirmar que no es el mismo que el existente.
 - Error evitado en revisión propia: agregar `<link rel="modulepreload">` antes del `<script type="importmap">` hace que Chrome ignore el importmap y `glsl.mjs` no resuelva `@shaderfrog/glsl-parser`. Mejor enfoque: el importmap siempre primero; comprobarlo en Chrome importando `/runtime/glsl.mjs`, no solo con `node --check`.
 - Error: pushée antes de que terminara el rebase (falló por conflictos en `STATUS.md`/`docs/decisions.md`) y subí el commit sobre la base vieja. Mejor enfoque: encadenar el push solo si el rebase salió bien (`git rebase origin/dev && git push`), resolver y después `--force-with-lease`.
 - Nota: el rebase trajo `docs/operacion/` ("en macOS no se compila ni se levanta nada"). La prueba de Chrome de esta tarea, sintética y con un servidor en proceso en 127.0.0.1, se hizo antes de leerla; desde ahora esas pruebas van en la máquina Linux (8199).
