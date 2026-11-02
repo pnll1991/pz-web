@@ -983,3 +983,8 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Error: con `set -euo pipefail`, `p=$(pid)` falla cuando `grep` no encuentra el proceso y el script termina sin imprimir nada (rc=1); el servidor en vivo estaba caído y `status` no lo decía.
 - Evitar: funciones de búsqueda de pid con `grep` en un pipeline sin `|| true` bajo `pipefail`.
 - Mejor enfoque: que la función devuelva vacío con éxito y que `status` diga "detenido" y el último evento del log (`SERVER STARTED`/`Server exited`); confirmar con `ss -ulnp | grep <puerto>`.
+
+## R87: carga
+- Error: medí la carga con un service worker mirando sólo la sesión CDP de la página: los pedidos que hace el propio SW no se ven ahí y salió "106 MB" donde eran cientos. Mejor enfoque: medir sin SW (CDP de página) o contar en el servidor; y las respuestas sin `Content-Length` (chunked) tampoco sirven para contar en el servidor.
+- Error de proceso: la copia de trabajo es compartida con otra sesión que cambia de rama y commitea por su cuenta (me guardó archivos sin commitear en `feat/service-worker`, y un `pkill -f` mató mi propia shell otra vez). Mejor enfoque: `git worktree add /tmp/pz86/wt -b <rama> origin/dev` para mis cambios y no tocar el árbol principal.
+- Patrón: antes de implementar una mejora de una ronda, `git fetch` y mirar PRs/ramas nuevos: la otra sesión ya había hecho el punto 1 (PR #9); medirlo con el brief fue más útil que duplicarlo.
