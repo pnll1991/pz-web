@@ -69,6 +69,17 @@ python3 tools/pack/pack.py --pz-home "$PZ_HOME" --files build/real-browser/start
 
 Sobre ese índice se agregan capas con `tools/pack/overlay.py --add` (fuentes, modelos `.x` preconvertidos con `tools/pack/stage_jassimp.py`, animaciones de zombi con `stage_jassimp.py --zombie-anims`, alias con `alias_index.py`). Qué capa resolvió qué problema está en `STATUS.md` (rondas 79–86) y `AGENT_LEARNINGS.md`. **Hoy no hay un script único que rehaga todos los paquetes desde cero**: en una máquina nueva, lo más seguro es copiar `build/real-browser/packs` de la máquina en vivo (es local e ignorado; nunca se sube).
 
+### Paquetes comprimidos y Tiles2x perezoso (ronda 89)
+
+Después de rehacer o ampliar los paquetes, dos pasos de solo lectura sobre el mismo directorio (todo queda en `build/`, ignorado por git):
+
+```bash
+node scripts/lazy-packs.mjs        # parte Tiles2x.pack (321 MB) en cabeceras (2 MB) + un tramo con sha256 por PNG (el navegador arranca sin esperarlo y lo baja en paralelo); reescribe index.json (respaldo: index.json.before-lazy)
+node scripts/precompress.mjs       # deja .br y .gz al lado de cada pack comprimible y de cada .wasm grande (Tiles2x y otros PNG se saltan)
+```
+
+Cada repaquetado cambia los nombres por hash: hay que volver a correrlos (son idempotentes y rápidos si no cambió nada; `lazy-packs.mjs --undo` vuelve al índice anterior). Sin ellos todo sigue funcionando como antes: el índice sin `lazy` baja los packs enteros y el dev server sirve el original sin comprimir.
+
 ## 7. Arrancar todo
 
 ```bash
