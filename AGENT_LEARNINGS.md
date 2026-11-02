@@ -2,6 +2,10 @@
 
 Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoques mejores.
 
+## 2026-11-02 — Indicador de fps y ping
+- Error detectado por la prueba: al envolver `swapBuffers` guardé `original.bind(window)` y al restaurar dejé la versión ligada, no el método original (y en `BrowserWindow` el método vive en el prototipo). Mejor enfoque: guardar si la propiedad era propia (`Object.hasOwn`) y restaurar con `delete` cuando venía del prototipo; probar que `stop()` deja el mismo método.
+- Nota: `npm test` sin `node_modules` falla en todas las pruebas de GL/GLSL (falta el parser); `npm ci --ignore-scripts` primero.
+
 ## 2026-11-02 — Carga inicial (caché persistente)
 - Error detectado por la prueba: llamé `translate` al método nuevo de `GLBridge` y ya existía `translate` (glTranslate, definido más abajo), que lo pisaba en silencio: los shaders habrían pasado por la multiplicación de matrices. Mejor enfoque: antes de agregar un método a una clase grande, `grep -n '^  <nombre>(' archivo`; probar el método por el prototipo y afirmar que no es el mismo que el existente.
 - Error evitado en revisión propia: agregar `<link rel="modulepreload">` antes del `<script type="importmap">` hace que Chrome ignore el importmap y `glsl.mjs` no resuelva `@shaderfrog/glsl-parser`. Mejor enfoque: el importmap siempre primero; comprobarlo en Chrome importando `/runtime/glsl.mjs`, no solo con `node --check`.

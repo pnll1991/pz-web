@@ -600,3 +600,8 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 ## R87 (2/11/2026): navegador
 - Carga (medida con `tools/diag/load-bytes.mjs`, perfil vacío, instancia de prueba): antes 841 MB / 516 MB (1.ª / 2.ª); con PR #9: 841 MB / 44,7 MB. Faltante: carga por partes del mapa/packs para bajar la 1.ª (packs 580 MB, media 193 MB en ~4450 pedidos, wasm 63 MB).
 - Server PZ en wasm: no viable hoy. WebRTC: viable como transporte opcional, ~4-5 rondas, TURN requiere cuenta o VPS ajeno. Detalle en los informes; nada de esto afecta lo en vivo hasta implementarse.
+
+## Rendimiento por jugador (rama `feat/fps-ping-jugadores`, sin build)
+- Hecho: indicador arriba a la derecha en `game.html`/`play.html`/`fast.html` (`port/runtime/perfhud.mjs`): fps reales del juego (cada `swapBuffers`), peor cuadro del último segundo, `ocupado %` (tareas largas del hilo principal, `PerformanceObserver('longtask')`), ping al dev server (`GET /health?perf=N` cada 5 s, tomado de Resource Timing `responseStart - requestStart`) y memoria JS de la pestaña. Colores: verde/amarillo/rojo por umbral. `?hud=0` lo apaga; `globalThis.pzPerf` tiene el último resumen.
+- Evidencia: `npm test` 172/175 (fallan solo las 3 de pzbullet, como en la CI; 4 pruebas nuevas en `tests/node/perfhud.test.mjs`). Sin Chrome: en macOS no se levanta nada (`docs/operacion`).
+- Pendiente: probar en 8199 contra el `boot.wasm` compilado y ver que el indicador no tape nada del juego; el panel con todos los jugadores juntos va en un PR aparte porque necesita reiniciar el dev server.
