@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PZ · Laboratorio del navegador</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/boot.wasm-runtime.js" defer></script>
+  <script type="importmap">{"imports":{"@shaderfrog/glsl-parser/":"/vendor/glsl-parser/"}}</script>
+  <script type="module" src="/app.mjs"></script>
+</head>
+<body>
+  <header><a href="/lab.html" class="brand">PZ<span> / BROWSER LAB</span></a><span class="local">● 127.0.0.1 · PERSONAL</span></header>
+  <main>
+    <section class="intro"><p class="eyebrow">TEAVM 0.16 · WEBASSEMBLY GC</p>
+      <h1>Una base para<br>el próximo mundo.</h1>
+      <p class="lead">Prueba de plataforma con recursos propios. Project Zomboid todavía no arranca.</p>
+      <p class="note"><a href="/game.html">Estado del arranque real del juego</a></p>
+    </section>
+    <div class="workspace">
+      <section class="stage" aria-label="Prueba de renderizado">
+        <div class="stage-heading"><span>01 / CANVAS WEBGL 2</span><span id="status" role="status">INICIANDO</span></div>
+        <canvas id="canvas" tabindex="0" aria-label="Canvas de prueba de gráficos e input"></canvas>
+        <div class="stage-footer"><span>Geometría sintética · Java → Wasm → WebGL</span><span id="frames">0 frames</span></div>
+      </section>
+      <aside>
+        <h2>Estado de la plataforma</h2>
+        <ul id="checks">
+          <li><span>Aislamiento COOP / COEP</span><b id="isolation">—</b></li>
+          <li><span>Arranque Wasm GC</span><b id="wasm">—</b></li>
+          <li><span>Nativa sin implementar</span><b id="native">—</b></li>
+          <li><span>Buffer directo Java → JS</span><b id="buffer">—</b></li>
+          <li><span>Shader + lectura de píxel</span><b id="pixel">—</b></li>
+          <li><span>Archivo virtual precargado</span><b id="vfs">—</b></li>
+        </ul>
+        <p class="note">El triángulo comprueba el renderizado. No es una pantalla del juego.</p>
+        <button id="pause" type="button">Pausar loop</button>
+      </aside>
+    </div>
+    <section class="storage">
+      <div><p class="eyebrow">02 / PERSISTENCIA E INPUT</p><h2>Un archivo que sobrevive a la pestaña.</h2>
+        <p>Escribí una nota, guardala y recargá. Se conserva en IndexedDB bajo <code>/Zomboid</code>.</p>
+      </div>
+      <form id="save-form"><label for="note">Contenido de prueba</label><div class="form-row"><input id="note" autocomplete="off" placeholder="Mi primera prueba local"><button id="save" type="submit" disabled>Guardar</button></div><p id="saved" role="status">Cargando almacenamiento…</p></form>
+    </section>
+    <details><summary>Diagnóstico de esta ejecución</summary><pre id="diagnostics">Preparando…</pre></details>
+    <p id="error" role="alert" hidden></p>
+  </main>
+  <footer><span>F0–F3 / BASE EXPERIMENTAL</span><span>Solo recursos locales · Sin streaming</span></footer>
+</body>
+</html>

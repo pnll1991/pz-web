@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
 test('local game shaders translate, compile and link in WebGL2', async ({ page }, testInfo) => {
-  await page.goto('/'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  await page.goto('/lab.html'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
   const results = await page.evaluate(async () => {
     const results = [];
     for (const name of ['default','blit','vboRenderer_PositionColorUV']) {
@@ -25,7 +25,7 @@ test('local game shaders translate, compile and link in WebGL2', async ({ page }
 
 test('actual media text is read by Java and a Java write survives reload', async ({ page }) => {
   const expected = JSON.parse(await readFile('build/real-browser/assets.json', 'utf8'));
-  await page.goto('/'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  await page.goto('/lab.html'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
   const result = await page.evaluate(async ({ url }) => {
     await pzLab.preloadPacks(pzLab.vfs);
     const text = pzLab.teavm.exports.readJavaFile(url);
@@ -43,7 +43,7 @@ test('actual media text is read by Java and a Java write survives reload', async
 
 test('actual title PNG uploads to WebGL2 and every decoded RGBA byte matches', async ({ page }, testInfo) => {
   const expected = JSON.parse(await readFile('build/real-browser/assets.json', 'utf8')).png;
-  await page.goto('/'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  await page.goto('/lab.html'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
   const result = await page.evaluate(async ({ url }) => {
     const image = await pzLab.gl.loadTexture(url);
     try {
