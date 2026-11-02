@@ -49,6 +49,16 @@ Un build a la vez (`/tmp/pz80-locks/build.lock`). Con `PZ_NO_SWAP=1` el resultad
 - Build: rehacer el build en el commit anterior; no hay copia del `boot.wasm` previo salvo que se haya guardado a mano.
 - Paquetes: restaurar el `index.json` de respaldo (los blobs anteriores se conservan).
 
+## Caché de texturas: cuándo subir `CODEC_VERSION`
+
+Desde la ronda 89 las páginas decodificadas en IndexedDB se llavean por `CODEC_VERSION` (`port/runtime/texcache.mjs`) y no por el build, así que sobreviven a un `boot.wasm` nuevo. La clave tiene el PNG de entrada, pero no el código que lo decodifica: si ese código cambia y nadie sube la versión, los navegadores siguen usando páginas viejas sin aviso. Hay que subir `CODEC_VERSION` en el mismo PR cuando:
+
+- cambia la copia fijada del juego (`PZ_HOME`, `~/pz-pinned/<build>`), aunque los PNG parezcan iguales;
+- cambia el decode o la serialización: `PackImageCodec`/`PackImageCache` (incluido `PackImageCodec.FORMAT`), la máscara, los mipmaps, el alfa premultiplicado, o un shim/transformer que altere `FileTask_LoadPackImage.call()`;
+- hay duda. Antes de publicar se puede comparar con `?texcache=verify`.
+
+Al subirla, cada jugador vacía su caché una vez y tiene una carga del mundo en frío (~945 MB se vuelven a decodificar). Conviene avisar.
+
 ## Actualizar la versión del juego
 
-Una versión nueva de PZ es un proyecto aparte, no una actualización: copia fijada nueva en `~/pz-pinned/<build>`, inventario (`tools/inventory/run.sh`), revisar transformers y nativas contra las firmas nuevas, paquetes nuevos y un build completo. El servidor y todos los clientes tienen que usar la misma versión. Se planifica con un brief en `docs/briefs/` y nunca sobre la copia en uso.
+Una versión nueva de PZ es un proyecto aparte, no una actualización: copia fijada nueva en `~/pz-pinned/<build>`, inventario (`tools/inventory/run.sh`), revisar transformers y nativas contra las firmas nuevas, paquetes nuevos, subir `CODEC_VERSION` (ver arriba) y un build completo. El servidor y todos los clientes tienen que usar la misma versión. Se planifica con un brief en `docs/briefs/` y nunca sobre la copia en uso.

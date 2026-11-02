@@ -9,6 +9,15 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Supuesto falso en la prueba real: asumí que sin gesto el pointer lock siempre falla; Chrome y Firefox lo conceden si la página ya tuvo activación (los clics previos de la prueba cuentan). Mejor enfoque: afirmar lo que el código promete (el estado del juego refleja el del navegador) y no lo que cada navegador decide.
 - Error: en Playwright una segunda pestaña (`newPage` fuera de un contexto propio) lanza "Please use browser.newContext()"; la corrida costaba ~30 min de cola en `chrome.lock`. Mejor enfoque: revisar el flujo completo del script (y probarlo contra Firefox, que no usa el candado) antes de hacer cola; en Chrome headless el cambio de pestaña no emite `blur`.
 - Nota: Playwright 1.56 no soporta Firefox en este SO (ubuntu26.10). Alternativa sin sudo: Firefox portable de Mozilla + geckodriver en `/tmp/pz-fx` y WebDriver clásico (`tests/input-browser.manual.mjs firefox`); fuera del repo.
+## 2026-11-02 — Rebase de #18 sobre #27: conflicto semántico
+- Error evitado: resolver `prefetch.mjs` a favor de la rama reescrita (lotes) borraba el `onEntry` de #27 y los tramos perezosos de Tiles2x dejaban de precargarse; solo lo mostró `lazypack.test.mjs`, no el conflicto en sí.
+- Patrón: cuando una rama reescribe una función que `dev` amplió con un parámetro nuevo, listar los parámetros y contadores que agregó `dev` (`git diff <base> origin/dev -- <f>`) y comprobar uno por uno que sobreviven; correr las pruebas del PR de `dev`, no solo las de la rama.
+- Error: en la prueba nueva el cliente pidió índices de su propia lista a un servidor con otro warm-list; `/media-ranges` resuelve índices contra el del servidor. Alinear las listas en las pruebas.
+
+## 2026-11-02 — Carga del mundo (ronda 89)
+- Patrón que funcionó: cuatro subagentes en el mismo worktree, con archivos disjuntos, sin commitear; la sesión principal integra y commitea. En `game.mjs`, que tocaban dos de ellos, cada uno editó solo su bloque y releyó el archivo antes de cada edición, así que no hubo conflictos.
+- Error evitado: en el worktree no había `node_modules`, así que 17 pruebas fallaban por `@shaderfrog/glsl-parser` y parecía una regresión. Mejor enfoque: `npm ci --ignore-scripts` antes de correr `npm test` en un worktree nuevo, y comprobar que `package-lock.json` no cambió.
+- Causa del cartel "Preparando…" en el modo directo: después de la precarga se vuelve a `show('installed')` y nada lo cambia hasta "game loading took". El estado del juego llega por los pulsos (`pzGameCounts`) aunque `PZWEB-STATE` no aparezca: usar esos pulsos para el estado en pantalla.
 
 ## 2026-11-02 — Indicador de fps y ping
 - Error detectado por la prueba: al envolver `swapBuffers` guardé `original.bind(window)` y al restaurar dejé la versión ligada, no el método original (y en `BrowserWindow` el método vive en el prototipo). Mejor enfoque: guardar si la propiedad era propia (`Object.hasOwn`) y restaurar con `delete` cuando venía del prototipo; probar que `stop()` deja el mismo método.

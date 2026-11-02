@@ -135,7 +135,7 @@ export class VirtualFileSystem {
         for (let i = 0; i < bytes.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
         this.noteRemoteFetch(url, '', bytes);
       }
-      const headerLength = new DataView(bytes.buffer).getUint32(0, true);
+      const headerLength = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true);
       const listed = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + headerLength)));
       let offset = 4 + headerLength;
       for (const [name, size] of listed) {

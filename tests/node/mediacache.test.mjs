@@ -86,7 +86,7 @@ test('la precarga no baja lo restaurado y entrega lo bajado a la caché', async 
     fetched.push(url); return { status: 206, arrayBuffer: async () => new Uint8Array([4, 5]).buffer };
   };
   const vfs = new VirtualFileSystem(); vfs.prefetched.set('/media/a?r=0-2|bytes=0-1', new Uint8Array([1, 2]));
-  const stats = await prefetchMedia(vfs, { fetchImpl, onFetched: (...args) => recorded.push(args) });
+  const stats = await prefetchMedia(vfs, { fetchImpl, batch: false, onFetched: (...args) => recorded.push(args) });
   assert.deepEqual(fetched, ['/media/b?r=0-2']);
   assert.deepEqual([stats.cached, stats.stored], [1, 1]);
   assert.deepEqual(recorded.map(([url, range]) => [url, range]), [['/media/b?r=0-2', 'bytes=0-1']]);

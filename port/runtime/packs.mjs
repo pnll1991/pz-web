@@ -11,7 +11,9 @@ const mountablePath = path => path.startsWith('/media/') || READ_ONLY_MOUNTABLE.
 // Caching a 321 MB response in the Cache API risks a quota error on a small profile. Blobs above this size
 // go to the Origin Private File System instead (one file per content-addressed pack name, written in the
 // background after verification). Without OPFS they are fetched every boot, as before, and listed in
-// globalThis.pzPackCacheSkipped. Either way every pack is still verified against its sha256 before mounting.
+// globalThis.pzPackCacheSkipped. Ronda 89 (frente D): un pack bajado de la red siempre se verifica completo (tamano +
+// sha256) antes de guardarse; uno leido de la Cache API u OPFS solo comprueba el tamano (el nombre es su sha256 y
+// solo se guarda lo ya verificado). '?packverify=1' o '?nocache=1' vuelven a verificar todo en cada carga.
 const CACHE_MAX_BYTES = 64 * 1024 * 1024;
 const CACHE_NAME = 'pz-web-packs-v1', OPFS_DIR = 'pz-web-packs';
 
@@ -42,12 +44,16 @@ const VERIFIED_KEY = 'pz-web-packs-verified-index';
 // Ronda 89: los packs perezosos (lazypack.mjs) se montan sin bajar el blob grande; '?lazy=0' (o { lazy:false }) los baja enteros como antes.
 const lazyAllowed = () => typeof location === 'undefined' || new URLSearchParams(location.search).get('lazy') !== '0';
 const memoAllowed = () => typeof location === 'undefined' || new URLSearchParams(location.search).get('nocache') !== '1';
+const urlFlag = name => typeof location !== 'undefined' && new URLSearchParams(location.search).get(name) === '1';
+const fullDigestWanted = () => urlFlag('packverify') || urlFlag('nocache');
 const readMemo = () => { try { return localStorage.getItem(VERIFIED_KEY); } catch { return null; } };
 const writeMemo = value => { try { localStorage.setItem(VERIFIED_KEY, value); } catch { /* sin localStorage: se verifica siempre */ } };
 
 /** Cache immutable local pack blobs and preload verified files into synchronous memory. */
-export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo = memoAllowed(), cachesImpl = globalThis.caches,
-  storage = globalThis.navigator?.storage, cleanup = memo, cacheMaxBytes = CACHE_MAX_BYTES, onProgress = () => {}, lazy = lazyAllowed(), chunkCache = memo } = {}) {
+export async function preloadPacks(vfs, indexUrl = '/packs/index.json', options = {}) {
+  const { memo = memoAllowed(), cachesImpl = globalThis.caches, storage = globalThis.navigator?.storage, cleanup = memo,
+    cacheMaxBytes = CACHE_MAX_BYTES, onProgress = () => {}, lazy = lazyAllowed(), chunkCache = memo,
+    fullDigest = fullDigestWanted() } = options;
   const response = await fetch(indexUrl, { cache:'no-cache' });
   if (!response.ok) throw new Error(`Pack index HTTP ${response.status}`);
   const indexBytes = await response.arrayBuffer();
@@ -55,7 +61,8 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo =
   const index = JSON.parse(new TextDecoder().decode(indexBytes));
   const skipFileDigests = memo && readMemo() === indexHash;
   const stats = globalThis.pzPackStats = { indexHash, fileDigests: skipFileDigests ? 'memo' : 'computed', t0: performance.now(), ms: 0,
-    sources: { network:0, cache:0, opfs:0 }, corrupt:0, opfsWrites:0, opfsErrors:0, removed:0 };
+    sources: { network:0, cache:0, opfs:0 }, corrupt:0, opfsWrites:0, opfsErrors:0, removed:0,
+    fullDigest, digestSkipped:[], digestMs:0 };
   if (index.schema_version !== 1 || !Array.isArray(index.packs) || !Array.isArray(index.files))
     throw new Error('Unsupported pack schema');
   if (index.packs.some(pack => !Number.isSafeInteger(pack.bytes) || pack.bytes < 0) ||
@@ -82,9 +89,18 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo =
   const progress = { phase:'download', loaded:0, total:index.packs.reduce((sum, pack) => sum + (isLazy(pack) ? 0 : pack.bytes), 0) };
   onProgress({ ...progress });
   const inFlight = { set:new Set(), bytes:0 };
-  const valid = async (bytes, pack) => bytes.byteLength === pack.bytes && await digest(bytes) === pack.sha256;
+  const timedDigest = async bytes => { const t = performance.now(); try { return await digest(bytes); } finally { stats.digestMs += performance.now() - t; } };
+  const valid = async (bytes, pack) => bytes.byteLength === pack.bytes && await timedDigest(bytes) === pack.sha256;
+  // Pack leido de la cache local: tamano siempre; sha256 completo solo con fullDigest. Si se saltea queda anotado.
+  const validStored = async (bytes, pack, source) => {
+    if (fullDigest) return valid(bytes, pack);
+    if (bytes.byteLength !== pack.bytes) return false;
+    stats.digestSkipped.push(pack.name); skippedFrom.set(pack.name, source);
+    return true;
+  };
+  const skippedFrom = new Map();
   // Ronda 88: los packs se descargaban (o leian de la Cache API), se hasheaban y se guardaban uno tras otro. Son
-  // independientes: todos a la vez. Cada pack sigue verificandose completo (tamano + sha256) antes de montarse.
+  // independientes: todos a la vez. Un pack bajado se verifica completo (tamano + sha256) antes de montarse y guardarse; uno de la cache solo por tamano (ver fullDigest).
   // Un pack guardado (Cache API u OPFS) que no verifica se borra y se baja una vez de la red; solo lo que se bajo
   // se guarda (antes se reescribia en la Cache API en cada arranque).
   const loadPack = async pack => {
@@ -99,13 +115,13 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo =
       const cached = await cache.match(url);
       if (cached) {
         bytes = await cached.arrayBuffer();
-        if (await valid(bytes, pack)) { stats.sources.cache++; progress.loaded += pack.bytes; onProgress({ ...progress }); return bytes; }
+        if (await validStored(bytes, pack, 'cache')) { stats.sources.cache++; progress.loaded += pack.bytes; onProgress({ ...progress }); return bytes; }
         stats.corrupt++; await cache.delete(url);
       }
     } else if (opfs) {
       bytes = await opfsRead(opfs, pack.name, pack.bytes);
       if (bytes) {
-        if (await valid(bytes, pack)) { stats.sources.opfs++; progress.loaded += pack.bytes; onProgress({ ...progress }); return bytes; }
+        if (await validStored(bytes, pack, 'opfs')) { stats.sources.opfs++; progress.loaded += pack.bytes; onProgress({ ...progress }); return bytes; }
         stats.corrupt++; await opfs.removeEntry(pack.name).catch(() => {});
       }
     }
@@ -158,7 +174,18 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo =
     }
     if (!skipFileDigests) for (const file of files) {
       const range = `${pack.name}:${file.offset}:${file.length}`;
-      if (await verifiedRanges.get(range) !== file.sha256) throw new Error(`File integrity mismatch: ${file.path}`);
+      if (await verifiedRanges.get(range) !== file.sha256) {
+        // Pack salteado de la cache con un archivo corrupto: se borra y se reintenta una vez con verificacion completa.
+        if (skippedFrom.has(pack.name) && !fullDigest) {
+          await Promise.allSettled([...verifiedRanges.values()]);
+          const url = new URL(pack.name, base);
+          if (skippedFrom.get(pack.name) === 'cache') await cache.delete(url); else await opfs?.removeEntry(pack.name).catch(() => {});
+          const retried = await preloadPacks(vfs, indexUrl, { ...options, fullDigest:true });
+          globalThis.pzPackStats.corrupt++; globalThis.pzPackStats.retriedFullDigest = true;
+          return retried;
+        }
+        throw new Error(`File integrity mismatch: ${file.path}`);
+      }
     }
   }
   if (pending.length + lazyMounts.length !== index.files.length || new Set([...pending, ...lazyMounts].map(([path]) => path)).size !== index.files.length)
