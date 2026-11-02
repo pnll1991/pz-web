@@ -59,9 +59,9 @@ try {
   }));
   await sleep(8000);
   for (const c of clients) await c.shot('1-joined');
-  if (A.fight && clients.length === 2) { // Round 86: the admin (god mode) fights the horde bare-handed: aim (right button held) + left clicks, four directions
+  if (A.fight) { // Round 86: the admin (god mode) fights the horde bare-handed: aim (right button held) + left clicks, four directions
     const a = clients[0];
-    await sleep(25000); await a.shot('fight-0');
+    await sleep(+(A['fight-delay'] || 25) * 1000); await a.shot('fight-0');
     for (const [dx, dy] of [[90, 50], [-90, 50], [90, -50], [-90, -50], [0, 90], [0, -90]]) {
       await a.page.mouse.move(640 + dx, 360 + dy); await sleep(300);
       await a.page.mouse.down({ button: 'right' }); await sleep(400);

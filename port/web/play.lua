@@ -60,10 +60,10 @@ Events.OnPlayerUpdate.Add(function(player)
                         t(function() return sq:isCouldSee(0) end), t(function() return sq:isCanSee(0) end), t(function() return sq:isSeen(0) end))
                 end
                 local function look(c)
-                    return string.format("female=%s skeleton=%s skinIdx=%s skinTex=%s outfit=%s itemVisuals=%s animPlayer=%s ready=%s action=%s onFloor=%s",
+                    return string.format("female=%s skeleton=%s skinIdx=%s skinTex=%s outfit=%s itemVisuals=%s animPlayer=%s action=%s onFloor=%s",
                         t(function() return c:isFemale() end), t(function() return c:getVisual():isSkeleton() end), t(function() return c:getVisual():getSkinTextureIndex() end),
                         t(function() return c:getVisual():getSkinTexture() end), t(function() return c:getOutfitName() end), t(function() return c:getItemVisuals():size() end),
-                        t(function() return c:hasAnimationPlayer() end), t(function() return c:getAnimationPlayer():isReady() end), t(function() return c:getActionStateName() end),
+                        t(function() return c:hasAnimationPlayer() end), t(function() return c:getActionStateName() end),
                         t(function() return c:isOnFloor() end))
                 end
                 if bestZ then
@@ -79,7 +79,40 @@ Events.OnPlayerUpdate.Add(function(player)
         if cmdTicks == 900 or (cmdTicks > 900 and (cmdTicks - 900) % 300 == 0) then
             local c = table.remove(cmdList, 1)
             say("cmd:" .. c)
-            if c == "@path" then -- pathfinding probe: walk the local player 8 tiles east with the game's own path action (the next "me=" lines show whether it moved)
+            if string.sub(c, 1, 7) == "@equip:" then -- equip an inventory item by type (diagnostic: the admin /additem's a weapon first)
+                pcall(function()
+                    local it = player:getInventory():getFirstTypeRecurse(string.sub(c, 8))
+                    if it then player:setPrimaryHandItem(it); player:setSecondaryHandItem(it); say("equipped:" .. tostring(it:getType())) else say("equip-missing:" .. string.sub(c, 8)) end
+                end)
+            elseif c == "@attack" then -- the game's own attack path (what the left click calls): face the nearest zombie and swing the equipped weapon
+                pcall(function()
+                    local list, best, bz = getCell():getZombieList(), 1e9, nil
+                    for i = 0, list:size() - 1 do
+                        local z = list:get(i)
+                        local d = math.abs(z:getX() - player:getX()) + math.abs(z:getY() - player:getY())
+                        if d < best and not z:isDead() then best = d; bz = z end
+                    end
+                    if bz then
+                        player:faceThisObject(bz)
+                        local ok, res = pcall(function() return player:AttemptAttack() end)
+                        say("attack:dist=" .. string.format("%.2f", best) .. " ok=" .. tostring(ok) .. " res=" .. tostring(res))
+                    else say("attack:no-zombie") end
+                end)
+            elseif c == "@kill" then -- the game's own kill path on the nearest zombie (HandWeapon + killer): death must reach the server and the other clients
+                pcall(function()
+                    local list, best, bz = getCell():getZombieList(), 1e9, nil
+                    for i = 0, list:size() - 1 do
+                        local z = list:get(i)
+                        local d = math.abs(z:getX() - player:getX()) + math.abs(z:getY() - player:getY())
+                        if d < best and not z:isDead() then best = d; bz = z end
+                    end
+                    if bz then
+                        local before = list:size()
+                        local ok, err = pcall(function() bz:Kill(player) end)
+                        say("kill:dist=" .. string.format("%.2f", best) .. " ok=" .. tostring(ok) .. " err=" .. tostring(err) .. " dead=" .. tostring(bz:isDead()) .. " zombies " .. before .. "->" .. getCell():getZombieList():size())
+                    else say("kill:no-zombie") end
+                end)
+            elseif c == "@path" then -- pathfinding probe: walk the local player 8 tiles east with the game's own path action (the next "me=" lines show whether it moved)
                 pcall(function() ISTimedActionQueue.add(ISPathFindAction:pathToLocationF(player, player:getX() + 8, player:getY(), player:getZ())) end)
             else
                 pcall(function() SendCommandToServer(c) end)
