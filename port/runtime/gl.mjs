@@ -173,6 +173,8 @@ export class GLBridge {
     const context = canvas.getContext('webgl2', { alpha: false, antialias: false, preserveDrawingBuffer: true });
     if (!context) throw new Error('WebGL 2 is required');
     this.context = context;
+    // Optional memo of translateShader (glslcache.mjs); game.mjs installs it before the game starts.
+    this.shaderCache = null;
     this.calls = Object.create(null);
     // Attribute stacks must exist before the first WebGL2 call: call() records state into them.
     this.attribRecords = { pixelStorei: new Map() }; // last value of each restorable state entry
@@ -1573,10 +1575,14 @@ export class GLBridge {
     }
     return shader;
   }
+  /** translateShader through the persistent memo (port/runtime/glslcache.mjs) when installed. Not `translate`: that is glTranslate. */
+  translateGlsl(source, stage) {
+    return this.shaderCache ? this.shaderCache.translate(source, stage) : translateShader(source, stage);
+  }
   desktopProgram(vertexSource, fragmentSource) {
     const gl = this.context;
-    const vertex = translateShader(vertexSource, 'vertex');
-    const fragment = translateShader(fragmentSource, 'fragment');
+    const vertex = this.translateGlsl(vertexSource, 'vertex');
+    const fragment = this.translateGlsl(fragmentSource, 'fragment');
     let vs, fs, program;
     try {
       vs = this.shader(gl.VERTEX_SHADER, vertex.source);
@@ -1679,7 +1685,7 @@ export class GLBridge {
     const entry = this.shaderEntry(handle, 'shaderSource');
     entry.raw = parts.join('\n');
     entry.stage = stage;
-    const translated = translateShader(entry.raw, stage);
+    const translated = this.translateGlsl(entry.raw, stage);
     entry.source = translated.source;
     entry.hasMain = translated.hasMain === true;
     entry.globalInits = translated.globalInits ?? [];
@@ -1796,7 +1802,7 @@ export class GLBridge {
         const raw = [version, ...units.filter(([, e]) => !e.hasMain).map(([, e]) => e), mains[0][1]]
           .map(e => typeof e === 'string' ? e : e.raw.replace(versionRe, '')).join('\n');
         let translated;
-        try { translated = translateShader(raw, name); }
+        try { translated = this.translateGlsl(raw, name); }
         catch (error) { return `merged ${name} stage failed to translate: ${error.message}`; }
         gl = this.call('createShader', type);
         program.merged.push(gl);

@@ -58,9 +58,56 @@ Lo esperado en la segunda carga con el mismo build y la misma copia: `pzPackStat
 - La versión con mtimes, el 304 del manifest y el `immutable` de los packs necesitan reiniciar el dev server, con OK del dueño (`docs/HANDOFF-T3.md`). Por eso este PR **no** es "sin build".
 - Uso de disco del perfil: hasta 320 MiB de media + los packs grandes (~321 MB) en OPFS, además de la caché de texturas. `navigator.storage.persist()` ya se pide desde la ronda 88.
 
-## Pendiente (no entra en este PR)
+## Segunda tanda: medición y memo de GLSL (rama `perf/carga-inicial-glsl-medicion`, desde `dev`)
 
-- **Memo de la traducción GLSL** (`gl.mjs` → `glsl.mjs#translateShader`, preprocess + parse de cada shader en cada carga). Es una función pura de (fuente, etapa). Se podría cargar un `Map` desde IndexedDB al arrancar, versionado por el sha256 de `glsl.mjs` y la versión del parser. Sin medir; conviene perfilar antes.
+- **Marcas de tiempo del arranque** (`game.mjs`): `globalThis.pzBootTimings` y `performance.mark('pz:<fase>')`. Cada valor son los ms desde el inicio de la navegación. Las fases:
+
+  | Fase | Cuándo se marca |
+  |---|---|
+  | `modules` | Se terminaron de cargar los módulos del runtime |
+  | `build-state` | Se leyó y validó `build-state.json` |
+  | `vfs` | Se abrió la VFS |
+  | `packs` | Se cargaron los packs |
+  | `media-manifest` | Se adjuntó el manifest de `/media` |
+  | `texcache` | Se abrió la caché de texturas |
+  | `sqlite` | SQLite está listo |
+  | `bullet` | Bullet está listo |
+  | `glslcache` | Se cargó la caché de GLSL |
+  | `wasm-compiled` | `boot.wasm` terminó de compilar |
+  | `teavm-loaded` | TeaVM terminó de cargar el módulo |
+  | `main` | Se llamó a `main` |
+  | `phase:<fase>` | Cambió `pzGame.phase` |
+  | `play:<estado>` | Cambió el estado del modo directo (`menu`, `loaded`, `ingame`…) |
+  | `menu-rendered` | El menú se dibujó (`pzGame.menuRendered`) |
+  | `first-frame` | El juego dibujó su primer cuadro y se cerró la pantalla de carga (`BrowserWindow.swapCount > 0`) |
+
+  Por consola sale `boot-timings {...}` cada vez que se agrega una fase. Cuando el juego llega al menú (o a los 3 min) sale una sola línea `caches {...}` con el estado de los packs, la media, GLSL, las texturas y `pzEarlyCompile`.
+- **Memo de la traducción GLSL** (`port/runtime/glslcache.mjs`).
+  - Antes de arrancar el juego, `load()` trae todo lo guardado en IndexedDB (`pz-web-glsl-v1`) a un `Map`. `GLBridge.translateGlsl()` consulta ese `Map` de forma síncrona. Lo que falta se traduce como siempre y se guarda en segundo plano.
+  - Versión: el SHA-256 de `glsl.mjs` y de los archivos servidos del parser. Si cambian, se vacía el almacén antes de usarlo.
+  - Cada acierto devuelve una copia. Los errores de traducción no se guardan.
+  - `?glslcache=0` o `?nocache=1` la apagan. Con `?glslcache=verify` siempre traduce y compara con lo guardado (`verifyOk` / `verifyBad`).
+  - El método no se llama `translate`: `GLBridge` ya tiene `translate` (es `glTranslate`).
+
+### Protocolo de medición (máquina Linux, no en macOS)
+
+1. Copiar a la web de pruebas: `bash scripts/sync_web.sh && grep -c glslcache port/target/web/game.html`.
+2. Carga en frío con un perfil nuevo: `scripts/bench.sh --page fast.html`. Anotar `boot-timings` hasta `play:menu` / `play:ingame` y la línea `caches`.
+3. Carga en caliente con el mismo perfil, otra vez. Lo esperado:
+   - `caches.packs.sources.network = 0`.
+   - `caches.media.restored > 0` y `remote.requests` cerca de 0.
+   - `caches.glsl.hit > 0` y `miss = 0`.
+   - `caches.tex.hit > 0`.
+4. Una vez por cambio de traductor: `?glslcache=verify` en caliente. Tiene que dar `verifyBad = 0`.
+5. Pasar los números a `STATUS.md`. Con eso se decide el orden de lo que sigue.
+
+## Siguientes pasos, en orden
+
+1. Medir según el protocolo de arriba (frío / caliente / verify) y dejar la línea base en `STATUS.md`.
+2. Con esos números, decidir los pendientes de abajo: primero los que muestren más ms en `boot-timings` o en `caches`.
+
+## Pendiente (no entra en estos PRs)
+
 - **sha256 completo de cada pack en cada carga** (~500 MB). El nombre del pack es su hash y solo se guarda lo verificado, así que se podría saltear al leer de la caché. Es una política explícita de la ronda 81 ("cada pack se sigue verificando completo"): lo decide el dueño.
 - **Caché de texturas por build**: se borra con cada `boot.wasm` nuevo (~945 MB). Guardarla con una versión del códec en lugar del ETag del build evitaría arrancar en frío, pero si el códec cambia sin cambiar la versión reutiliza datos viejos.
 - **URL con hash e `immutable` para `boot.wasm` y `/vendor/*`**. Ahorra las revalidaciones 304, pero necesita cambios en el build (`scripts/build.sh`, `copy_web_vendor.py`).
