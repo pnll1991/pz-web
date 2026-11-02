@@ -1,6 +1,8 @@
 # PZ Browser Lab
 
-Base local para un port personal de Project Zomboid a **TeaVM 0.16.0 / WebAssembly GC**. La demo ejecuta Java compilado en el navegador; no usa streaming. **El menú de Project Zomboid todavía no se muestra.** El resultado del build real, su arranque y los bloqueos están en [STATUS.md](STATUS.md).
+Port personal de Project Zomboid (build 25485521, v42.21) al navegador con **TeaVM 0.16.0 / WebAssembly GC**. Hoy se juega en Chrome: menú, partida y multijugador contra el servidor dedicado real, por `/play.html` (vehículos y voz siguen pendientes). Estado, evidencia y bloqueos: [STATUS.md](STATUS.md).
+
+**Para levantar, manejar o actualizar el proyecto: [docs/operacion/](docs/operacion/README.md).** Cómo se trabaja (ramas, PRs, agentes): [docs/procesos/](docs/procesos/README.md).
 
 ## Probar lo que ya funciona
 
@@ -95,4 +97,4 @@ Reportes locales: `port/target/build-report.json`, `port/target/teavm-diagnostic
 
 ## Reglas de colaboración
 
-Leer [AGENTS.md](AGENTS.md) y [AGENT_LEARNINGS.md](AGENT_LEARNINGS.md). No publicar ni agregar archivos del juego, fuentes derivadas, SDKs privados, resultados de builds o capturas privadas. No se crean remotos. La tarea 3 está en el commit local `a1d4963`; esta sesión conserva `.git` en solo lectura. El dueño realiza los commits locales.
+Leer [AGENTS.md](AGENTS.md) y [AGENT_LEARNINGS.md](AGENT_LEARNINGS.md). No publicar ni agregar archivos del juego, fuentes derivadas, SDKs privados, resultados de builds o capturas privadas. El único remoto es el repositorio privado `pnll1991/pz-web`; todo cambio entra por PR a `dev` ([docs/procesos/ramas-y-prs.md](docs/procesos/ramas-y-prs.md)).

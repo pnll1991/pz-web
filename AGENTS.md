@@ -19,6 +19,7 @@
 - `port/`: arranque Java, integración TeaVM y shims propios.
 - `dev-server/`: servidor local COOP/COEP con ETag y Range.
 - `tests/`: fixtures sintéticas propias y pruebas JVM/Node/Chrome.
+- `docs/operacion/`: cómo se levanta, se maneja y se actualiza el proyecto.
 - `docs/procesos/`: cómo se trabaja (ramas, PRs, agentes). `docs/briefs/`: un brief por tarea delegada.
 - `.claude/skills/`: puerta de entrada a cada proceso para agentes; el detalle vive en `docs/procesos/`.
 - `docs/decisions.md`: una decisión por línea, con motivo y fuente cuando corresponda.
@@ -44,6 +45,7 @@
 | Crear una rama, commitear, pushear, abrir o mergear un PR, publicar `dev → main` | `docs/procesos/ramas-y-prs.md` · skill `ramas-y-prs` |
 | Empezar una ronda, escribir un brief, lanzar un subagente o integrar lo que devolvió | `docs/procesos/trabajo-con-agentes.md` · skill `trabajo-con-agentes` |
 | Mandar a la partida en vivo un cambio que no necesita build (`port/web/*`, `port/runtime/*.mjs`) | `docs/procesos/updates-sin-build.md` · skill `updates-sin-build` |
+| Levantar el proyecto en una máquina, manejar los servicios (dev server, servidor PZ, túnel) o actualizar lo que está en vivo | `docs/operacion/` · skill `operacion` |
 | Tocar algo que está en vivo (dev server, servidor PZ, túnel) | `docs/HANDOFF-T3.md` |
 
 Proceso nuevo = documento en `docs/procesos/` + skill (o sección en una existente) + fila en esta tabla, en el mismo PR.
