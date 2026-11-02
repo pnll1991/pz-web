@@ -29,6 +29,8 @@ const TEXTUAL = new Set(['.html', '.js', '.mjs', '.css', '.json', '.txt', '.svg'
 export const MEDIA_INCOMPRESSIBLE = new Set(['.png', '.jpg', '.jpeg', '.ogg', '.ogv', '.mp3', '.bank', '.bik', '.bk2', '.pack',
   '.zip', '.gz', '.br', '.7z', '.glb', '.dat', '.backup', '.webm', '.webp', '.woff2']);
 export const MEDIA_MIN_SAVING = 0.1;
+// Ronda 91: un lote de /media-ranges se intenta comprimir solo si al menos esta fracción de sus bytes viene de tipos comprimibles.
+export const RANGES_MIN_COMPRESSIBLE = 0.1;
 // Un tramo más grande que esto se manda sin comprimir (stream directo del disco, sin armar el tramo en memoria).
 export const MEDIA_SLICE_COMPRESS_MAX = 32 << 20;
 const headers = {
@@ -151,6 +153,9 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
   const compressor = createCompressor();
   // Ronda 90: tramos de /media y bundles de lotheader. Clave = ruta + tamaño + mtime + tramo: un archivo que cambia en PZ_HOME no reusa nada.
   const mediaCompressor = createCompressor({ maxBytes: Number(process.env.PZWEB_MEDIA_CACHE_MB || 256) << 20, minSaving: MEDIA_MIN_SAVING });
+  // Ronda 91: lotes de /media-ranges comprimidos (un jugador nuevo pide los mismos lotes que el anterior: se comprimen una vez).
+  const rangesCompressor = createCompressor({ maxBytes: Number(process.env.PZWEB_RANGES_CACHE_MB || 128) << 20, minSaving: MEDIA_MIN_SAVING, maxEntries: 2000 });
+  const noCompressor = { get: async () => null };
   let bridge = null;
   const board = createPlayerBoard({ bridges: () => bridge?.sessions.size ?? null });
   webRoot = await realpath(webRoot).catch(() => { throw new Error('Build missing. Run scripts/build.sh first.'); });
@@ -216,6 +221,13 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
       if (pathname.includes('\0') || pathname.includes('\\') || pathname.split('/').includes('..')) {
         respond(400, 'Invalid path'); return;
       }
+      // La raíz es el juego: / y /index.html redirigen a /play.html con la query tal cual llegó (?k=… incluido). Va después del
+      // gate (sin clave → 403, nunca un redirect) y del chequeo same-origin; el hash no llega al servidor y lo conserva index.html.
+      if (pathname === '/' || pathname === '/index.html') {
+        const query = req.url.indexOf('?');
+        res.writeHead(302, { ...headers, Location: '/play.html' + (query < 0 ? '' : req.url.slice(query)), 'Cache-Control': 'no-store', 'Content-Length': 0 });
+        res.end(); return;
+      }
       if (pathname === '/warm-media.json') { // Round 84: ranges real sessions asked for (see dev-server/warm-list.mjs)
         const body = JSON.stringify(warm.list());
         await sendText(`warm|${warm.size()}`, body, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); return;
@@ -262,10 +274,14 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
         if (!mediaRoot) { respond(404, 'PZ_HOME not mounted'); return; }
         const indices = parseIndices(new URL(req.url, `http://${authority}`).searchParams.get('i'));
         if (!indices) { respond(400, 'Invalid ranges request'); return; }
-        const { body } = await buildRangesResponse({ mediaRoot, entries: warm.list(), indices,
+        const { body, compressibleBytes } = await buildRangesResponse({ mediaRoot, entries: warm.list(), indices, incompressible: MEDIA_INCOMPRESSIBLE,
           bundle: (folder, ext) => { const key = `${folder}\0${ext}`; bundles.has(key) || bundles.set(key, buildBundle(mediaRoot, folder, ext)); return bundles.get(key); } });
-        res.writeHead(200, { ...headers, 'Content-Type':'application/octet-stream', 'Content-Length':body.length, 'Cache-Control':'no-store' });
-        res.end(req.method === 'HEAD' ? undefined : body); return;
+        // Ronda 91: el lote sale con br/gzip si el navegador lo acepta (fetch sin Range: Chrome manda br). Clave de la caché = hash del
+        // cuerpo sin comprimir, así que un archivo que cambia en PZ_HOME o un warm-list distinto nunca reusa otro lote. Un lote casi todo
+        // png/pack/ogg (< RANGES_MIN_COMPRESSIBLE de bytes comprimibles) se manda tal cual. Sin ETag (no-store); Vary siempre.
+        const worth = acceptedCodings(req.headers['accept-encoding']).length > 0 && compressibleBytes >= body.length * RANGES_MIN_COMPRESSIBLE;
+        const key = worth ? `ranges|${createHash('sha256').update(body).digest('hex')}` : '';
+        await sendText(key, body, { 'Content-Type':'application/octet-stream', 'Cache-Control':'no-store' }, undefined, worth ? rangesCompressor : noCompressor); return;
       }
       if (pathname === '/classpath/lookup') {
         const name = new URL(req.url, `http://${authority}`).searchParams.get('name');
@@ -285,7 +301,7 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
         res.writeHead(range ? 206 : 200, { ...headers, 'Content-Type':'application/octet-stream', 'Content-Length':content.length, 'Accept-Ranges':'bytes', ETag:etag, ...(range ? {'Content-Range':`bytes ${range.start}-${range.end}/${bytes.length}`} : {}) });
         res.end(req.method === 'HEAD' ? undefined : content); return;
       }
-      let base = webRoot, relative = pathname === '/' ? 'index.html' : pathname.slice(1);
+      let base = webRoot, relative = pathname.slice(1);
       if (pathname === '/media' || pathname.startsWith('/media/')) {
         if (!mediaRoot) { respond(404, 'PZ_HOME not mounted'); return; }
         base = mediaRoot; relative = pathname.slice('/media/'.length);

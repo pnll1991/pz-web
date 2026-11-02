@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 test('Java window initialization uses actual browser metrics and is idempotent', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/lab.html');
   await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
   const result=await page.evaluate(async()=>{
     const {BrowserWindow}=await import('/runtime/window.mjs');
@@ -57,7 +57,7 @@ test('Java window initialization uses actual browser metrics and is idempotent',
 });
 
 test('window initialization rejects detached canvases and lost graphics contexts', async ({ page }) => {
-  await page.goto('/');await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  await page.goto('/lab.html');await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
   const errors=await page.evaluate(async()=>{
     const {BrowserWindow}=await import('/runtime/window.mjs');
     const detached=document.createElement('canvas');
@@ -74,7 +74,7 @@ test('window initialization rejects detached canvases and lost graphics contexts
 });
 
 test('GLFW context attach and detach are reported honestly to the game', async ({ page }) => {
-  await page.goto('/');await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  await page.goto('/lab.html');await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
   const result=await page.evaluate(async()=>{
     const {BrowserWindow}=await import('/runtime/window.mjs');
     const runtime=pzRuntime;

@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 test('substituted Java concurrency yields, preserves order and wakes conditions', async ({ page }) => {
-  await page.goto('/'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  await page.goto('/lab.html'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
   await page.evaluate(() => pzLab.teavm.exports.checkCompatibility());
   await expect.poll(() => page.evaluate(() => pzCompatibility.status)).toBe('passed');
   expect(await page.evaluate(() => pzCompatibility.detail)).toBe('queues,futures,executor,condition:OK;channels,force,printstream,fma,matcher,crc:OK');
@@ -14,7 +14,7 @@ test('substituted Java concurrency yields, preserves order and wakes conditions'
 
 test('Java actually executes in Wasm GC and renders a WebGL2 shader', async ({ page }, testInfo) => {
   const errors = []; page.on('pageerror',error=>errors.push(error.message));
-  await page.goto('/');
+  await page.goto('/lab.html');
   await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
   const result = await page.evaluate(()=>({boot:pzBoot,pixel:pzLab.pixel,isolated:crossOriginIsolated,
     actualWasm:pzLab.teavm.instance instanceof WebAssembly.Instance, metrics:pzLab.metrics()}));
@@ -30,7 +30,7 @@ test('Java actually executes in Wasm GC and renders a WebGL2 shader', async ({ p
 });
 
 test('preloaded files read synchronously and /Zomboid persists after reload', async ({ page }) => {
-  await page.goto('/'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  await page.goto('/lab.html'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
   expect(await page.evaluate(()=>new TextDecoder().decode(pzLab.vfs.readFile('/media/platform-probe.txt')))).toContain('Recurso sintético');
   await page.locator('#note').fill('Partida de prueba — áéí 123');
   await page.getByRole('button',{name:'Guardar',exact:true}).click();
@@ -47,7 +47,7 @@ test('preloaded files read synchronously and /Zomboid persists after reload', as
 });
 
 test('input releases held keys on blur and loop can yield and pause', async ({ page }) => {
-  await page.goto('/'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  await page.goto('/lab.html'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
   await page.locator('#canvas').focus(); await page.keyboard.down('w');
   expect(await page.evaluate(()=>pzLab.input.keys.has(87))).toBe(true);
   await page.locator('#note').focus();
@@ -63,7 +63,7 @@ test('input releases held keys on blur and loop can yield and pause', async ({ p
 });
 
 test('missing graphics and invalid shaders report failure', async ({ page }) => {
-  await page.goto('/'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  await page.goto('/lab.html'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
   expect(await page.evaluate(()=>{
     try { pzLab.gl.unsupported('Java_fixture_GL_glMissing'); } catch(e) { return e.message; }
   })).toContain('Java_fixture_GL_glMissing');
@@ -77,7 +77,7 @@ test('missing graphics and invalid shaders report failure', async ({ page }) => 
 });
 
 test('translated desktop uniforms and shader output preserve their values', async ({ page }) => {
-  await page.goto('/'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  await page.goto('/lab.html'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
   const result = await page.evaluate(() => {
     const bridge = pzLab.gl, gl = bridge.context;
     const vertex = '#version 330 core\nconst vec2 p[3]=vec2[3](vec2(-1.,-1.),vec2(1.,-1.),vec2(0.,1.));void main(){gl_Position=vec4(p[gl_VertexID],0.,1.);}';
@@ -96,7 +96,7 @@ test('translated desktop uniforms and shader output preserve their values', asyn
 });
 
 test('generated resource packs load, verify hashes and reuse Cache Storage', async ({ page }) => {
-  await page.goto('/'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  await page.goto('/lab.html'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
   const loaded = await page.evaluate(async()=>{
     const report = await pzLab.preloadPacks(pzLab.vfs);
     return {report,text:new TextDecoder().decode(pzLab.vfs.readFile('/media/probe.txt'))};
@@ -124,7 +124,7 @@ test('local fixture mount is readable and its byte ranges match', async ({ reque
 });
 
 test('an aborted IndexedDB save retains the previous committed snapshot', async ({ page }) => {
-  await page.goto('/'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  await page.goto('/lab.html'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
   const aborted = await page.evaluate(async()=>{
     const vfs = pzLab.vfs;
     vfs.writeFile('/Zomboid/atomic.txt',new TextEncoder().encode('previous'));
@@ -141,7 +141,7 @@ test('an aborted IndexedDB save retains the previous committed snapshot', async 
 });
 
 test('java.io, RandomAccessFile and NIO share the persistent browser filesystem', async ({ page }) => {
-  await page.goto('/'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
+  await page.goto('/lab.html'); await expect(page.locator('#status')).toHaveText('PLATAFORMA LISTA');
   expect(await page.evaluate(() => pzLab.teavm.exports.readJavaFile('/media/platform-probe.txt'))).toContain('sintético');
   expect(await page.evaluate(() => pzLab.teavm.exports.exerciseJavaFiles('/Zomboid/java-io/nested'))).toBe('java NIO: ñ😀');
   expect(await page.evaluate(() => {
