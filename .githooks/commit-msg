@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Mensaje en Conventional Commits (docs/procesos/ramas-y-prs.md#mensajes-de-commit-y-títulos-de-pr).
+set -euo pipefail
+bash "$(git rev-parse --show-toplevel)/scripts/check-commit-title.sh" "$(head -n1 "$1")"

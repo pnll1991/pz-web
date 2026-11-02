@@ -1,0 +1,62 @@
+# Comprobaciones que se pueden correr sin la copia del juego (docs/procesos/ramas-y-prs.md#qué-revisa-la-ci).
+# El build real (TeaVM con el jar fijado, packs, Chrome con el juego) NO corre acá: necesita PZ_HOME y ~20 GB
+# de RAM, y los archivos del juego nunca se suben a GitHub. Esa verificación sigue siendo local y va en el PR.
+#
+# Consumo: unos 2 minutos por corrida, del cupo gratis de Actions para repos privados (2.000 min/mes).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guarda:
+    name: Archivos prohibidos
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Nada del juego, binarios ni decompilado
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            bash scripts/check-forbidden.sh "origin/${{ github.base_ref }}"
+          else
+            bash scripts/check-forbidden.sh --all
+          fi
+
+  titulo:
+    name: Título del PR
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Conventional Commits
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: bash scripts/check-commit-title.sh "$TITLE"
+
+  node:
+    name: Pruebas Node
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: node --test (sin las que necesitan artefactos compilados)
+        # pzbullet.test.mjs lee port/target/web/vendor/pzbullet, que sale de scripts/build_pzbullet.py con
+        # Emscripten; se corre en local con el resto de scripts/test.sh.
+        run: node --test $(ls tests/node/*.test.mjs | grep -v pzbullet.test.mjs)
+      - name: Sintaxis de los módulos del runtime y del dev server
+        run: for f in port/runtime/*.mjs port/web/*.mjs dev-server/*.mjs; do [ -f "$f" ] && node --check "$f"; done
