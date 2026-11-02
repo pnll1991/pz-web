@@ -2,6 +2,10 @@
 
 Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoques mejores.
 
+## 2026-11-02 — Indicador de fps y ping
+- Error detectado por la prueba: al envolver `swapBuffers` guardé `original.bind(window)` y al restaurar dejé la versión ligada, no el método original (y en `BrowserWindow` el método vive en el prototipo). Mejor enfoque: guardar si la propiedad era propia (`Object.hasOwn`) y restaurar con `delete` cuando venía del prototipo; probar que `stop()` deja el mismo método.
+- Nota: `npm test` sin `node_modules` falla en todas las pruebas de GL/GLSL (falta el parser); `npm ci --ignore-scripts` primero.
+
 ## 2026-11-02 — Carga inicial (caché persistente)
 - Error detectado por la prueba: llamé `translate` al método nuevo de `GLBridge` y ya existía `translate` (glTranslate, definido más abajo), que lo pisaba en silencio: los shaders habrían pasado por la multiplicación de matrices. Mejor enfoque: antes de agregar un método a una clase grande, `grep -n '^  <nombre>(' archivo`; probar el método por el prototipo y afirmar que no es el mismo que el existente.
 - Error evitado en revisión propia: agregar `<link rel="modulepreload">` antes del `<script type="importmap">` hace que Chrome ignore el importmap y `glsl.mjs` no resuelva `@shaderfrog/glsl-parser`. Mejor enfoque: el importmap siempre primero; comprobarlo en Chrome importando `/runtime/glsl.mjs`, no solo con `node --check`.
@@ -983,3 +987,22 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Error: con `set -euo pipefail`, `p=$(pid)` falla cuando `grep` no encuentra el proceso y el script termina sin imprimir nada (rc=1); el servidor en vivo estaba caído y `status` no lo decía.
 - Evitar: funciones de búsqueda de pid con `grep` en un pipeline sin `|| true` bajo `pipefail`.
 - Mejor enfoque: que la función devuelva vacío con éxito y que `status` diga "detenido" y el último evento del log (`SERVER STARTED`/`Server exited`); confirmar con `ss -ulnp | grep <puerto>`.
+
+## R87: carga
+- Error: medí la carga con un service worker mirando sólo la sesión CDP de la página: los pedidos que hace el propio SW no se ven ahí y salió "106 MB" donde eran cientos. Mejor enfoque: medir sin SW (CDP de página) o contar en el servidor; y las respuestas sin `Content-Length` (chunked) tampoco sirven para contar en el servidor.
+- Error de proceso: la copia de trabajo es compartida con otra sesión que cambia de rama y commitea por su cuenta (me guardó archivos sin commitear en `feat/service-worker`, y un `pkill -f` mató mi propia shell otra vez). Mejor enfoque: `git worktree add /tmp/pz86/wt -b <rama> origin/dev` para mis cambios y no tocar el árbol principal.
+- Patrón: antes de implementar una mejora de una ronda, `git fetch` y mirar PRs/ramas nuevos: la otra sesión ya había hecho el punto 1 (PR #9); medirlo con el brief fue más útil que duplicarlo.
+
+## 2026-11-02 — "mergeado" no es "en vivo"
+- Error: el dueño veía la página de arranque vieja y le dije que el PR #10 no estaba mergeado, porque miré refs locales sin `git fetch`. Ya estaba en `main`; lo que faltaba era publicarlo. Después miré el checkout de la Mac como si fuera el que sirve 8098, y la máquina en vivo es la Linux.
+- Causa: mergear a `main` no toca la máquina en vivo; nada actualizaba su checkout.
+- Mejor enfoque: `git fetch origin` antes de afirmar el estado de una rama o un PR (o `gh pr view <n> --json state,mergedAt`). Para saber qué se juega, comparar el HEAD del checkout en vivo (máquina Linux) con `origin/main`. Todo merge a `main` termina con `scripts/publicar_web.sh` (ver `docs/procesos/ramas-y-prs.md#publicar-de-dev-a-main`).
+
+## 2026-11-02 — Conflictos de solo agregado en STATUS/decisions/AGENT_LEARNINGS
+- Error: resolví con un `perl -0pi` que usaba `$1` después de otro `=~` en el reemplazo; el segundo match pisó las capturas y borró ambos lados del conflicto (lo vi en `git diff origin/dev`, no en el resultado del rebase).
+- Mejor enfoque: estos archivos solo crecen al final; reconstruirlos con `git show origin/dev:<f>` + las líneas `+` de `git diff origin/dev...<rama> -- <f>`, y revisar siempre `git diff origin/dev -- <f>` antes de seguir. Al mergear PRs en serie, rebasar el siguiente después de cada merge: dos PRs que agregan al final del mismo archivo chocan.
+
+## 2026-11-02 — Rama vieja que revertiría PRs ya mergeados
+- Error: `feat/service-worker` (bc3be1d) se guardó en curso sobre una base anterior al PR #9 y siguió viva sin rebasear; mergearla habría revertido #9 (mediacache, loading, glslcache, perfhud) por el solo hecho de no tenerlos. Lo único nuevo eran `sw.js` y `sw-register.mjs`, y #9 ya cubría la caché sin service worker.
+- Causa: una rama larga que no se rebasea sobre `dev` muestra como "borrado" todo lo que entró después de su base; el diff contra `dev` engaña igual que un merge ciego.
+- Mejor enfoque: antes de integrar una rama guardada, mirar `git diff --stat origin/dev...<rama>` y `git diff --stat origin/dev <rama>`; si el segundo borra mucho más que el primero, la rama está atrasada. Se rescata solo lo nuevo (`git diff <base>..<rama>`) en una rama desde `dev`, o se descarta con un PR cerrado sin mergear y su motivo (PR #19).

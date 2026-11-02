@@ -32,9 +32,26 @@ gh pr create --base dev --title "fix(runtime): …"   # usa .github/pull_request
 
 ## Publicar de `dev` a `main`
 
-Lo decide el dueño. Se abre un PR `dev → main` con la lista de PRs que entran y se mergea con **merge commit** (no squash), para que las dos ramas compartan la historia. Antes de publicar algo que afecta la partida en vivo (dev server 8098, servidor PZ, túnel) hay que mirar `/tmp/pzweb-access.log` y avisar si hay que recargar o reconectar.
+Lo decide el dueño. Se abre un PR `dev → main` con la lista de PRs que entran y se mergea con **merge commit** (no squash), para que las dos ramas compartan la historia.
 
-Un `hotfix/*` se mergea en `main` y después se lleva a `dev` (`git switch dev && git merge origin/main`) para que `dev` nunca quede atrás.
+**Pasar a `main` y publicar en vivo son un solo paso.** Mergear no cambia lo que se juega: la máquina en vivo sigue sirviendo su checkout hasta que alguien lo actualiza. El objetivo es que el juego en vivo sea siempre `origin/main`. Por eso, el pedido del dueño de pasar `dev → main` incluye publicar ese merge, y quien mergea lo publica enseguida:
+
+1. Mirar `/tmp/pzweb-access.log`: quién está jugando.
+2. En la máquina en vivo (Linux, ver [docs/operacion/README.md](../operacion/README.md)), en el checkout que sirve 8098:
+
+   ```bash
+   bash scripts/publicar_web.sh --dry-run   # qué entra y qué necesita
+   bash scripts/publicar_web.sh             # si salió 0: fast-forward de main + sync_web.sh + comprobación
+   ```
+
+3. Si sale con **3** (necesita build o reempaquetar): `git merge --ff-only origin/main`, `bash scripts/sync_web.sh` y el build o los paquetes que pida la tabla de [actualizar.md](../operacion/actualizar.md). No corta la partida, así que entra en el mismo pedido.
+4. Si sale con **4** (reiniciar dev server, servidor PZ o túnel): eso corta la partida y **necesita un OK aparte del dueño** ([HANDOFF-T3.md](../HANDOFF-T3.md)). Mientras no llegue, se publica lo que no necesita reinicio (`git merge --ff-only origin/main && bash scripts/sync_web.sh`) y se avisa qué quedó pendiente.
+5. Comprobar: `git rev-parse --short HEAD` en el checkout en vivo es igual a `git rev-parse --short origin/main`.
+6. Comentar en el PR `dev → main` qué se publicó (sha), qué hizo falta (recarga, build, reinicio) y qué quedó pendiente. Avisar a los jugadores si tienen que recargar o reconectar.
+
+Un `main` que no está publicado es un pendiente: va a `STATUS.md` con el motivo hasta que se publique. Si el agente no tiene acceso a la máquina en vivo, lo dice en el PR y en la respuesta; no da la tarea por terminada.
+
+Un `hotfix/*` se mergea en `main`, se publica igual y después se lleva a `dev` (`git switch dev && git merge origin/main`) para que `dev` nunca quede atrás.
 
 ## Mensajes de commit y títulos de PR
 

@@ -11,5 +11,5 @@ Detalle completo: `docs/procesos/updates-sin-build.md`. Checklist:
 2. El cambio se nota en vivo: el PR dice qué ve el jugador y dónde, y lleva la etiqueta `sin build` en "Riesgos y pendientes".
 3. Probar: `npm test`; `bash scripts/sync_web.sh && grep -c '<cambio>' port/target/web/<archivo>`; Chrome contra el `boot.wasm` existente en 8199, nunca en 8098. `play.lua` en la instancia de prueba del servidor.
 4. PR a `dev` según la skill `ramas-y-prs`. No mergear sin pedido explícito.
-5. Publicar solo con OK del dueño, en la máquina en vivo: mirar `/tmp/pzweb-access.log`, `bash scripts/publicar_web.sh --dry-run` y después sin `--dry-run`. Si sale con 3 (build) o 4 (reinicio), no es un update sin build.
+5. Publicar cuando el dueño pide pasar `dev → main` (ese pedido incluye publicar; mergear solo no cambia lo que se juega), en la máquina en vivo: mirar `/tmp/pzweb-access.log`, `bash scripts/publicar_web.sh --dry-run` y después sin `--dry-run`. Si sale con 3 (build) o 4 (reinicio), no es un update sin build.
 6. Avisar a los jugadores que recarguen. La URL no cambia.

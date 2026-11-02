@@ -3,6 +3,7 @@ import { classpathResources } from './classpath.mjs';
 import { attachBridge } from './ws-bridge.mjs';
 import { createPublicGate } from './public-mode.mjs';
 import { createWarmList } from './warm-list.mjs';
+import { createPlayerBoard } from './players.mjs';
 import { appendFile } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { realpath, stat, open, readFile, readdir } from 'node:fs/promises';
@@ -91,6 +92,8 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
   publicKey = process.env.PZWEB_PUBLIC_KEY || '', warmFile = process.env.PZWEB_WARM_FILE || '/tmp/pzweb-warm.json' } = {}) {
   const gate = createPublicGate({ key: publicKey });
   const warm = createWarmList({ file: warmFile });
+  let bridge = null;
+  const board = createPlayerBoard({ bridges: () => bridge?.sessions.size ?? null });
   webRoot = await realpath(webRoot).catch(() => { throw new Error('Build missing. Run scripts/build.sh first.'); });
   let mediaRoot;
   if (pzHome) {
@@ -123,7 +126,8 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
     try {
       // Round 84: public (tunnel) requests are authenticated by the key gate first; their same-origin rules use the tunnel host and https.
       const publicRequest = gate.isPublic(req);
-      if (publicRequest) res.on('finish', () => accessLog(req, res.statusCode));
+      // /perf/report llega cada 5 s por jugador: no se anota para que el log siga mostrando quién juega y qué falló.
+      if (publicRequest && !req.url.startsWith('/perf/report')) res.on('finish', () => accessLog(req, res.statusCode));
       if (gate.handle(req, res, headers)) return;
       if (new URL(req.url, 'http://x').pathname === '/favicon.ico') { res.writeHead(204, { ...headers }); res.end(); return; }
       const authority = publicRequest ? req.headers.host : `127.0.0.1:${server.address().port}`;
@@ -147,6 +151,15 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
         res.end(req.method === 'HEAD' ? undefined : body); return;
       }
       if (req.method === 'GET' && (pathname === '/media-bundle' || (pathname.startsWith('/media/') && req.headers.range))) warm.record(req.url, req.headers.range || '');
+      if (pathname === '/perf/report') { // reporte de rendimiento de una pestaña (dev-server/players.mjs)
+        const ok = board.report(new URL(req.url, 'http://x').searchParams);
+        res.writeHead(ok ? 204 : 400, { ...headers, 'Cache-Control': 'no-store' }); res.end(); return;
+      }
+      if (pathname === '/perf') {
+        const body = JSON.stringify(board.snapshot());
+        res.writeHead(200, { ...headers, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
+        res.end(req.method === 'HEAD' ? undefined : body); return;
+      }
       if (pathname === '/health') {
         res.writeHead(200, { ...headers, 'Content-Type': 'application/json' });
         res.end(req.method === 'HEAD' ? undefined : JSON.stringify({ mode: 'platform-smoke', gameMounted: !!mediaRoot }));
@@ -238,7 +251,7 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
       else { console.error('dev-server:', error.message); respond(500, 'Local server error'); }
     }
   });
-  attachBridge(server, { log: message => console.log('mp-bridge:', message), gate });
+  bridge = attachBridge(server, { log: message => console.log('mp-bridge:', message), gate });
   return server;
 }
 

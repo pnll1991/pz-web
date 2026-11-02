@@ -14,3 +14,4 @@ Detalle completo: `docs/procesos/ramas-y-prs.md`. Checklist:
 5. PR a `dev` con `.github/pull_request_template.md` completa: cada ítem marcado o tachado con motivo, y la tabla "Cómo se verificó" con lo que se corrió de verdad.
 6. Seguir la CI hasta el final. Avisar con el link del PR, el nivel de evidencia alcanzado y lo que no se pudo probar.
 7. **No mergear** salvo pedido explícito para ese PR. Publicar `dev → main` solo si el dueño lo pide; merge commit, no squash.
+8. **Todo merge a `main` (publicación o hotfix) se publica en vivo enseguida**: mergear no cambia lo que se juega. En la máquina en vivo, `bash scripts/publicar_web.sh --dry-run` y después sin `--dry-run`. Si sale 3, `git merge --ff-only origin/main`, `sync_web.sh` y build según `docs/operacion/actualizar.md`. Si sale 4, el reinicio necesita OK aparte del dueño. Terminar con el HEAD en vivo igual a `origin/main` y un comentario en el PR con lo publicado y lo pendiente.

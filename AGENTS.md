@@ -36,6 +36,7 @@
 ## Ramas, PRs y agentes
 - Nada se commitea directo en `main` ni en `dev`: cada tarea va en una rama `<tipo>/<tema>` que sale de `dev` y vuelve por PR a `dev` con `.github/pull_request_template.md`.
 - **Ningún agente mergea un PR salvo pedido explícito de una persona para ese PR.** La CI en verde o la tarea terminada no son permiso.
+- **Todo merge a `main` se publica en vivo enseguida** (`scripts/publicar_web.sh` en la máquina en vivo): mergear no cambia lo que se juega. El pedido de pasar `dev → main` incluye publicar; solo un reinicio que corte la partida pide un OK aparte.
 - Títulos de commit y PR en Conventional Commits, con la descripción en español. `bash scripts/install-hooks.sh` activa los hooks locales.
 - La CI corre sin la copia del juego (archivos prohibidos, título, `npm test`); el build real y Chrome con el juego se verifican en local y se informan en el PR.
 - Un build Maven y un Chrome de prueba a la vez; nada en vivo (8098, servidor PZ, túnel) sin OK del dueño.
