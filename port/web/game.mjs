@@ -8,6 +8,7 @@ import { CanvasInput } from '/runtime/input.mjs';
 import { BrowserWindow } from '/runtime/window.mjs';
 import { VirtualFileSystem, normalizePath } from '/runtime/vfs.mjs';
 import { preloadPacks } from '/runtime/packs.mjs';
+import { setupServiceWorker, keepPacks } from '/runtime/sw-register.mjs';
 import { TextureCache } from '/runtime/texcache.mjs';
 
 const status = document.getElementById('game-status');
@@ -111,8 +112,10 @@ try {
   manifestFetch?.catch(() => {});
   const classpathFetches = ['stdlib.lua', 'stdlib.lbc'].map(name => ({ name, response: fetch(`/classpath/resource/0/${name}`) }));
   for (const { response } of classpathFetches) response.catch(() => {});
+  // Ronda 87: service worker opt-in (?sw=1): cachea los packs grandes y las lecturas por rango de /media para la carga siguiente.
+  globalThis.pzServiceWorker = await setupServiceWorker().catch(error => ({ state: 'error', error: String(error) }));
   const vfs = await new VirtualFileSystem().open();
-  await preloadPacks(vfs);
+  keepPacks((await preloadPacks(vfs)).packs);
   // Round 79: the rest of PZ_HOME/media (maps are 4.3 GB) is read on demand from the local dev
   // server; the manifest only lists names and sizes. '?remote=0' keeps the packs-only behaviour.
   if (manifestFetch) {

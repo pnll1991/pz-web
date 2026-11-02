@@ -114,5 +114,5 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo =
   for (const [path, blob, offset, length] of pending) vfs.mountView(path, blob, offset, length);
   if (!skipFileDigests && memo) writeMemo(indexHash);
   stats.ms = performance.now() - stats.t0;
-  return { files:pending.length, bytes:total, fileDigests:stats.fileDigests };
+  return { files:pending.length, bytes:total, fileDigests:stats.fileDigests, packs:index.packs.map(pack => pack.name) };
 }
