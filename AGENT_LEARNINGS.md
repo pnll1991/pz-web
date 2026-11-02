@@ -992,3 +992,12 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Error: medí la carga con un service worker mirando sólo la sesión CDP de la página: los pedidos que hace el propio SW no se ven ahí y salió "106 MB" donde eran cientos. Mejor enfoque: medir sin SW (CDP de página) o contar en el servidor; y las respuestas sin `Content-Length` (chunked) tampoco sirven para contar en el servidor.
 - Error de proceso: la copia de trabajo es compartida con otra sesión que cambia de rama y commitea por su cuenta (me guardó archivos sin commitear en `feat/service-worker`, y un `pkill -f` mató mi propia shell otra vez). Mejor enfoque: `git worktree add /tmp/pz86/wt -b <rama> origin/dev` para mis cambios y no tocar el árbol principal.
 - Patrón: antes de implementar una mejora de una ronda, `git fetch` y mirar PRs/ramas nuevos: la otra sesión ya había hecho el punto 1 (PR #9); medirlo con el brief fue más útil que duplicarlo.
+
+## 2026-11-02 — "mergeado" no es "en vivo"
+- Error: el dueño veía la página de arranque vieja y le dije que el PR #10 no estaba mergeado, porque miré refs locales sin `git fetch`. Ya estaba en `main`; lo que faltaba era publicarlo. Después miré el checkout de la Mac como si fuera el que sirve 8098, y la máquina en vivo es la Linux.
+- Causa: mergear a `main` no toca la máquina en vivo; nada actualizaba su checkout.
+- Mejor enfoque: `git fetch origin` antes de afirmar el estado de una rama o un PR (o `gh pr view <n> --json state,mergedAt`). Para saber qué se juega, comparar el HEAD del checkout en vivo (máquina Linux) con `origin/main`. Todo merge a `main` termina con `scripts/publicar_web.sh` (ver `docs/procesos/ramas-y-prs.md#publicar-de-dev-a-main`).
+
+## 2026-11-02 — Conflictos de solo agregado en STATUS/decisions/AGENT_LEARNINGS
+- Error: resolví con un `perl -0pi` que usaba `$1` después de otro `=~` en el reemplazo; el segundo match pisó las capturas y borró ambos lados del conflicto (lo vi en `git diff origin/dev`, no en el resultado del rebase).
+- Mejor enfoque: estos archivos solo crecen al final; reconstruirlos con `git show origin/dev:<f>` + las líneas `+` de `git diff origin/dev...<rama> -- <f>`, y revisar siempre `git diff origin/dev -- <f>` antes de seguir. Al mergear PRs en serie, rebasar el siguiente después de cada merge: dos PRs que agregan al final del mismo archivo chocan.

@@ -31,7 +31,7 @@ Cada update sin build tiene que poder verse en la partida en vivo. En el PR, la 
 
 ## Publicar en vivo
 
-Solo con OK del dueño, que decide cuándo pasa `dev → main` ([ramas-y-prs.md](ramas-y-prs.md#publicar-de-dev-a-main)).
+El dueño decide cuándo pasa `dev → main`, y ese pedido ya incluye publicar en vivo: quien mergea a `main` publica enseguida ([ramas-y-prs.md](ramas-y-prs.md#publicar-de-dev-a-main)). Un update mergeado y no publicado no lo ve nadie.
 
 1. Mirar `/tmp/pzweb-access.log`: quién está jugando ahora.
 2. En la máquina en vivo, en el checkout que sirve 8098 (rama `main`, sin cambios locales):
