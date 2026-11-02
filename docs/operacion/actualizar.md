@@ -1,6 +1,6 @@
 # Actualizar el proyecto
 
-Todo cambio entra por PR a `dev` y llega a lo que está en vivo cuando el dueño publica `dev → main` ([ramas-y-prs.md](../procesos/ramas-y-prs.md)). El checkout que sirve 8098 en la máquina en vivo está en `main`. Lo que hay que hacer después de traer `main` depende de **qué archivos cambiaron**:
+Todo cambio entra por PR a `dev` y llega a lo que está en vivo cuando el dueño publica `dev → main` ([ramas-y-prs.md](../procesos/ramas-y-prs.md#publicar-de-dev-a-main)). Cada merge a `main` se publica enseguida siguiendo esta guía: un `main` sin publicar es un pendiente. El checkout que sirve 8098 en la máquina en vivo está en `main`. Lo que hay que hacer después de traer `main` depende de **qué archivos cambiaron**:
 
 | Cambió | Qué hay que hacer en la máquina en vivo | ¿Corta la partida? |
 |---|---|---|
