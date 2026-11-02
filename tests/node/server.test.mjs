@@ -66,3 +66,15 @@ test('cross-origin access and foreign Host are rejected', async () => {
   });
   assert.equal(status,403);
 });
+test('/perf/report stores a player and /perf lists it with the machine state', async () => {
+  const bad = await fetch(origin+'/perf/report?u=Bad%20Name&fps=1');
+  assert.equal(bad.status,400);
+  const ok = await fetch(origin+'/perf/report?u=ptest1&fps=57.5&ping=12');
+  assert.equal(ok.status,204);
+  assert.equal(ok.headers.get('cache-control'),'no-store');
+  const body = await (await fetch(origin+'/perf')).json();
+  const me = body.players.find(p => p.name === 'ptest1');
+  assert.equal(me.fps,57.5); assert.equal(me.ping,12);
+  assert.equal(body.server.bridges,0);
+  assert.ok(body.server.totalMemMB > 0);
+});

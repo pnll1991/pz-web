@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Project Zomboid · jugadores</title><link rel="stylesheet" href="/style.css"><script src="/keyshim.js"></script>
+<!-- Rendimiento de cada jugador conectado (lo que manda port/runtime/perfhud.mjs cada 5 s) y de esta máquina. Se actualiza solo. -->
+<style>main{padding:32px 0}table{width:100%;border-collapse:collapse;font:13px ui-monospace,monospace}th,td{padding:9px 10px;text-align:right;border-bottom:1px solid #253136}
+th:first-child,td:first-child{text-align:left}th{color:#94a6a1;font-weight:500}.ok{color:#9be3b8}.warn{color:#ffd37a}.bad{color:#ff8a7a}.dim{color:#6f8780}
+#server{font:12px ui-monospace,monospace;color:#a5b1b8;margin:0 0 20px}h1{font-size:32px;letter-spacing:-1px}</style>
+<main><h1>Jugadores</h1><p id="server">Cargando…</p>
+<table><thead><tr><th>Jugador</th><th>fps</th><th>peor cuadro</th><th>ocupado</th><th>ping</th><th>memoria</th><th>último reporte</th></tr></thead>
+<tbody id="rows"></tbody></table>
+<p class="note">fps: cuadros reales del juego. Peor cuadro: el más largo del último segundo. Ocupado: tiempo del hilo principal en tareas largas.
+Ping: ida y vuelta de esa pestaña a este servidor. Un reporte de hace más de 10 s suele ser una pestaña en segundo plano o trabada.</p></main>
+<script type="module">
+import { LEVELS } from '/runtime/perfhud.mjs';
+const rows = document.getElementById('rows'), server = document.getElementById('server');
+const cell = (text, cls = '') => Object.assign(document.createElement('td'), { textContent: text, className: cls });
+const metric = (key, value, unit) => value === null ? cell('—', 'dim') : cell(`${value}${unit}`, LEVELS[key](value));
+async function refresh() {
+  try {
+    const r = await fetch('/perf', { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const { players, server: s } = await r.json();
+    server.textContent = `Máquina: carga ${s.load1} / ${s.load5} (${s.cpus} núcleos) · memoria libre ${s.freeMemMB} de ${s.totalMemMB} MB · ` +
+      `dev server ${s.devServerMB} MB · puentes RakNet ${s.bridges ?? '—'}`;
+    rows.replaceChildren(...(players.length ? players.map(p => {
+      const tr = document.createElement('tr');
+      tr.append(cell(p.name), metric('fps', p.fps, ''), metric('worstMs', p.worst, ' ms'), metric('busyPct', p.busy, ' %'),
+        metric('pingMs', p.ping, ' ms'), cell(p.mem === null ? '—' : `${p.mem} MB`, p.mem === null ? 'dim' : ''),
+        cell(`hace ${Math.round(p.ageS)} s`, p.ageS > 10 ? 'warn' : 'dim'));
+      return tr;
+    }) : [Object.assign(document.createElement('tr'), { innerHTML: '<td colspan="7" class="dim">Nadie reportó en los últimos 30 s.</td>' })]));
+  } catch (error) { server.textContent = `No se pudo leer /perf: ${error.message}`; }
+}
+refresh(); setInterval(refresh, 2000);
+</script></html>

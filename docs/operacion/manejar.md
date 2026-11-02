@@ -10,6 +10,7 @@ bash scripts/mp-server.sh status             # servidor PZ: corre/detenido y úl
 bash scripts/public-tunnel.sh status         # túnel, modo público y clave
 bash scripts/dev_web_8199.sh status          # web de pruebas
 tail -20 /tmp/pzweb-access.log               # últimos accesos: quién está jugando
+curl -s http://127.0.0.1:8098/perf           # fps, ping y memoria de cada jugador + carga de la máquina (en el navegador: /jugadores.html)
 ```
 
 ## Dev server (8098)

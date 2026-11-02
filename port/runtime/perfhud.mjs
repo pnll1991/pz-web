@@ -1,8 +1,9 @@
 // Indicador de rendimiento en pantalla: fps reales del juego (llamadas a swapBuffers), el peor cuadro del último segundo,
 // cuánto tiempo estuvo ocupado el hilo principal en tareas largas, el ping al dev server y la memoria JS de la pestaña.
 // Sirve para ver, jugador por jugador, si algo se está comiendo el tiempo de la página. ?hud=0 lo apaga.
-// El ping se mide con GET /health (respuesta mínima del dev server, también por el túnel) y se toma de Resource Timing
-// (responseStart - requestStart), que no incluye la espera del hilo principal: un cuadro lento no se confunde con red lenta.
+// Cada 5 s manda el último resumen al dev server (GET /perf/report, respuesta vacía; el panel /jugadores.html los junta) y
+// ese mismo pedido mide el ping, tomado de Resource Timing (responseStart - requestStart), que no incluye la espera del
+// hilo principal: un cuadro lento no se confunde con red lenta.
 
 export const LEVELS = {
   fps: v => (v >= 45 ? 'ok' : v >= 25 ? 'warn' : 'bad'),
@@ -56,11 +57,23 @@ export function formatPerf(s) {
 
 const COLORS = { ok: '#9be3b8', warn: '#ffd37a', bad: '#ff8a7a', none: '#c9d3cf' };
 
+/** Pedido con el último resumen de esta pestaña (dev-server/players.mjs); solo los valores conocidos. */
+export function reportUrl(name, seq, s) {
+  const q = new URLSearchParams({ u: name, n: String(seq) });
+  if (s) for (const [k, v] of [['fps', s.fps], ['worst', s.worstMs], ['busy', s.busyPct], ['ping', s.pingMs], ['mem', s.memMB]]) if (v !== null) q.set(k, String(v));
+  return `/perf/report?${q}`;
+}
+
+/** Nombre del panel: la cuenta del modo directo o, sin ella, uno por pestaña. */
+export function perfName(user, rand = () => Math.random()) {
+  return /^[a-z0-9-]{1,20}$/.test(user || '') ? user : `web-${Math.floor(rand() * 0x10000).toString(16).padStart(4, '0')}`;
+}
+
 /**
  * Engancha el medidor al BrowserWindow (cada swapBuffers es un cuadro del juego) y muestra el panel.
  * Devuelve { meter, stop }; el último resumen queda en globalThis.pzPerf para sondas y consola.
  */
-export function installPerfHud(browserWindow, { doc = document, fetchImpl = globalThis.fetch.bind(globalThis),
+export function installPerfHud(browserWindow, { doc = document, fetchImpl = globalThis.fetch.bind(globalThis), name = perfName(),
   intervalMs = 1000, pingEveryMs = 5000, Observer = globalThis.PerformanceObserver } = {}) {
   const meter = new PerfMeter();
   const own = Object.hasOwn(browserWindow, 'swapBuffers'), original = browserWindow.swapBuffers;
@@ -75,15 +88,15 @@ export function installPerfHud(browserWindow, { doc = document, fetchImpl = glob
   observe('longtask', e => meter.longTask(e.duration));
   // La entrada de Resource Timing llega aparte del fetch; si no hay observador se usa el tiempo de pared.
   const timed = observe('resource', e => {
-    if (e.name.includes('/health?perf=') && e.responseStart > 0 && e.requestStart > 0) meter.ping(e.responseStart - e.requestStart);
+    if (e.name.includes('/perf/report?') && e.responseStart > 0 && e.requestStart > 0) meter.ping(e.responseStart - e.requestStart);
   });
-  let pingSeq = 0;
+  let pingSeq = 0, last = null;
   const ping = async () => {
     const t0 = performance.now();
     try {
-      const r = await fetchImpl(`/health?perf=${++pingSeq}`, { cache: 'no-store' });
+      const r = await fetchImpl(reportUrl(name, ++pingSeq, last), { cache: 'no-store' });
       await r.arrayBuffer();
-      if (!timed && r.ok) meter.ping(performance.now() - t0);
+      if (!timed) meter.ping(performance.now() - t0);
     } catch { /* sin red: el ping queda en el último valor */ }
   };
 
@@ -101,7 +114,7 @@ export function installPerfHud(browserWindow, { doc = document, fetchImpl = glob
 
   const tick = setInterval(() => {
     const s = meter.sample(performance.memory?.usedJSHeapSize ?? null);
-    globalThis.pzPerf = { ...s, at: Date.now() };
+    last = s; globalThis.pzPerf = { ...s, name, at: Date.now() };
     render(s);
   }, intervalMs);
   ping();
