@@ -2,6 +2,13 @@
 
 Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoques mejores.
 
+## 2026-11-02 — Carga inicial (caché persistente)
+- Error evitado en revisión propia: agregar `<link rel="modulepreload">` antes del `<script type="importmap">` hace que Chrome ignore el importmap y `glsl.mjs` no resuelva `@shaderfrog/glsl-parser`. Mejor enfoque: el importmap siempre primero; comprobarlo en Chrome importando `/runtime/glsl.mjs`, no solo con `node --check`.
+- Error: pushée antes de que terminara el rebase (falló por conflictos en `STATUS.md`/`docs/decisions.md`) y subí el commit sobre la base vieja. Mejor enfoque: encadenar el push solo si el rebase salió bien (`git rebase origin/dev && git push`), resolver y después `--force-with-lease`.
+- Nota: el rebase trajo `docs/operacion/` ("en macOS no se compila ni se levanta nada"). La prueba de Chrome de esta tarea, sintética y con un servidor en proceso en 127.0.0.1, se hizo antes de leerla; desde ahora esas pruebas van en la máquina Linux (8199).
+- Error: usé `timeout` en macOS (no existe). Mejor enfoque: usar el `timeout` de la herramienta o un límite dentro del script.
+- Mejor enfoque: sin build ni copia del juego, la página igual sirve para probar el grafo de módulos y las cachés (Cache API, OPFS) con un dev server sintético en un puerto temporal y un perfil en /tmp; el error esperado es "Todavía no hay una compilación del juego."
+
 ## 2026-10-26 — Ronda 5
 - Error: la prueba real esperaba ver MainScreenState en una traza más profunda, pero Chrome recortaba los frames con el límite predeterminado. Mejor enfoque: conservar los frames fuera del logger y ampliar el límite de diagnóstico de V8 antes de cargar Wasm; verificar símbolos y registros de entrada/retorno juntos.
 - Error detectado en revisión: el nombre de tecla podía devolver una etiqueta para Enter si el layout la ofrecía. Mejor enfoque: aplicar el dominio de teclas imprimibles de GLFW antes de consultar KeyboardLayoutMap y probar una tecla no imprimible con etiqueta presente.

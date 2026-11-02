@@ -1,9 +1,30 @@
 <!doctype html>
 <html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Arranque local de Project Zomboid</title><link rel="stylesheet" href="/style.css"><script src="/support.js"></script><script src="/keyshim.js"></script>
+<script>
+// Carga inicial: boot.wasm (~145 MB) empieza a bajar y compilarse aca, antes de la cascada de imports de game.mjs (que
+// recien lo pedia al evaluarse). game.mjs usa este modulo y el ETag de esta respuesta; sin el (o con ?earlycompile=0)
+// sigue el camino de siempre. Misma URL que game.mjs: ?build=<nombre> -> /<nombre>/game/boot.wasm.
+(() => {
+  const q = new URLSearchParams(location.search), name = q.get('build');
+  if (globalThis.pzUnsupported || q.get('earlycompile') === '0') return;
+  const url = `${name && /^[a-z0-9-]+$/.test(name) ? `/${name}/game` : '/game'}/boot.wasm`;
+  try {
+    const response = fetch(url), compiled = WebAssembly.compileStreaming(response, { builtins:['js-string'] });
+    response.catch(() => {}); compiled.catch(() => {});
+    globalThis.pzEarlyWasm = { url, response, compiled };
+  } catch { /* game.mjs lo intenta de nuevo */ }
+})();
+</script>
+<!-- El importmap tiene que ir antes de cualquier modulepreload: si no, Chrome lo ignora y glsl.mjs no resuelve el parser. -->
+<script type="importmap">{"imports":{"@shaderfrog/glsl-parser/":"/vendor/glsl-parser/"}}</script>
+<link rel="modulepreload" href="/game.mjs"><link rel="modulepreload" href="/runtime/vfs.mjs"><link rel="modulepreload" href="/runtime/packs.mjs">
+<link rel="modulepreload" href="/runtime/mediacache.mjs"><link rel="modulepreload" href="/runtime/prefetch.mjs"><link rel="modulepreload" href="/runtime/gl.mjs">
+<link rel="modulepreload" href="/runtime/glsl.mjs"><link rel="modulepreload" href="/runtime/sqlite.mjs"><link rel="modulepreload" href="/runtime/bullet.mjs">
+<link rel="modulepreload" href="/runtime/input.mjs"><link rel="modulepreload" href="/runtime/window.mjs"><link rel="modulepreload" href="/runtime/net.mjs">
+<link rel="modulepreload" href="/runtime/autojoin.mjs"><link rel="modulepreload" href="/runtime/texcache.mjs">
 <style>/* Round 79: the game owns the viewport; canvas pixels == page pixels. */#game-canvas{position:fixed;left:0;top:0;z-index:1;height:auto;touch-action:none;user-select:none;outline:none}html,body{overflow:hidden;overscroll-behavior:none}</style>
 <main><h1>Project Zomboid · arranque local</h1><p id="game-status">Comprobando la compilación del juego…</p>
 <canvas hidden id="game-canvas" width="1280" height="720" tabindex="0"></canvas>
 <pre id="game-error"></pre><p><a href="/">Pruebas de plataforma</a></p></main>
-<script type="importmap">{"imports":{"@shaderfrog/glsl-parser/":"/vendor/glsl-parser/"}}</script>
 <script src="/boot.wasm-runtime.js"></script><script type="module" src="/game.mjs"></script></html>
