@@ -1006,3 +1006,8 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Error: `feat/service-worker` (bc3be1d) se guardó en curso sobre una base anterior al PR #9 y siguió viva sin rebasear; mergearla habría revertido #9 (mediacache, loading, glslcache, perfhud) por el solo hecho de no tenerlos. Lo único nuevo eran `sw.js` y `sw-register.mjs`, y #9 ya cubría la caché sin service worker.
 - Causa: una rama larga que no se rebasea sobre `dev` muestra como "borrado" todo lo que entró después de su base; el diff contra `dev` engaña igual que un merge ciego.
 - Mejor enfoque: antes de integrar una rama guardada, mirar `git diff --stat origin/dev...<rama>` y `git diff --stat origin/dev <rama>`; si el segundo borra mucho más que el primero, la rama está atrasada. Se rescata solo lo nuevo (`git diff <base>..<rama>`) en una rama desde `dev`, o se descarta con un PR cerrado sin mergear y su motivo (PR #19).
+
+## 2026-11-02 — Clave admin rotable
+- Error evitado: pensé que `-adminpassword` solo vale al crear la base; la prueba en una instancia propia mostró que se reaplica en cada arranque (la base guarda bcrypt del md5 de la clave). Mejor enfoque: medir en una instancia de prueba con una verificación que solo imprime booleanos, nunca la clave ni el hash.
+- Error evitado en revisión propia: `chmod 700` al directorio de un archivo cuya ruta viene de una variable podía cambiar permisos de `/tmp`. Mejor enfoque: crear el directorio con `umask 077` solo si falta.
+- Nota: en la máquina conviven varias sesiones con instancias de prueba; el 16271 y hasta el 16281 ya estaban en uso por otras. Antes de elegir un puerto, `ss -ulnp | grep <puerto>` y un directorio de datos propio.

@@ -8,6 +8,7 @@
 import { chromium } from '@playwright/test';
 import { mkdirSync, appendFileSync, rmSync, readFileSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { launchOptions } from './chrome-flags.mjs';
+import { adminPassword } from './admin-pass.mjs';
 
 const argv = process.argv.slice(2), A = {};
 for (let i = 0; i < argv.length; i++) { const k = argv[i].replace(/^--/, ''); if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) A[k] = argv[++i]; else A[k] = true; }
@@ -24,8 +25,8 @@ async function open(name) {
   const c = { name, profile: `/tmp/pz86/profile-${name}`, ingame: false, errors: 0 };
   if (!A.keep) rmSync(c.profile, { recursive: true, force: true });
   c.context = await chromium.launchPersistentContext(c.profile, { ...launchOptions(), viewport: { width: 1280, height: 720 } });
-  if (name === 'a' && A.admin) { // client "a" logs in as the server's admin account (password from /tmp/pz82/admin.pw)
-    const pass = readFileSync('/tmp/pz82/admin.pw', 'utf8').trim();
+  if (name === 'a' && A.admin) { // client "a" logs in as the server's admin account (password from the file mp-server.sh uses, see admin-pass.mjs)
+    const pass = adminPassword();
     await c.context.addInitScript(p => { localStorage.setItem('pzweb.play.v1', JSON.stringify({ user: 'admin', pass: p })); }, pass);
   }
   c.page = c.context.pages()[0] || await c.context.newPage();
