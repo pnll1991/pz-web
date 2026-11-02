@@ -77,3 +77,86 @@ test('se borran los packs que ya no están en el índice; sin OPFS el grande se 
   assert.deepEqual(noOpfs.stats.sources, { network: 2, cache: 0, opfs: 0 });
   assert.ok(globalThis.pzPackCacheSkipped.some(entry => entry.name === pack(large).name));
 });
+
+// Ronda 89 (frente D): un pack leido de la cache local no repite el sha256 completo.
+const spyDigest = async run => {
+  const subtle = globalThis.crypto.subtle, original = subtle.digest;
+  const sizes = [];
+  subtle.digest = function (algo, data) { sizes.push(data.byteLength); return original.call(this, algo, data); };
+  try { await run(); } finally { subtle.digest = original; }
+  return sizes;
+};
+// Con memo, la pasada por archivo (mismos bytes que el pack en estas fixtures) se saltea y solo queda el digest del pack.
+const withMemo = async run => {
+  const store = new Map();
+  globalThis.localStorage = { getItem: k => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) };
+  try { return await run(store); } finally { delete globalThis.localStorage; }
+};
+const packDigests = sizes => sizes.filter(n => n === small.length || n === large.length).length;
+
+test('un pack de la cache o de OPFS solo se comprueba por tamano; el digest se anota como salteado', async () => {
+  const caches = new FakeCaches(), dir = new FakeDirectory();
+  await boot(caches, dir);
+  let second, sizes;
+  await withMemo(async () => {
+    await boot(caches, dir, { memo: true }); // guarda el memo del indice
+    sizes = await spyDigest(async () => { second = await boot(caches, dir, { memo: true }); });
+  });
+  assert.deepEqual(second.stats.sources, { network: 0, cache: 1, opfs: 1 });
+  assert.equal(second.stats.fullDigest, false);
+  assert.deepEqual([...second.stats.digestSkipped].sort(), [pack(small).name, pack(large).name].sort());
+  assert.equal(second.stats.digestMs, 0);
+  assert.equal(packDigests(sizes), 0, 'con el indice en memo no se hashea ningun pack ni archivo');
+});
+
+test('fullDigest y ?packverify=1 vuelven a verificar el pack completo', async () => {
+  const caches = new FakeCaches(), dir = new FakeDirectory();
+  await boot(caches, dir);
+  await withMemo(async () => {
+    await boot(caches, dir, { memo: true });
+    const forced = await spyDigest(async () => { await boot(caches, dir, { memo: true, fullDigest: true }); });
+    assert.equal(packDigests(forced), 2);
+  });
+  assert.deepEqual(globalThis.pzPackStats.digestSkipped, []);
+  globalThis.location = new URL('http://127.0.0.1:8090/game.html?packverify=1');
+  try {
+    const viaUrl = await withMemo(async () => { await boot(caches, dir, { memo: true }); return spyDigest(async () => { await boot(caches, dir, { memo: true }); }); });
+    assert.equal(packDigests(viaUrl), 2);
+    assert.equal(globalThis.pzPackStats.fullDigest, true);
+    // memo no se pasa: ?nocache=1 tambien fuerza la verificacion completa.
+    globalThis.location = new URL('http://127.0.0.1:8090/game.html?nocache=1');
+    await boot(caches, dir, { memo: true });
+    assert.equal(globalThis.pzPackStats.fullDigest, true);
+  } finally { globalThis.location = new URL('http://127.0.0.1:8090/game.html'); }
+});
+
+test('lo bajado de la red se verifica completo siempre (tambien sin fullDigest)', async () => {
+  const sizes = await withMemo(async store => {
+    await boot(new FakeCaches(), new FakeDirectory(), { memo: true }); // deja el memo puesto
+    return spyDigest(async () => { await boot(new FakeCaches(), new FakeDirectory(), { memo: true }); });
+  });
+  assert.equal(packDigests(sizes), 2);
+  assert.deepEqual(globalThis.pzPackStats.digestSkipped, []);
+  assert.ok(globalThis.pzPackStats.digestMs >= 0);
+});
+
+test('tamano distinto en la cache: se rechaza y se vuelve a bajar', async () => {
+  const caches = new FakeCaches(), dir = new FakeDirectory();
+  await boot(caches, dir);
+  await (await caches.open('pz-web-packs-v1')).put(`http://127.0.0.1:8090/packs/${pack(small).name}`, new Response(small.slice(1)));
+  dir.files.set(pack(large).name, large.slice(1));
+  const again = await boot(caches, dir);
+  assert.deepEqual(again.stats.sources, { network: 2, cache: 0, opfs: 0 });
+  assert.deepEqual(again.stats.digestSkipped, []);
+});
+
+test('pack salteado con un byte corrupto: la pasada por archivo lo detecta, se borra y se reintenta completo', async () => {
+  const caches = new FakeCaches(), dir = new FakeDirectory();
+  await boot(caches, dir);
+  (await caches.open('pz-web-packs-v1')).map.get(`http://127.0.0.1:8090/packs/${pack(small).name}`)[0] ^= 0xff;
+  const again = await boot(caches, dir);
+  assert.equal(again.stats.fullDigest, true);
+  assert.equal(again.stats.corrupt, 1);
+  assert.deepEqual(again.stats.sources, { network: 1, cache: 0, opfs: 1 });
+  assert.equal(new TextDecoder().decode(again.vfs.readFile('/media/lua/a.lua')), 'print("hola")\n');
+});

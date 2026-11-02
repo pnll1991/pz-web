@@ -637,6 +637,26 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 - Evidencia (Chrome con el juego, instancia de prueba 16281/8201/8202, antes y después con los mismos binarios): ventana — de estado atascado para siempre a `Climb… → Idle` y cruza (1,14 casillas); valla real — el estado ya termina pero el personaje aún no cruza (pendiente). Pared alta, soga y vault con teclado: sin objetivo válido o no concluyente. `npm test` 176/179 (las 3 de pzbullet, como la CI) y `python3 -m unittest tests/python/test_stage_txt.py` OK.
 - Pendiente: aplicar en vivo = ampliar los paquetes con el modo `mobility` en la máquina en vivo (no corta la partida; ~80 MB de presupuesto del VFS libres tras esto); investigar por qué la valla no desplaza; hallazgo aparte: `PZPopMan64: n_init has not run yet` saca al cliente al menú tras `/removezombies`.
 
+## Ronda 89: carga del mundo (rama `perf/carga-mundo`)
+- Hecho:
+  - A: caché de texturas llaveada por `CODEC_VERSION` y no por build; sobrevive a los builds nuevos.
+  - B: precarga en lotes por `/media-ranges`, ~48 pedidos en vez de ~4720, también por https.
+  - C: sin `getError` real tras llamadas sin condición de error; nuevo contador `gl.realGetErrors`.
+  - D: los packs de la caché local se validan por tamaño, sin sha256 completo. Después de #27 eso ahorra el sha256 de ~245 MiB (packs no perezosos), no de ~500 MB: Tiles2x ya va por tramos verificados.
+  - E: marcas `world-load-start/end` e `ingame-enter`, segunda línea `caches` al terminar la carga, y cartel "Cargando el mundo…" en el modo directo.
+  - Interruptores para volver atrás: `?texcache=build`, `?prefetchbatch=0`, `?glerrors=strict`, `?packverify=1`. Análisis y protocolo en `docs/analisis-carga-mundo.md`.
+- Evidencia: `npm test` 195/198. Fallan solo las 3 de `pzbullet.test.mjs`, como en la CI. Hay 18 pruebas nuevas, en texcache, media-ranges, gl-error-drain y packs-cache. `node --check` OK.
+- Rebase sobre `dev` con #25–#28 (rama `perf/carga-mundo-rebased`, reemplaza a #18):
+  - Las entradas del warm-list que `/media-ranges` no sirve (los tramos `/packs/<sha>.bin` de Tiles2x, #27) van por el camino de a uno y pasan primero por `onEntry` (lazypack), en paralelo con los lotes; `limitBytes` cuenta también `lazyBytes`. Prueba nueva en `media-ranges.test.mjs`.
+  - `depthRange` y `lineWidth` salen de `NO_ERROR_CALLS` (pueden fallar); prueba nueva.
+  - `CODEC_VERSION` = 2; cuándo subirla, en `docs/operacion/actualizar.md`.
+  - `npm test` 231/234 (las 3 de pzbullet).
+- Sin evidencia todavía:
+  - Chrome con el juego y build real: en macOS no se levanta nada.
+  - `PackImageCache.java` solo cambió en un comentario.
+- Pendiente: correr el protocolo de `docs/analisis-carga-mundo.md` en la máquina Linux (frío/caliente, rebuild, verify, túnel) y anotar acá la línea base y el resultado.
+- Pasos manuales: reiniciar el dev server, con OK del dueño, para tener `/media-ranges`. Sin el reinicio, el cliente vuelve solo al modo anterior.
+
 ## Pendientes vigentes (2/11/2026)
 - En vivo hoy: #25–#28 mergeados en `dev` y publicados con #29 (`dev → main`, merge `f890e7f`); el checkout en vivo está en `f890e7f`. Packs ampliados con los clips `mobility` (#28) y corridos `lazy-packs.mjs` + `precompress.mjs`; 8098 reiniciado con lo precomprimido (`boot.wasm` 134,3 → 19,8 MB en br). Con eso ya están en vivo `/jugadores.html` (#17) y las cabeceras de #9.
 - Medición de la 1.ª carga con el juego real después de publicar (instancia de prueba aparte: web 8211, PZ 16291, loopback): 1.ª carga 642,8 MB transferidos (904,1 MB decodificados), menú a los 82,4 s, dentro del juego a los 300,4 s; 2.ª carga 88,4 MB, dentro del juego a los 211,1 s. Reparto de la 1.ª: tramos de Tiles2x 319,1 MB en 369 pedidos, `/media` 241,8 MB en 4730 pedidos (sin comprimir), packs 65,4 MB, `boot.wasm` 14,2 MB.

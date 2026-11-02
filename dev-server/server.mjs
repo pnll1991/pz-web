@@ -5,6 +5,7 @@ import { createPublicGate } from './public-mode.mjs';
 import { createWarmList } from './warm-list.mjs';
 import { createPlayerBoard } from './players.mjs';
 import { acceptedCodings, createCompressor } from './compress.mjs';
+import { buildRangesResponse, parseIndices } from './media-ranges.mjs';
 import { appendFile } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { realpath, stat, open, readFile, readdir } from 'node:fs/promises';
@@ -209,6 +210,15 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
         const key = `${folder}\0${ext}`;
         bundles.has(key) || bundles.set(key, buildBundle(mediaRoot, folder, ext));
         const body = await bundles.get(key);
+        res.writeHead(200, { ...headers, 'Content-Type':'application/octet-stream', 'Content-Length':body.length, 'Cache-Control':'no-store' });
+        res.end(req.method === 'HEAD' ? undefined : body); return;
+      }
+      if (pathname === '/media-ranges') { // Ronda 89: varias entradas del warm-list en una respuesta (ver dev-server/media-ranges.mjs)
+        if (!mediaRoot) { respond(404, 'PZ_HOME not mounted'); return; }
+        const indices = parseIndices(new URL(req.url, `http://${authority}`).searchParams.get('i'));
+        if (!indices) { respond(400, 'Invalid ranges request'); return; }
+        const { body } = await buildRangesResponse({ mediaRoot, entries: warm.list(), indices,
+          bundle: (folder, ext) => { const key = `${folder}\0${ext}`; bundles.has(key) || bundles.set(key, buildBundle(mediaRoot, folder, ext)); return bundles.get(key); } });
         res.writeHead(200, { ...headers, 'Content-Type':'application/octet-stream', 'Content-Length':body.length, 'Cache-Control':'no-store' });
         res.end(req.method === 'HEAD' ? undefined : body); return;
       }
