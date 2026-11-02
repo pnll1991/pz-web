@@ -10,8 +10,12 @@ import { VirtualFileSystem, normalizePath } from '/runtime/vfs.mjs';
 import { preloadPacks } from '/runtime/packs.mjs';
 import { TextureCache } from '/runtime/texcache.mjs';
 import { MediaCache, mediaCacheVersion } from '/runtime/mediacache.mjs';
+import { LoadingScreen, formatMB } from '/runtime/loading.mjs';
 
 const status = document.getElementById('game-status');
+// Pantalla de carga: tapa la página hasta que el juego dibuja su primer cuadro (BrowserWindow.swapCount).
+const loading = new LoadingScreen(document);
+loading.step('build', 'active');
 // TeaVM derives Java frames from V8 stacks; the default ten frames hide callers.
 // Diagnostic depth for round 28: the RangeError reported in rounds 27b/28 has a repeating
 // Fiber::push/reversePush/Arrays::copyOf cycle. A higher limit keeps the base frames of that
@@ -91,6 +95,11 @@ async function buildId() {
   const head = await fetch(earlyWasmUrl, { method:'HEAD', cache:'no-cache' });
   return head.ok ? buildIdOf(head) : '';
 }
+earlyFetch?.response?.then(response => {
+  const size = Number(response.headers.get('Content-Length'));
+  loading.step('engine', 'active', size > 0 ? formatMB(size) : undefined);
+}, () => {});
+earlyWasm?.then(() => loading.step('engine', 'done'), () => {});
 // Chrome puede desalojar IndexedDB/Cache API bajo presion de disco; la cache de texturas (~945 MB) y los packs se pierden
 // y el arranque siguiente es en frio. Pedir almacenamiento persistente es solo una peticion: si se niega no cambia nada.
 navigator.storage?.persist?.().then(granted => { globalThis.pzStoragePersisted = granted; }, () => {});
@@ -100,6 +109,7 @@ try {
   const build = await response.json();
   if (!build.success || build.mode !== 'game-main') throw new Error('La compilación real del juego está bloqueada. Consultá el reporte local de TeaVM.');
   if (!crossOriginIsolated) throw new Error('Faltan COOP/COEP.');
+  loading.step('build', 'done');
   // Round 32: the boundary transformer emits int ids (port.shim.BrowserProgress.pulse(int)) because
   // a String constant injected in a frame that resumes after a suspend is still unmaterialized on
   // WasmGC and crashed the module (diag56). Decode the ids here, before boot.wasm runs, so the
@@ -165,7 +175,21 @@ try {
   })() : null;
   mediaReady?.catch(() => {});
   const vfs = await vfsInstance.open();
-  await preloadPacks(vfs);
+  // La barra sigue los bytes de los packs; los eventos llegan por bloque, se pintan una vez por cuadro.
+  let packProgress = null, packFrame = 0;
+  const paintPacks = () => {
+    packFrame = 0;
+    const { phase, loaded, total } = packProgress;
+    if (phase === 'download') {
+      loading.step('packs', 'active', formatMB(total));
+      loading.bar(total > 0 ? loaded / total : null, 'Descargando recursos del juego…', `${formatMB(loaded)} / ${formatMB(total)}`);
+    } else loading.bar(null, phase === 'verify' ? 'Verificando los recursos descargados…' : 'Montando los recursos…');
+  };
+  await preloadPacks(vfs, undefined, { onProgress: p => { packProgress = p; packFrame ||= requestAnimationFrame(paintPacks); } });
+  cancelAnimationFrame(packFrame);
+  loading.step('packs', 'done');
+  loading.step('prepare', 'active');
+  loading.bar(null, 'Preparando gráficos, guardado y física…');
   // Round 79: the rest of PZ_HOME/media (maps are 4.3 GB) is read on demand from the local dev
   // server; the manifest only lists names and sizes. '?remote=0' keeps the packs-only behaviour.
   if (mediaReady) {
@@ -239,8 +263,13 @@ try {
     show('installed');
     // Over the public https tunnel (or ?prefetch=1) bring the media the game will read in parallel first: one round trip per read is too slow.
     if (location.protocol === 'https:' || new URLSearchParams(location.search).get('prefetch') === '1') {
-      const stats = pzRuntime.prefetchStats = await prefetchMedia(vfs, { onFetched: vfs.onRemoteFetch ?? undefined,
-        onProgress: f => { label.textContent = `Precargando recursos… ${Math.round(f * 100)} %`; } });
+      loading.step('prefetch', 'active');
+      const stats = pzRuntime.prefetchStats = await prefetchMedia(vfs, { onFetched: vfs.onRemoteFetch ?? undefined, onProgress: f => {
+        label.textContent = `Precargando recursos… ${Math.round(f * 100)} %`;
+        loading.step('prefetch', 'active', `${Math.round(f * 100)} %`);
+        loading.bar(f, 'Precargando el mapa…', `${Math.round(f * 100)} %`);
+      } });
+      loading.step('prefetch', 'done');
       console.log(`prefetch ${JSON.stringify(stats)}`); show('installed');
     }
   }
@@ -288,6 +317,9 @@ try {
       }
     };
   }
+  loading.step('prepare', 'done');
+  if (!earlyWasm) loading.step('engine', 'active');
+  loading.bar(null, 'Cargando el motor del juego…');
   const runtime = await TeaVM.wasmGC.load(earlyWasmUrl, {
     installImports(imports) {
       const base = imports.teavmAsync;
@@ -325,6 +357,9 @@ try {
     }
   });
   WebAssembly.compileStreaming = nativeCompileStreaming;
+  loading.step('engine', 'done');
+  loading.step('start', 'active');
+  loading.bar(null, 'Iniciando Project Zomboid…');
   // The browser runtime provides no fmod native library. Passing the game's own documented
   // -nosound argument makes MainScreenState parse it into Core.soundDisabled, which is the real
   // path the desktop game takes when sound is off: GameWindow.mainThreadInit then installs
@@ -335,6 +370,8 @@ try {
   const update = () => {
     status.textContent = phases[globalThis.pzGame?.phase] || 'Esperando el arranque Java…';
     document.getElementById('game-error').textContent = globalThis.pzGame?.error || '';
+    if (globalThis.pzGame?.phase === 'failed') loading.fail(globalThis.pzGame.error || 'El arranque encontró un error.');
+    else if (pzRuntime.window.swapCount > 0) loading.finish();
     requestAnimationFrame(update);
   };
   update();
@@ -342,5 +379,6 @@ try {
   globalThis.pzGame = { phase:'loader-failed', error:`${error.name}: ${error.message}`, menuRendered:false };
   status.textContent = 'Juego pendiente de integración';
   document.getElementById('game-error').textContent = error.message;
+  loading.fail(error.message);
   console.error(error);
 }
