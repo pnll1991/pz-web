@@ -11,11 +11,23 @@ import { preloadPacks } from '/runtime/packs.mjs';
 import { TextureCache } from '/runtime/texcache.mjs';
 import { MediaCache, mediaCacheVersion } from '/runtime/mediacache.mjs';
 import { LoadingScreen, formatMB } from '/runtime/loading.mjs';
+import { ShaderCache, translatorVersion } from '/runtime/glslcache.mjs';
 
 const status = document.getElementById('game-status');
 // Pantalla de carga: tapa la página hasta que el juego dibuja su primer cuadro (BrowserWindow.swapCount).
 const loading = new LoadingScreen(document);
 loading.step('build', 'active');
+// Medición de la carga inicial: ms desde el inicio de la navegación hasta cada fase del arranque (performance.now()),
+// también como performance.mark('pz:<fase>') para el panel Performance de Chrome. `boot-timings {...}` sale por consola
+// al llamar a main y cada vez que se agrega una fase del juego (phase de pzGame, estados del modo directo, menú dibujado).
+const bootTimings = globalThis.pzBootTimings = {};
+const bootMark = name => {
+  if (name in bootTimings) return;
+  bootTimings[name] = Math.round(performance.now());
+  try { performance.mark(`pz:${name}`); } catch { /* sin User Timing */ }
+};
+const bootReport = () => console.log(`boot-timings ${JSON.stringify(bootTimings)}`);
+bootMark('modules');
 // TeaVM derives Java frames from V8 stacks; the default ten frames hide callers.
 // Diagnostic depth for round 28: the RangeError reported in rounds 27b/28 has a repeating
 // Fiber::push/reversePush/Arrays::copyOf cycle. A higher limit keeps the base frames of that
@@ -110,6 +122,8 @@ try {
   if (!build.success || build.mode !== 'game-main') throw new Error('La compilación real del juego está bloqueada. Consultá el reporte local de TeaVM.');
   if (!crossOriginIsolated) throw new Error('Faltan COOP/COEP.');
   loading.step('build', 'done');
+  bootMark('build-state');
+  earlyWasm?.then(() => bootMark('wasm-compiled'), () => {});
   // Round 32: the boundary transformer emits int ids (port.shim.BrowserProgress.pulse(int)) because
   // a String constant injected in a frame that resumes after a suspend is still unmaterialized on
   // WasmGC and crashed the module (diag56). Decode the ids here, before boot.wasm runs, so the
@@ -174,6 +188,12 @@ try {
     return listed;
   })() : null;
   mediaReady?.catch(() => {});
+  // Memo de la traducción GLSL (port/runtime/glslcache.mjs): versión = hash del traductor y del parser servidos.
+  const shaderCache = globalThis.pzShaderCache = ShaderCache.fromLocation(location.search);
+  const shaderReady = shaderCache.mode === 0 ? Promise.resolve() : (async () => {
+    try { await shaderCache.load(await translatorVersion()); }
+    catch (error) { shaderCache.stats.lastError = String(error); shaderCache.mode = 0; console.warn('glslcache apagada:', error); }
+  })();
   const vfs = await vfsInstance.open();
   // La barra sigue los bytes de los packs; los eventos llegan por bloque, se pintan una vez por cuadro.
   let packProgress = null, packFrame = 0;
@@ -190,10 +210,14 @@ try {
   loading.step('packs', 'done');
   loading.step('prepare', 'active');
   loading.bar(null, 'Preparando gráficos, guardado y física…');
+  bootMark('vfs');
+  await preloadPacks(vfs);
+  bootMark('packs');
   // Round 79: the rest of PZ_HOME/media (maps are 4.3 GB) is read on demand from the local dev
   // server; the manifest only lists names and sizes. '?remote=0' keeps the packs-only behaviour.
   if (mediaReady) {
     const listed = await mediaReady;
+    bootMark('media-manifest');
     if (mediaCache.mode === 1) {
       vfs.onRemoteFetch = (url, range, bytes) => mediaCache.record(url, range, bytes);
       // Para los benchmarks (consola): estado cada 30 s mientras cambie.
@@ -259,7 +283,7 @@ try {
       profession: 'Creando personaje', character: 'Creando personaje', loaded: 'Mundo cargado', ingame: '' };
     const show = state => { label.textContent = state.startsWith('connect-failed') ? `No se pudo conectar (${state.slice(15)}); reintentando…`
       : state.startsWith('connect') ? `Conectando como ${auto.user}…` : (text[state] ?? state) && `${text[state] ?? state} · ${auto.user}`; };
-    watchConsole(auto, { onState: state => { show(state); if (state === 'loaded') clickUntilIngame(auto, pzRuntime.input, canvas); } });
+    watchConsole(auto, { onState: state => { if (!state.startsWith('connect')) { bootMark(`play:${state}`); bootReport(); } show(state); if (state === 'loaded') clickUntilIngame(auto, pzRuntime.input, canvas); } });
     show('installed');
     // Over the public https tunnel (or ?prefetch=1) bring the media the game will read in parallel first: one round trip per read is too slow.
     if (location.protocol === 'https:' || new URLSearchParams(location.search).get('prefetch') === '1') {
@@ -275,6 +299,7 @@ try {
   }
   pzRuntime.texCache = texCache;
   await texCacheReady;
+  bootMark('texcache');
   if (pzRuntime.texCache.mode !== 0) {
     // Para los benchmarks (la consola queda en console.txt): estado cada 30 s mientras cambie.
     let lastStats = '';
@@ -286,9 +311,14 @@ try {
   pzRuntime.window = new BrowserWindow(canvas,pzRuntime.gl,pzRuntime.input);
   await pzRuntime.window.prepare();
   pzRuntime.sqlite = await sqliteReady;
+  bootMark('sqlite');
   // The wasm32 Bullet module is the only library this runtime honestly provides.
   pzRuntime.bullet = await bulletReady;
+  bootMark('bullet');
   await pulseReady;
+  await shaderReady;
+  pzRuntime.gl.shaderCache = shaderCache.mode === 0 ? null : shaderCache;
+  bootMark('glslcache');
   pzRuntime.loadedLibraries = pzRuntime.bullet.loadedFor;
   // Round 31: the render fiber parks in Thread.sleep(0L) and no Fiber#resume ever happens. On
   // WasmGC that suspension is resumed by TeaVM's own timer import (teavmAsync.offer -> setTimeout
@@ -365,13 +395,30 @@ try {
   // path the desktop game takes when sound is off: GameWindow.mainThreadInit then installs
   // DummySoundManager/DummyAmbientStreamManager instead of calling FMODManager.init(). Sound is
   // genuinely absent here, so this reports that honestly rather than faking a fmod bridge.
+  bootMark('teavm-loaded');
   runtime.exports.main(['-nosound']);
+  bootMark('main');
+  bootReport();
+  // Estado de las cachés de esta carga, una vez que el juego llegó al menú (o a los 3 min).
+  const cachesReport = () => console.log(`caches ${JSON.stringify({ packs: globalThis.pzPackStats && { ...globalThis.pzPackStats, cleanup: undefined, opfsDone: undefined },
+    media: globalThis.pzMediaCache?.stats, glsl: shaderCache.stats, tex: pzRuntime.texCache?.stats, earlyCompile: globalThis.pzEarlyCompile })}`);
+  let cachesReported = false;
+  setTimeout(() => { if (!cachesReported) { cachesReported = true; cachesReport(); } }, 180000);
   const phases = { starting:'Arranque real en curso…', failed:'El arranque encontró un error.', 'main-returned':'El main retornó. Menú todavía no verificado.' };
   const update = () => {
+    const phase = globalThis.pzGame?.phase;
+    if (phase && !(`phase:${phase}` in bootTimings)) { bootMark(`phase:${phase}`); bootReport(); }
+    if (globalThis.pzGame?.menuRendered && !('menu-rendered' in bootTimings)) {
+      bootMark('menu-rendered'); bootReport();
+      if (!cachesReported) { cachesReported = true; cachesReport(); }
+    }
     status.textContent = phases[globalThis.pzGame?.phase] || 'Esperando el arranque Java…';
     document.getElementById('game-error').textContent = globalThis.pzGame?.error || '';
     if (globalThis.pzGame?.phase === 'failed') loading.fail(globalThis.pzGame.error || 'El arranque encontró un error.');
-    else if (pzRuntime.window.swapCount > 0) loading.finish();
+    else if (pzRuntime.window.swapCount > 0) {
+      loading.finish();
+      if (!('first-frame' in bootTimings)) { bootMark('first-frame'); bootReport(); }
+    }
     requestAnimationFrame(update);
   };
   update();
