@@ -997,3 +997,7 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Error: el dueño veía la página de arranque vieja y le dije que el PR #10 no estaba mergeado, porque miré refs locales sin `git fetch`. Ya estaba en `main`; lo que faltaba era publicarlo. Después miré el checkout de la Mac como si fuera el que sirve 8098, y la máquina en vivo es la Linux.
 - Causa: mergear a `main` no toca la máquina en vivo; nada actualizaba su checkout.
 - Mejor enfoque: `git fetch origin` antes de afirmar el estado de una rama o un PR (o `gh pr view <n> --json state,mergedAt`). Para saber qué se juega, comparar el HEAD del checkout en vivo (máquina Linux) con `origin/main`. Todo merge a `main` termina con `scripts/publicar_web.sh` (ver `docs/procesos/ramas-y-prs.md#publicar-de-dev-a-main`).
+
+## 2026-11-02 — Conflictos de solo agregado en STATUS/decisions/AGENT_LEARNINGS
+- Error: resolví con un `perl -0pi` que usaba `$1` después de otro `=~` en el reemplazo; el segundo match pisó las capturas y borró ambos lados del conflicto (lo vi en `git diff origin/dev`, no en el resultado del rebase).
+- Mejor enfoque: estos archivos solo crecen al final; reconstruirlos con `git show origin/dev:<f>` + las líneas `+` de `git diff origin/dev...<rama> -- <f>`, y revisar siempre `git diff origin/dev -- <f>` antes de seguir. Al mergear PRs en serie, rebasar el siguiente después de cada merge: dos PRs que agregan al final del mismo archivo chocan.
