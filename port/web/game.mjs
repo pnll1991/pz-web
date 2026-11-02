@@ -9,8 +9,13 @@ import { BrowserWindow } from '/runtime/window.mjs';
 import { VirtualFileSystem, normalizePath } from '/runtime/vfs.mjs';
 import { preloadPacks } from '/runtime/packs.mjs';
 import { TextureCache } from '/runtime/texcache.mjs';
+import { MediaCache, mediaCacheVersion } from '/runtime/mediacache.mjs';
+import { LoadingScreen, formatMB } from '/runtime/loading.mjs';
 
 const status = document.getElementById('game-status');
+// Pantalla de carga: tapa la página hasta que el juego dibuja su primer cuadro (BrowserWindow.swapCount).
+const loading = new LoadingScreen(document);
+loading.step('build', 'active');
 // TeaVM derives Java frames from V8 stacks; the default ten frames hide callers.
 // Diagnostic depth for round 28: the RangeError reported in rounds 27b/28 has a repeating
 // Fiber::push/reversePush/Arrays::copyOf cycle. A higher limit keeps the base frames of that
@@ -71,14 +76,30 @@ const gameDir = buildName && /^[a-z0-9-]+$/.test(buildName) ? `/${buildName}/gam
 // hacerlo al final (el cargador de TeaVM llama a compileStreaming recien al llegar a TeaVM.wasmGC.load). Mas abajo se
 // engancha compileStreaming para que el cargador reciba este modulo ya compilado. ?earlycompile=0 lo apaga; si la
 // compilacion anticipada falla se vuelve al camino original (descarga normal).
+// Carga inicial: game.html ya lanza esa descarga en un script clasico (globalThis.pzEarlyWasm), antes de los imports de
+// este modulo; si no esta (otra pagina, o fallo), se lanza aca como antes. Su Response da ademas el id del build (ETag).
 const earlyWasmUrl = `${gameDir}/boot.wasm`;
-const earlyWasm = new URLSearchParams(location.search).get('earlycompile') === '0' ? null : (() => {
-  try {
-    const compiled = WebAssembly.compileStreaming(fetch(earlyWasmUrl), { builtins:['js-string'] });
-    compiled.catch(() => {});
-    return compiled;
-  } catch { return null; }
-})();
+const earlyFetch = globalThis.pzEarlyWasm?.url === earlyWasmUrl ? globalThis.pzEarlyWasm
+  : new URLSearchParams(location.search).get('earlycompile') === '0' ? null : (() => {
+    try {
+      const response = fetch(earlyWasmUrl), compiled = WebAssembly.compileStreaming(response, { builtins:['js-string'] });
+      response.catch(() => {}); compiled.catch(() => {});
+      return { url: earlyWasmUrl, response, compiled };
+    } catch { return null; }
+  })();
+const earlyWasm = earlyFetch?.compiled ?? null;
+// Id del build para la caché de texturas: el ETag de la respuesta temprana de boot.wasm; si no hay, un HEAD como antes.
+const buildIdOf = response => response.headers.get('ETag') || response.headers.get('Last-Modified') || '';
+async function buildId() {
+  try { const response = await earlyFetch?.response; if (response?.ok && buildIdOf(response)) return buildIdOf(response); } catch { /* HEAD */ }
+  const head = await fetch(earlyWasmUrl, { method:'HEAD', cache:'no-cache' });
+  return head.ok ? buildIdOf(head) : '';
+}
+earlyFetch?.response?.then(response => {
+  const size = Number(response.headers.get('Content-Length'));
+  loading.step('engine', 'active', size > 0 ? formatMB(size) : undefined);
+}, () => {});
+earlyWasm?.then(() => loading.step('engine', 'done'), () => {});
 // Chrome puede desalojar IndexedDB/Cache API bajo presion de disco; la cache de texturas (~945 MB) y los packs se pierden
 // y el arranque siguiente es en frio. Pedir almacenamiento persistente es solo una peticion: si se niega no cambia nada.
 navigator.storage?.persist?.().then(granted => { globalThis.pzStoragePersisted = granted; }, () => {});
@@ -88,15 +109,16 @@ try {
   const build = await response.json();
   if (!build.success || build.mode !== 'game-main') throw new Error('La compilación real del juego está bloqueada. Consultá el reporte local de TeaVM.');
   if (!crossOriginIsolated) throw new Error('Faltan COOP/COEP.');
+  loading.step('build', 'done');
   // Round 32: the boundary transformer emits int ids (port.shim.BrowserProgress.pulse(int)) because
   // a String constant injected in a frame that resumes after a suspend is still unmaterialized on
   // WasmGC and crashed the module (diag56). Decode the ids here, before boot.wasm runs, so the
   // diagnostics keep their label shape. A missing map only silences the diagnostics; it never
   // changes the game.
-  try {
-    const pulseResponse = await fetch(`${gameDir}/pulse-map.json`);
-    if (pulseResponse.ok) globalThis.pzPulseLabels = await pulseResponse.json();
-  } catch (error) { console.warn('pulse-map no disponible:', error.message); }
+  // Carga inicial: se pide ya y se espera justo antes de cargar boot.wasm (mas abajo), no antes de abrir la VFS.
+  const pulseReady = fetch(`${gameDir}/pulse-map.json`)
+    .then(async pulseResponse => { if (pulseResponse.ok) globalThis.pzPulseLabels = await pulseResponse.json(); })
+    .catch(error => console.warn('pulse-map no disponible:', error.message));
   // Round 32: suspending the render fiber corrupts TeaVM's fiber state while the game fiber is
   // also parked (see port/shim/BrowserYield). Round 32 measurement: with suspension OFF the page
   // never returns to the JS event loop (Playwright evaluate/screenshot both time out, diag64), so the
@@ -111,15 +133,76 @@ try {
   manifestFetch?.catch(() => {});
   const classpathFetches = ['stdlib.lua', 'stdlib.lbc'].map(name => ({ name, response: fetch(`/classpath/resource/0/${name}`) }));
   for (const { response } of classpathFetches) response.catch(() => {});
-  const vfs = await new VirtualFileSystem().open();
-  await preloadPacks(vfs);
-  // Round 79: the rest of PZ_HOME/media (maps are 4.3 GB) is read on demand from the local dev
-  // server; the manifest only lists names and sizes. '?remote=0' keeps the packs-only behaviour.
-  if (manifestFetch) {
+  // Carga inicial: SQLite (loader + wasm), Bullet (manifest + glue + wasm) y la caché de texturas (IndexedDB) no dependen
+  // de la VFS abierta ni de los packs: arrancan ya y se esperan en el mismo punto que antes. Un error se sigue
+  // lanzando ahí (el .catch de abajo solo evita el aviso de promesa sin manejar mientras tanto).
+  const vfsInstance = new VirtualFileSystem();
+  const sqliteReady = sqliteBridge(vfsInstance), bulletReady = bulletBridge();
+  sqliteReady.catch(() => {}); bulletReady.catch(() => {});
+  // Ronda 81 (frente 2): páginas de texturas decodificadas por el juego, guardadas en IndexedDB y
+  // reutilizadas en el arranque siguiente (port.runtime.PackImageCache). Clave = ETag de boot.wasm (el
+  // build) + SHA-256 del PNG; activa por defecto (?nocache=1 / ?texcache=0 la apagan), ?texcache=verify compara sin usarla.
+  // Si IndexedDB falla el juego sigue con el call() original (modo 0) y el error queda en stats.
+  const texCache = TextureCache.fromLocation(location.search, '');
+  const texCacheReady = texCache.mode === 0 ? Promise.resolve() : (async () => {
+    try {
+      texCache.build = await buildId();
+      await texCache.open();
+    } catch (error) {
+      texCache.stats.lastError = String(error); texCache.mode = 0;
+      console.warn('texcache apagada:', error);
+    }
+  })();
+  // Caché persistente de las lecturas de /media (port/runtime/mediacache.mjs): se abre con la versión del manifest y
+  // restaura lo guardado en vfs.prefetched mientras se cargan los packs. Si falla, el juego lee de la red como antes.
+  const mediaCache = globalThis.pzMediaCache = MediaCache.fromLocation(location.search);
+  const mediaReady = manifestFetch ? (async () => {
     const manifest = await manifestFetch;
     if (!manifest.ok) throw new Error(`media manifest HTTP ${manifest.status}`);
-    const listed = await manifest.json();
+    const manifestBytes = await manifest.arrayBuffer();
+    const listed = JSON.parse(new TextDecoder().decode(manifestBytes));
     if (listed.schema_version !== 1 || !Array.isArray(listed.files)) throw new Error('Unsupported media manifest');
+    if (mediaCache.mode !== 0) {
+      try {
+        await mediaCache.open(await mediaCacheVersion(manifestBytes, listed));
+        console.log(`mediacache restore ${JSON.stringify(await mediaCache.restore(vfsInstance))}`);
+      } catch (error) {
+        mediaCache.stats.lastError = String(error); mediaCache.mode = 0;
+        console.warn('mediacache apagada:', error);
+      }
+    }
+    return listed;
+  })() : null;
+  mediaReady?.catch(() => {});
+  const vfs = await vfsInstance.open();
+  // La barra sigue los bytes de los packs; los eventos llegan por bloque, se pintan una vez por cuadro.
+  let packProgress = null, packFrame = 0;
+  const paintPacks = () => {
+    packFrame = 0;
+    const { phase, loaded, total } = packProgress;
+    if (phase === 'download') {
+      loading.step('packs', 'active', formatMB(total));
+      loading.bar(total > 0 ? loaded / total : null, 'Descargando recursos del juego…', `${formatMB(loaded)} / ${formatMB(total)}`);
+    } else loading.bar(null, phase === 'verify' ? 'Verificando los recursos descargados…' : 'Montando los recursos…');
+  };
+  await preloadPacks(vfs, undefined, { onProgress: p => { packProgress = p; packFrame ||= requestAnimationFrame(paintPacks); } });
+  cancelAnimationFrame(packFrame);
+  loading.step('packs', 'done');
+  loading.step('prepare', 'active');
+  loading.bar(null, 'Preparando gráficos, guardado y física…');
+  // Round 79: the rest of PZ_HOME/media (maps are 4.3 GB) is read on demand from the local dev
+  // server; the manifest only lists names and sizes. '?remote=0' keeps the packs-only behaviour.
+  if (mediaReady) {
+    const listed = await mediaReady;
+    if (mediaCache.mode === 1) {
+      vfs.onRemoteFetch = (url, range, bytes) => mediaCache.record(url, range, bytes);
+      // Para los benchmarks (consola): estado cada 30 s mientras cambie.
+      let lastMedia = '';
+      setInterval(() => {
+        const m = JSON.stringify({ ...mediaCache.stats, prefetchHits: vfs.prefetchHits, remote: vfs.remoteStats });
+        if (m !== lastMedia) { lastMedia = m; console.log(`mediacache t=${Math.round(performance.now() / 1000)}s ${m}`); }
+      }, 30000);
+    }
     // models_X/anims_X hold .x/.fbx/.glb meshes that only the jassimp64 native can read; the boot
     // packs carry the game's own .txt mesh/anim format instead (round 60), so those trees stay hidden.
     const assimpOnly = /^(models_X|anims_X)\//;
@@ -131,10 +214,11 @@ try {
     // 10 min. Con ?prefetch=1 (o https) el camino de autojoin de abajo si espera a que termine. ?prefetch=0 / ?nocache=1 lo apagan.
     const prefetchParam = new URLSearchParams(location.search).get('prefetch');
     if (prefetchParam !== '0' && prefetchParam !== '1' && location.protocol !== 'https:' && new URLSearchParams(location.search).get('nocache') !== '1') {
-      globalThis.pzPrefetchBackground = prefetchMedia(vfs, { concurrency: 8 })
+      globalThis.pzPrefetchBackground = prefetchMedia(vfs, { concurrency: 8, onFetched: vfs.onRemoteFetch ?? undefined })
         .then(stats => { console.log(`prefetch-bg ${JSON.stringify(stats)}`); return stats; }, error => ({ error: String(error) }));
-      setTimeout(() => { vfs.prefetched.clear(); }, 10 * 60 * 1000);
     }
+    // Lo precargado (red o caché persistente) que el juego no usó en 10 min se descarta: es memoria, no datos.
+    setTimeout(() => { vfs.prefetched.clear(); }, 10 * 60 * 1000);
   }
   // Round 43: KahluaUtil.setupLibraryText opens new FileInputStream(new File("stdlib.lua")
   // .getAbsoluteFile()), which resolves to the VFS root "/stdlib.lua". Those bytes are the pinned
@@ -179,24 +263,19 @@ try {
     show('installed');
     // Over the public https tunnel (or ?prefetch=1) bring the media the game will read in parallel first: one round trip per read is too slow.
     if (location.protocol === 'https:' || new URLSearchParams(location.search).get('prefetch') === '1') {
-      const stats = pzRuntime.prefetchStats = await prefetchMedia(vfs, { onProgress: f => { label.textContent = `Precargando recursos… ${Math.round(f * 100)} %`; } });
+      loading.step('prefetch', 'active');
+      const stats = pzRuntime.prefetchStats = await prefetchMedia(vfs, { onFetched: vfs.onRemoteFetch ?? undefined, onProgress: f => {
+        label.textContent = `Precargando recursos… ${Math.round(f * 100)} %`;
+        loading.step('prefetch', 'active', `${Math.round(f * 100)} %`);
+        loading.bar(f, 'Precargando el mapa…', `${Math.round(f * 100)} %`);
+      } });
+      loading.step('prefetch', 'done');
       console.log(`prefetch ${JSON.stringify(stats)}`); show('installed');
     }
   }
-  // Ronda 81 (frente 2): páginas de texturas decodificadas por el juego, guardadas en IndexedDB y
-  // reutilizadas en el arranque siguiente (port.runtime.PackImageCache). Clave = ETag de boot.wasm (el
-  // build) + SHA-256 del PNG; activa por defecto (?nocache=1 / ?texcache=0 la apagan), ?texcache=verify compara sin usarla.
-  // Si IndexedDB falla el juego sigue con el call() original (modo 0) y el error queda en stats.
-  pzRuntime.texCache = TextureCache.fromLocation(location.search, '');
+  pzRuntime.texCache = texCache;
+  await texCacheReady;
   if (pzRuntime.texCache.mode !== 0) {
-    try {
-      const head = await fetch(`${gameDir}/boot.wasm`, { method:'HEAD', cache:'no-cache' });
-      pzRuntime.texCache.build = head.ok ? head.headers.get('ETag') || head.headers.get('Last-Modified') || '' : '';
-      await pzRuntime.texCache.open();
-    } catch (error) {
-      pzRuntime.texCache.stats.lastError = String(error); pzRuntime.texCache.mode = 0;
-      console.warn('texcache apagada:', error);
-    }
     // Para los benchmarks (la consola queda en console.txt): estado cada 30 s mientras cambie.
     let lastStats = '';
     setInterval(() => {
@@ -206,9 +285,10 @@ try {
   }
   pzRuntime.window = new BrowserWindow(canvas,pzRuntime.gl,pzRuntime.input);
   await pzRuntime.window.prepare();
-  pzRuntime.sqlite = await sqliteBridge(vfs);
+  pzRuntime.sqlite = await sqliteReady;
   // The wasm32 Bullet module is the only library this runtime honestly provides.
-  pzRuntime.bullet = await bulletBridge();
+  pzRuntime.bullet = await bulletReady;
+  await pulseReady;
   pzRuntime.loadedLibraries = pzRuntime.bullet.loadedFor;
   // Round 31: the render fiber parks in Thread.sleep(0L) and no Fiber#resume ever happens. On
   // WasmGC that suspension is resumed by TeaVM's own timer import (teavmAsync.offer -> setTimeout
@@ -237,6 +317,9 @@ try {
       }
     };
   }
+  loading.step('prepare', 'done');
+  if (!earlyWasm) loading.step('engine', 'active');
+  loading.bar(null, 'Cargando el motor del juego…');
   const runtime = await TeaVM.wasmGC.load(earlyWasmUrl, {
     installImports(imports) {
       const base = imports.teavmAsync;
@@ -274,6 +357,9 @@ try {
     }
   });
   WebAssembly.compileStreaming = nativeCompileStreaming;
+  loading.step('engine', 'done');
+  loading.step('start', 'active');
+  loading.bar(null, 'Iniciando Project Zomboid…');
   // The browser runtime provides no fmod native library. Passing the game's own documented
   // -nosound argument makes MainScreenState parse it into Core.soundDisabled, which is the real
   // path the desktop game takes when sound is off: GameWindow.mainThreadInit then installs
@@ -284,6 +370,8 @@ try {
   const update = () => {
     status.textContent = phases[globalThis.pzGame?.phase] || 'Esperando el arranque Java…';
     document.getElementById('game-error').textContent = globalThis.pzGame?.error || '';
+    if (globalThis.pzGame?.phase === 'failed') loading.fail(globalThis.pzGame.error || 'El arranque encontró un error.');
+    else if (pzRuntime.window.swapCount > 0) loading.finish();
     requestAnimationFrame(update);
   };
   update();
@@ -291,5 +379,6 @@ try {
   globalThis.pzGame = { phase:'loader-failed', error:`${error.name}: ${error.message}`, menuRendered:false };
   status.textContent = 'Juego pendiente de integración';
   document.getElementById('game-error').textContent = error.message;
+  loading.fail(error.message);
   console.error(error);
 }

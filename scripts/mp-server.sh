@@ -6,7 +6,7 @@ set -euo pipefail
 G=${PZ_HOME:-/home/agente47/pz-pinned/25485521/projectzomboid}; D=${PZ_MP_DATA:-/tmp/pz82/zomboid}; LOG=${PZ_MP_LOG:-/tmp/pz82/server.log}
 # Una segunda instancia para pruebas (R86): PZ_MP_DATA=/tmp/pz86/zomboid PZ_MP_PORT=16271 PZ_MP_UDPPORT=16272 PZ_MP_LOG=/tmp/pz86/server.log
 PORT=${PZ_MP_PORT:-16261}; UDPPORT=${PZ_MP_UDPPORT:-16262}
-pid() { ps -eo pid,args | grep -v grep | grep "GameServer -nosteam -cachedir=$D" | awk '{print $1}' | head -1; }
+pid() { ps -eo pid,args | grep -v grep | grep "GameServer -nosteam -cachedir=$D" | awk '{print $1}' | head -1 || true; } # sin '|| true', pipefail+set -e cortan el script en silencio cuando no corre
 # Ajustes del servidor que el cliente web todavía no puede atender (nativas ausentes que lanzan su nombre JNI):
 #  - VoiceEnable=false: RakVoice (chat de voz) no existe en el navegador.
 #  - EnableVehicles=false: Bullet.addVehicle no existe todavía (en solitario también se juega sin vehículos).
@@ -51,5 +51,9 @@ case "${1:-status}" in
       -servername pzweb -adminpassword "$(admin_password)" > "$LOG" 2>&1 < /dev/null &
     echo "arrancando; esperá 'SERVER STARTED' en $LOG" ;;
   stop) p=$(pid); [[ -n "$p" ]] && kill "$p" && echo "detenido $p" || echo "no corre" ;;
-  status) p=$(pid); [[ -n "$p" ]] && echo "corre pid $p" || echo "detenido"; grep -c "SERVER STARTED" "$LOG" 2>/dev/null || true ;;
+  status) p=$(pid)
+    if [[ -n "$p" ]]; then echo "corre pid $p (puerto $PORT/udp)"; else echo "detenido"; fi
+    ultimo=$(grep -E "SERVER STARTED|Shutdown handling started|Server exited" "$LOG" 2>/dev/null | tail -1 || true)
+    echo "último evento en $LOG: ${ultimo:-ninguno}"
+    [[ -n "$p" ]] ;;
 esac
