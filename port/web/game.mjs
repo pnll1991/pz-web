@@ -67,6 +67,21 @@ globalThis.setTimeout = (fn, ms, ...rest) => {
 // para comparar); sin el parámetro, el build dev de /game/.
 const buildName = new URLSearchParams(location.search).get('build');
 const gameDir = buildName && /^[a-z0-9-]+$/.test(buildName) ? `/${buildName}/game` : '/game';
+// Ronda 88 (carga inicial): empezar a bajar y compilar boot.wasm ya, mientras se abren la VFS y los packs, en vez de
+// hacerlo al final (el cargador de TeaVM llama a compileStreaming recien al llegar a TeaVM.wasmGC.load). Mas abajo se
+// engancha compileStreaming para que el cargador reciba este modulo ya compilado. ?earlycompile=0 lo apaga; si la
+// compilacion anticipada falla se vuelve al camino original (descarga normal).
+const earlyWasmUrl = `${gameDir}/boot.wasm`;
+const earlyWasm = new URLSearchParams(location.search).get('earlycompile') === '0' ? null : (() => {
+  try {
+    const compiled = WebAssembly.compileStreaming(fetch(earlyWasmUrl), { builtins:['js-string'] });
+    compiled.catch(() => {});
+    return compiled;
+  } catch { return null; }
+})();
+// Chrome puede desalojar IndexedDB/Cache API bajo presion de disco; la cache de texturas (~945 MB) y los packs se pierden
+// y el arranque siguiente es en frio. Pedir almacenamiento persistente es solo una peticion: si se niega no cambia nada.
+navigator.storage?.persist?.().then(granted => { globalThis.pzStoragePersisted = granted; }, () => {});
 try {
   const response = await fetch(`${gameDir}/build-state.json`);
   if (!response.ok) throw new Error('Todavía no hay una compilación del juego.');
@@ -90,12 +105,18 @@ try {
   globalThis.pzYieldSuspend = new URLSearchParams(location.search).get('suspend') !== '0';
   const canvas = document.getElementById('game-canvas');
   canvas.hidden = false;
+  // Ronda 88: estas lecturas no dependen de la VFS ni de los packs; se lanzan ya y se consumen mas abajo.
+  const remoteWanted = new URLSearchParams(location.search).get('remote') !== '0';
+  const manifestFetch = remoteWanted ? fetch('/media-manifest.json') : null;
+  manifestFetch?.catch(() => {});
+  const classpathFetches = ['stdlib.lua', 'stdlib.lbc'].map(name => ({ name, response: fetch(`/classpath/resource/0/${name}`) }));
+  for (const { response } of classpathFetches) response.catch(() => {});
   const vfs = await new VirtualFileSystem().open();
   await preloadPacks(vfs);
   // Round 79: the rest of PZ_HOME/media (maps are 4.3 GB) is read on demand from the local dev
   // server; the manifest only lists names and sizes. '?remote=0' keeps the packs-only behaviour.
-  if (new URLSearchParams(location.search).get('remote') !== '0') {
-    const manifest = await fetch('/media-manifest.json');
+  if (manifestFetch) {
+    const manifest = await manifestFetch;
     if (!manifest.ok) throw new Error(`media manifest HTTP ${manifest.status}`);
     const listed = await manifest.json();
     if (listed.schema_version !== 1 || !Array.isArray(listed.files)) throw new Error('Unsupported media manifest');
@@ -111,8 +132,8 @@ try {
   // stdlib.lua, 3772 B for stdlib.lbc); nothing is copied into the repo. store() marks anything
   // outside /Zomboid read-only, so the game can only read them. stdlib.lbc is the bytecode the
   // same class loads through setupLibrary/loadByteCodeFromFile, mounted for the same reason.
-  for (const name of ['stdlib.lua', 'stdlib.lbc']) {
-    const response = await fetch(`/classpath/resource/0/${name}`);
+  for (const { name, response: pending } of classpathFetches) {
+    const response = await pending;
     if (!response.ok) throw new Error(`Classpath resource ${name} is unavailable: HTTP ${response.status}`);
     vfs.store(`/${name}`, new Uint8Array(await response.arrayBuffer()));
   }
@@ -185,7 +206,28 @@ try {
   // installImports hook to observe, without changing it: how many events TeaVM hands to the timer,
   // how many timers actually fire, whether the fired callback throws, and how many are cancelled.
   const asyncObs = globalThis.pzAsync = { offers: 0, fired: 0, errors: 0, kills: 0, errorsSeen: [], last: [] };
-  const runtime = await TeaVM.wasmGC.load(`${gameDir}/boot.wasm`, {
+  // Ronda 88: el cargador hace fetch(boot.wasm) + compileStreaming; entregarle el modulo que ya se compilo en paralelo.
+  // Solo se intercepta la primera llamada cuyo Response viene de boot.wasm (el cargador tambien llama a compileStreaming
+  // con un modulo diminuto para detectar js-string builtins: eso pasa sin tocar). Se restaura al terminar la carga.
+  const nativeCompileStreaming = WebAssembly.compileStreaming.bind(WebAssembly);
+  if (earlyWasm) {
+    let handed = false;
+    WebAssembly.compileStreaming = async (source, options) => {
+      const response = await source;
+      if (handed || !response?.url?.endsWith(earlyWasmUrl)) return nativeCompileStreaming(response, options);
+      handed = true;
+      try {
+        const module = await earlyWasm;
+        response.body?.cancel().catch(() => {});
+        globalThis.pzEarlyCompile = 'used';
+        return module;
+      } catch (error) {
+        globalThis.pzEarlyCompile = `fallback: ${error}`;
+        return nativeCompileStreaming(response, options);
+      }
+    };
+  }
+  const runtime = await TeaVM.wasmGC.load(earlyWasmUrl, {
     installImports(imports) {
       const base = imports.teavmAsync;
       if (!base || typeof base.offer !== 'function' || typeof base.kill !== 'function')
@@ -221,6 +263,7 @@ try {
       };
     }
   });
+  WebAssembly.compileStreaming = nativeCompileStreaming;
   // The browser runtime provides no fmod native library. Passing the game's own documented
   // -nosound argument makes MainScreenState parse it into Core.soundDisabled, which is the real
   // path the desktop game takes when sound is off: GameWindow.mainThreadInit then installs

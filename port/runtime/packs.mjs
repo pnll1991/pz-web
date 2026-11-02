@@ -48,7 +48,10 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo =
   // read from media/anims/bob): it is verified once and counted once, as the VFS does for its views.
   const verifiedRanges = new Map();
   const inFlight = { set:new Set(), bytes:0 };
-  for (const pack of index.packs) {
+  // Ronda 88: los packs se descargaban (o leian de la Cache API), se hasheaban y se guardaban uno tras otro. Son
+  // independientes: todos a la vez. Cada pack sigue verificandose completo (tamano + sha256) antes de montarse y un
+  // pack corrupto sigue borrandose de la cache; solo cambia que las esperas de red/disco/hash se solapan.
+  const loadPack = async pack => {
     if (!/^[a-f0-9]{64}\.bin$/.test(pack.name) || pack.name !== `${pack.sha256}.bin`)
       throw new Error('Invalid pack name');
     const url = new URL(pack.name, base);
@@ -64,14 +67,19 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', { memo =
       await cache.delete(url);
       throw new Error(`Pack integrity mismatch: ${pack.name}`);
     }
-    // One view over the whole downloaded blob; every mounted file is a subarray of it, so the
-    // blob's bytes are resident exactly once (a copy per file would double a 321 MB pack).
-    const blob = new Uint8Array(bytes);
     if (pack.bytes <= CACHE_MAX_BYTES) {
       await cache.put(url, new Response(bytes, { headers:{ 'Content-Type':'application/octet-stream' } }));
     } else {
       (globalThis.pzPackCacheSkipped ??= []).push({ name: pack.name, bytes: pack.bytes });
     }
+    return bytes;
+  };
+  const packBytes = await Promise.all(index.packs.map(loadPack));
+  for (const [packIndex, pack] of index.packs.entries()) {
+    const bytes = packBytes[packIndex];
+    // One view over the whole downloaded blob; every mounted file is a subarray of it, so the
+    // blob's bytes are resident exactly once (a copy per file would double a 321 MB pack).
+    const blob = new Uint8Array(bytes);
     const files = index.files.filter(file => file.pack === pack.name);
     for (const file of files) {
       if (!Number.isSafeInteger(file.offset) || !Number.isSafeInteger(file.length) || file.offset < 0 || file.length < 0 || file.offset + file.length > blob.byteLength)

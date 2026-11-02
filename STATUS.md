@@ -580,3 +580,8 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 
 ## Ronda 84 (túnel público)
 - scripts/public-tunnel.sh start|stop|status: dev server en modo público con clave + cloudflared; verificado con curl (403/302/200, /ws 403/101) y con un Chrome por la URL pública hasta ingame. Detalles y cómo cerrar: ~/pzshots/CLAUDE_REPORT_R84.md.
+
+## Ronda 88 (carga inicial, master)
+- Hecho (sin medir en Chrome todavía): `game.mjs` compila `boot.wasm` en paralelo con VFS/packs (`earlyWasm`, engancha `compileStreaming` solo para boot.wasm; `?earlycompile=0` lo apaga; `pzEarlyCompile` indica `used` o `fallback`), lanza antes `media-manifest.json` y `stdlib.*`, y pide `navigator.storage.persist()` (`pzStoragePersisted`). `packs.mjs` descarga, verifica (tamaño + sha256) y guarda los packs en paralelo; la verificación por archivo no cambia.
+- Evidencia: `node --check` OK; `npm test` 151/152 (el fallo es `autojoin.test.mjs` por `repl = false` del cambio ajeno sin confirmar). `scripts/bench.sh` no corrió: `chrome.lock` ocupado por otra sesión.
+- Pendiente: medir con `scripts/bench.sh --page fast.html` (caché fría y caliente) cuando el candado esté libre; perfilar la carga del mundo (74 s) con `tools/diag/profile.mjs`; precalentar la caché de texturas; reducir los ~2150 XHR restantes.
