@@ -4,6 +4,7 @@ import { attachBridge } from './ws-bridge.mjs';
 import { createPublicGate } from './public-mode.mjs';
 import { createWarmList } from './warm-list.mjs';
 import { createPlayerBoard } from './players.mjs';
+import { acceptedCodings, createCompressor } from './compress.mjs';
 import { appendFile } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { realpath, stat, open, readFile, readdir } from 'node:fs/promises';
@@ -19,6 +20,7 @@ const types = new Map(Object.entries({
   '.lua': 'text/plain; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg',
   '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.ogg': 'audio/ogg',
 }));
+const TEXTUAL = new Set(['.html', '.js', '.mjs', '.css', '.json', '.txt', '.svg']);
 const headers = {
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Embedder-Policy': 'require-corp',
@@ -26,6 +28,8 @@ const headers = {
   'X-Content-Type-Options': 'nosniff',
   'Cache-Control': 'no-cache',
 };
+
+export { acceptedCodings };
 
 export function parseRange(value, size) {
   const match = /^bytes=(\d*)-(\d*)$/.exec(value);
@@ -87,11 +91,24 @@ function accessLog(req, status) {
   appendFile(ACCESS_LOG, line, () => {});
 }
 
+/** El <archivo>.br / .gz más conveniente (más nuevo que el original y más chico) para este Accept-Encoding, o null. Devuelve el handle abierto. */
+async function pickPrecompressed(resolved, info, acceptEncoding) {
+  for (const coding of acceptedCodings(acceptEncoding)) {
+    const file = await open(`${resolved}.${coding === 'br' ? 'br' : 'gz'}`, 'r').catch(() => null);
+    if (!file) continue;
+    const stat = await file.stat();
+    if (stat.isFile() && stat.mtimeMs >= info.mtimeMs && stat.size < info.size) return { file, size: stat.size, coding };
+    await file.close();
+  }
+  return null;
+}
+
 export async function createDevServer({ webRoot = path.join(root, 'port/target/web'),
   resourceRoots = [], pzHome = process.env.PZ_HOME, packsRoot = process.env.PZ_PACKS || path.join(root, 'packs'),
   publicKey = process.env.PZWEB_PUBLIC_KEY || '', warmFile = process.env.PZWEB_WARM_FILE || '/tmp/pzweb-warm.json' } = {}) {
   const gate = createPublicGate({ key: publicKey });
   const warm = createWarmList({ file: warmFile });
+  const compressor = createCompressor();
   let bridge = null;
   const board = createPlayerBoard({ bridges: () => bridge?.sessions.size ?? null });
   webRoot = await realpath(webRoot).catch(() => { throw new Error('Build missing. Run scripts/build.sh first.'); });
@@ -123,6 +140,18 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
       res.writeHead(status, { ...headers, 'Content-Type': 'text/plain; charset=utf-8', ...extra });
       res.end(req.method === 'HEAD' ? undefined : message);
     };
+    // Ronda 89: respuesta de texto en memoria con br/gzip si el navegador lo acepta (cacheada por `key`). `etag` (opcional) lleva el coding.
+    const sendText = async (key, body, extra, etag) => {
+      const coding = req.method === 'GET' || req.method === 'HEAD' ? acceptedCodings(req.headers['accept-encoding'])[0] : undefined;
+      const packed = coding ? await compressor.get(key, coding, Buffer.from(body)) : null;
+      const out = { ...headers, ...extra, Vary: 'Accept-Encoding', ...(packed ? { 'Content-Encoding': coding } : {}) };
+      const tag = etag && packed ? etag.replace(/"$/, `-${coding}"`) : etag;
+      if (tag) out.ETag = tag;
+      if (tag && req.headers['if-none-match'] === tag) { res.writeHead(304, out); res.end(); return; }
+      const payload = packed ?? Buffer.from(body);
+      res.writeHead(200, { ...out, 'Content-Length': payload.length });
+      res.end(req.method === 'HEAD' ? undefined : payload);
+    };
     try {
       // Round 84: public (tunnel) requests are authenticated by the key gate first; their same-origin rules use the tunnel host and https.
       const publicRequest = gate.isPublic(req);
@@ -147,10 +176,9 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
       }
       if (pathname === '/warm-media.json') { // Round 84: ranges real sessions asked for (see dev-server/warm-list.mjs)
         const body = JSON.stringify(warm.list());
-        res.writeHead(200, { ...headers, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
-        res.end(req.method === 'HEAD' ? undefined : body); return;
+        await sendText(`warm|${warm.size()}`, body, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); return;
       }
-      if (req.method === 'GET' && (pathname === '/media-bundle' || (pathname.startsWith('/media/') && req.headers.range))) warm.record(req.url, req.headers.range || '');
+      if (req.method === 'GET' && (pathname === '/media-bundle' || ((pathname.startsWith('/media/') || /^\/packs\/[a-f0-9]{64}\.bin$/.test(pathname)) && req.headers.range) && !/[?&]fill=1\b/.test(req.url))) warm.record(req.url, req.headers.range || '');
       if (pathname === '/perf/report') { // reporte de rendimiento de una pestaña (dev-server/players.mjs)
         const ok = board.report(new URL(req.url, 'http://x').searchParams);
         res.writeHead(ok ? 204 : 400, { ...headers, 'Cache-Control': 'no-store' }); res.end(); return;
@@ -169,9 +197,7 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
         if (!mediaRoot) { respond(404, 'PZ_HOME not mounted'); return; }
         manifest ??= buildManifest(mediaRoot);
         const { body, etag } = await manifest;
-        if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ...headers, ETag:etag }); res.end(); return; }
-        res.writeHead(200, { ...headers, 'Content-Type':'application/json', 'Content-Length':Buffer.byteLength(body), ETag:etag });
-        res.end(req.method === 'HEAD' ? undefined : body); return;
+        await sendText(`manifest|${etag}`, body, { 'Content-Type': 'application/json' }, etag); return;
       }
       if (pathname === '/media-bundle') { // Round 81 (front 2): every direct child of media/<dir> with one extension, in one response
         if (!mediaRoot) { respond(404, 'PZ_HOME not mounted'); return; }
@@ -218,37 +244,46 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
         const info = await file.stat();
         if (!info.isFile()) { respond(404, 'No directory listing'); return; }
         // Metadata validator is deliberately weak; never accept it as a strong If-Range validator.
-        // Ronda 87: boot.wasm / *.wasm y packs con nombre por hash pueden tener un <archivo>.br al lado (scripts/precompress.mjs, fuera de git). Si el
-        // navegador acepta br, no pide un rango y el .br no es más viejo ni más grande que el original, se sirve ese con Content-Encoding. Con Range se
-        // sirve siempre el original (un rango sobre un cuerpo codificado no significa lo mismo). El ETag lleva "-br" para no mezclar los dos cuerpos.
-        const compressible = path.extname(resolved).toLowerCase() === '.wasm' || (pathname.startsWith('/packs/') && /^[a-f0-9]{64}\.bin$/.test(relative));
-        let br = null;
-        if (compressible && !req.headers.range && /\bbr\b/.test(req.headers['accept-encoding'] || '')) {
-          const brFile = await open(`${resolved}.br`, 'r').catch(() => null);
-          if (brFile) {
-            const brInfo = await brFile.stat();
-            if (brInfo.isFile() && brInfo.mtimeMs >= info.mtimeMs && brInfo.size < info.size) br = { file: brFile, size: brInfo.size };
-            else await brFile.close();
-          }
-        }
-        const etag = `W/"${info.size.toString(16)}-${info.mtimeMs.toString(16)}${br ? '-br' : ''}"`;
+        // Ronda 87/89: boot.wasm / *.wasm y packs con nombre por hash pueden tener un <archivo>.br y/o <archivo>.gz al lado
+        // (scripts/precompress.mjs, fuera de git). Se sirve el primero que el navegador acepte (br antes que gzip), siempre que sea
+        // más nuevo que el original y más chico. Con Range se sirve el original (un rango sobre un cuerpo codificado no significa lo
+        // mismo: los chunks de un pack perezoso se piden con Range). El ETag lleva el codec para no mezclar los cuerpos.
+        const isPack = pathname.startsWith('/packs/') && /^[a-f0-9]{64}\.bin$/.test(relative);
+        const compressible = path.extname(resolved).toLowerCase() === '.wasm' || isPack;
+        const encoded = compressible && !req.headers.range ? await pickPrecompressed(resolved, info, req.headers['accept-encoding']) : null;
+        const etag = `W/"${info.size.toString(16)}-${info.mtimeMs.toString(16)}${encoded ? '-' + encoded.coding : ''}"`;
         const modified = info.mtime.toUTCString();
         const fileHeaders = { ...headers, 'Content-Type': types.get(path.extname(resolved).toLowerCase()) || 'application/octet-stream',
           'Accept-Ranges': 'bytes', ETag: etag, 'Last-Modified': modified, ...(compressible ? { Vary: 'Accept-Encoding' } : {}),
-          ...(br ? { 'Content-Encoding': 'br' } : {}) };
+          ...(encoded ? { 'Content-Encoding': encoded.coding } : {}) };
         // Packs are content-addressed (<sha256>.bin, checked again by port/runtime/packs.mjs): a name never changes bytes,
         // so the browser may keep them without revalidating. index.json and everything else keep no-cache.
-        if (pathname.startsWith('/packs/') && /^[a-f0-9]{64}\.bin$/.test(relative)) fileHeaders['Cache-Control'] = 'public, max-age=31536000, immutable';
-        const candidates = req.headers['if-none-match']?.split(',').map(s => s.trim().replace(/^W\//, ''));
-        if (candidates?.includes('*') || candidates?.includes(etag.replace(/^W\//, ''))) {
-          await br?.file.close(); res.writeHead(304, fileHeaders); res.end(); return;
+        if (isPack) fileHeaders['Cache-Control'] = 'public, max-age=31536000, immutable';
+        // Texto chico (JS, JSON, HTML…) servido desde disco: se comprime una vez en memoria (compress.mjs). Los packs/wasm usan lo precomprimido.
+        let text = null;
+        if (!encoded && !req.headers.range && !compressible && TEXTUAL.has(path.extname(resolved).toLowerCase()) && base !== mediaRoot
+            && info.size >= 1024 && info.size <= 32 << 20) {
+          const coding = acceptedCodings(req.headers['accept-encoding'])[0];
+          if (coding) {
+            const packed = await compressor.get(`${resolved}|${info.size}|${info.mtimeMs}`, coding, await file.readFile());
+            if (packed) { text = { body: packed, coding }; fileHeaders['Content-Encoding'] = coding; fileHeaders.Vary = 'Accept-Encoding'; fileHeaders.ETag = etag.replace(/"$/, `-${coding}"`); }
+          }
         }
-        if (br) {
+        const sentEtag = fileHeaders.ETag;
+        const candidates = req.headers['if-none-match']?.split(',').map(s => s.trim().replace(/^W\//, ''));
+        if (candidates?.includes('*') || candidates?.includes(sentEtag.replace(/^W\//, ''))) {
+          await encoded?.file.close(); res.writeHead(304, fileHeaders); res.end(); return;
+        }
+        if (text) {
+          res.writeHead(200, { ...fileHeaders, 'Content-Length': text.body.length });
+          res.end(req.method === 'HEAD' ? undefined : text.body); return;
+        }
+        if (encoded) {
           try {
-            res.writeHead(200, { ...fileHeaders, 'Content-Length': br.size });
+            res.writeHead(200, { ...fileHeaders, 'Content-Length': encoded.size });
             if (req.method === 'HEAD') { res.end(); return; }
-            await pipeline(br.file.createReadStream({ autoClose: false }), res); return;
-          } finally { await br.file.close(); }
+            await pipeline(encoded.file.createReadStream({ autoClose: false }), res); return;
+          } finally { await encoded.file.close(); }
         }
         let range;
         const ifRange = req.headers['if-range'];
