@@ -57,3 +57,28 @@ test('packs con nombre por hash son inmutables; el índice y la media no', async
   assert.equal((await fetch(origin + '/packs/index.json')).headers.get('cache-control'), 'no-cache');
   assert.equal((await fetch(origin + '/media/lua/a.lua')).headers.get('cache-control'), 'no-cache');
 });
+
+test('wasm y packs: con <archivo>.br al lado y Accept-Encoding br sale el .br; con Range o sin br, el original', async () => {
+  const body = 'x'.repeat(5000);
+  await writeFile(path.join(temporary, 'web/a.wasm'), body);
+  await writeFile(path.join(temporary, 'web/a.wasm.br'), 'comprimido'); // contenido sintético: sólo se verifican las cabeceras y los bytes servidos
+  const raw = (url, headers) => new Promise((resolve, reject) => import('node:http').then(({ default: http }) =>
+    http.get(url, { headers }, res => { const chunks = []; res.on('data', c => chunks.push(c)); res.on('end', () => resolve({ res, body: Buffer.concat(chunks).toString() })); }).on('error', reject)));
+  const withBr = await raw(origin + '/a.wasm', { 'Accept-Encoding': 'br, gzip' });
+  assert.equal(withBr.res.headers['content-encoding'], 'br');
+  assert.equal(withBr.res.headers['vary'], 'Accept-Encoding');
+  assert.equal(withBr.body, 'comprimido');
+  assert.match(withBr.res.headers['etag'], /-br"$/);
+  const plain = await raw(origin + '/a.wasm', { 'Accept-Encoding': 'gzip' });
+  assert.equal(plain.res.headers['content-encoding'], undefined);
+  assert.equal(plain.body, body);
+  const ranged = await raw(origin + '/a.wasm', { 'Accept-Encoding': 'br', Range: 'bytes=0-9' });
+  assert.equal(ranged.res.statusCode, 206);
+  assert.equal(ranged.res.headers['content-encoding'], undefined);
+  assert.equal(ranged.body, 'xxxxxxxxxx');
+  const again = await raw(origin + '/a.wasm', { 'Accept-Encoding': 'br', 'If-None-Match': withBr.res.headers['etag'] });
+  assert.equal(again.res.statusCode, 304);
+  // un .br más grande que el original no se usa
+  await writeFile(path.join(temporary, 'web/b.wasm'), 'ab'); await writeFile(path.join(temporary, 'web/b.wasm.br'), 'mucho mas grande');
+  assert.equal((await raw(origin + '/b.wasm', { 'Accept-Encoding': 'br' })).res.headers['content-encoding'], undefined);
+});

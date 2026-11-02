@@ -1,4 +1,4 @@
-// Round 86: long-lived two-client harness for the TEST instance (web 8199 + PZ server 16271). Loading the game takes ~7 min, so it is done once;
+// Round 86: long-lived two-client harness for a TEST instance (default web 8199 + PZ server 16271; override with --url http://127.0.0.1:<web>/play.html --port <pz>; profiles live under --out). Loading the game takes ~7 min, so it is done once;
 // afterwards tests are sent as files and run against the clients that stay in the world:
 //   node tools/diag/play-repl.mjs --out /tmp/pz86/repl [--admin] [--only 1] [--keep]   (run in the background)
 //   <out>/cmd.js     JS body, run (async) every time the file changes; it sees { a, b, clients, sleep, lua, shot, log }
@@ -18,11 +18,11 @@ const PORT = A.port || 16271;
 const names = A.only ? ['a'] : ['a', 'b'];
 const t0 = Date.now(), sleep = ms => new Promise(r => setTimeout(r, ms));
 const log = (who, ...a) => { const s = `[+${Math.round((Date.now() - t0) / 1000)}s] ${who}: ${a.join(' ')}`; console.log(s); appendFileSync(`${OUT}/out.txt`, s + '\n'); };
-if (!/127\.0\.0\.1:8199\//.test(BASE) && !A.anyurl) throw new Error('refusing to drive anything but the test web on 127.0.0.1:8199 (use --anyurl to override)');
+if (!/127\.0\.0\.1:8[0-9]{3}\//.test(BASE) || /127\.0\.0\.1:(8098|8097|8092)\//.test(BASE)) throw new Error('refusing to drive anything but a test web on 127.0.0.1 (never 8098/8097/8092)');
 
 let seq = 0;
 async function open(name) {
-  const c = { name, profile: `/tmp/pz86/profile-${name}`, ingame: false, errors: 0 };
+  const c = { name, profile: `${OUT}/profile-${name}`, ingame: false, errors: 0 };
   if (!A.keep) rmSync(c.profile, { recursive: true, force: true });
   c.context = await chromium.launchPersistentContext(c.profile, { ...launchOptions(), viewport: { width: 1280, height: 720 } });
   if (name === 'a' && A.admin) { // client "a" logs in as the server's admin account (password from the file mp-server.sh uses, see admin-pass.mjs)
@@ -87,5 +87,5 @@ try {
   }
 } catch (e) { log('both', 'FAIL', String(e).slice(0, 300)); process.exitCode = 1; }
 for (const c of clients) { try { await c.context.close(); } catch {} }
-if (!A.keep) for (const n of names) rmSync(`/tmp/pz86/profile-${n}`, { recursive: true, force: true });
+if (!A.keep) for (const n of names) rmSync(`${OUT}/profile-${n}`, { recursive: true, force: true });
 log('both', 'CLOSED');

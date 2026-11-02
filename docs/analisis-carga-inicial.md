@@ -111,3 +111,47 @@ Lo esperado en la segunda carga con el mismo build y la misma copia: `pzPackStat
 - **sha256 completo de cada pack en cada carga** (~500 MB). El nombre del pack es su hash y solo se guarda lo verificado, así que se podría saltear al leer de la caché. Es una política explícita de la ronda 81 ("cada pack se sigue verificando completo"): lo decide el dueño.
 - **Caché de texturas por build**: se borra con cada `boot.wasm` nuevo (~945 MB). Guardarla con una versión del códec en lugar del ETag del build evitaría arrancar en frío, pero si el códec cambia sin cambiar la versión reutiliza datos viejos.
 - **URL con hash e `immutable` para `boot.wasm` y `/vendor/*`**. Ahorra las revalidaciones 304, pero necesita cambios en el build (`scripts/build.sh`, `copy_web_vendor.py`).
+
+## Ronda 89: compresión y Tiles2x en tramos (rama `perf/carga-1b-brotli-chunks`)
+
+### Qué se hizo
+
+1. **Dev server** (`dev-server/server.mjs`, `dev-server/compress.mjs`): `boot.wasm` y los packs por hash se sirven precomprimidos (`<archivo>.br` y `.gz` al lado, `scripts/precompress.mjs`; br antes que gzip según el `Accept-Encoding`, con `Vary` y un ETag por codificación); con `Range` siempre sale el original. El texto (JS, índice de packs, manifest de media, warm-list) se comprime una vez en memoria. Los Range sobre `/packs/` se anotan en el warm-list.
+2. **Tiles2x en tramos** (`scripts/lazy-packs.mjs`, `port/runtime/lazypack.mjs`, `sha256.mjs`): el índice parte el pack en cabeceras (2 MB, un blob chico) y un tramo con sha256 por cada uno de los 369 PNG. El navegador monta el archivo sin bajar el blob grande, trae los tramos en paralelo mientras arranca el resto (`?lazyfill=0` lo apaga) y verifica cada tramo antes de usarlo. Lo guardado se restaura de la Cache API (clave = sha256 del tramo) en la carga siguiente. `?lazy=0` baja el pack entero como antes.
+3. **`game.mjs` llamaba dos veces a `preloadPacks()`** (heredado de #10 + #12). Con el juego real la 2.ª llamada falla con `VFS memory budget exceeded`; lo arregló #26 mientras esta rama se medía (las mediciones de abajo quitan esa llamada también en el "antes").
+
+### Resultado medido (juego real, instancia de prueba propia, Chrome headless con GPU, `tools/diag/load-bytes.mjs`)
+
+"Antes" = `origin/dev` con la 2.ª llamada a `preloadPacks()` quitada (como quedó en #26; sin eso no llega al mundo). Bytes por el cable (CDP `encodedDataLength`), perfil vacío en la 1.ª carga y el mismo perfil en la 2.ª. Los segundos son hasta el estado `ingame` del modo directo.
+
+**Loopback**
+
+| | Antes 1.ª | Después 1.ª | Antes 2.ª | Después 2.ª |
+|---|---|---|---|---|
+| Total | 889,9 MB | **641,5 MB** (−28 %) | 95,0 MB | **84,2 MB** |
+| `boot.wasm` | 63,3 | 14,2 | 0 | 0 |
+| Packs | 576,2 | 64,1 + 319,1 (Tiles2x en 369 tramos) | 0 | 0 |
+| `/media` (4730 pedidos) | 241,1 | 241,7 | 94,6 | 84,1 |
+| JS/JSON | 8,2 | 1,3 | 0,4 | 0,1 |
+| Segundos hasta ingame | 285,5 | 288,3 (3.ª carga, perfil vacío y warm-list con lo anterior: 286,5) | 199,6 | 205,1 |
+
+**Bajada limitada a 25 Mbps, 40 ms** (CDP `Network.emulateNetworkConditions`; es una simulación, no el túnel)
+
+| | Antes 1.ª | Después 1.ª | Antes 2.ª | Después 2.ª |
+|---|---|---|---|---|
+| Total | 934,0 MB | **697,1 MB** | 122,9 MB | 121,9 MB |
+| Página lista (`script-loaded`) | 235 s | **50 s** | 23 s | 23 s |
+| Menú | 326 s | **284 s** | 44 s | 45 s |
+| Segundos hasta ingame | 713,7 | **668,3** (−6 %) | 206,5 | 216,7 |
+
+### Lo que NO salió como se esperaba
+
+- **El juego lee los 369 PNG de Tiles2x** durante la carga del mundo (`LazyFile.touched` = 369 tramos, 318,9 MB), también en la 2.ª carga con la caché de texturas llena. "Cargar solo lo necesario para aparecer" no ahorra ni un byte de Tiles2x; recomprimir los PNG sin pérdida ahorra 1,5 % (medido en 10 páginas). La ganancia de la 1.ª carga viene de brotli (wasm, resto de los packs) y de arrancar sin esperar los 321 MB.
+- En loopback los tiempos no cambian. Con 25 Mbps simulados la página arranca 185 s antes, pero el juego pide los PNG durante la carga del mundo y el ancho de banda total manda: el tiempo hasta ingame mejora solo 45 s (356 de los 369 tramos se leyeron con XHR síncrono antes de que llegara el relleno, 137 s con el hilo detenido).
+- Lo que sigue pesando: Tiles2x (319 MB, incompresible) y `/media` (241 MB en 4730 pedidos Range, que no se pueden comprimir tal cual; un archivo de "warm" comprimido de una vez sería el siguiente paso).
+
+### Despliegue
+
+- **Con solo `sync_web` + recarga** (`port/web/*`, `port/runtime/*.mjs`) el juego sigue funcionando y no cambia nada visible: sin `lazy` en el índice se baja todo como antes.
+- Para la compresión y los tramos hay que correr `node scripts/lazy-packs.mjs && node scripts/precompress.mjs` sobre `build/real-browser/packs` (no corta la partida; con el JS nuevo ya publicado primero) y **reiniciar el dev server 8098** (`dev-server/*.mjs` nuevos: sin reinicio no se sirve lo precomprimido ni el texto comprimido ni se anotan los tramos en el warm-list). Reiniciar corta la partida: necesita OK del dueño.
+

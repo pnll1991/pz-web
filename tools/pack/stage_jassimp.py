@@ -36,10 +36,11 @@ def main():
     ap.add_argument('--stage', required=True, type=Path)
     ap.add_argument('--clean', action='store_true')
     ap.add_argument('--java', default=str(ROOT / '.toolchain/jdk/bin/java'))
-    ap.add_argument('--bob-anims', choices=('none', 'locomotion', 'combat'), default='none',
+    ap.add_argument('--bob-anims', choices=('none', 'locomotion', 'combat', 'mobility'), default='none',
                     help='locomotion = the 240-clip closure of stage_txt.py (AnimSets/player idle/walk/run/'
                          'sprint/turning + runtime sources), dumped with the anim flags (profile x-anim); combat = the closure of the '
-                         'player AnimSets for being hit/knocked down/getting up, aiming and melee/shove/stomp (stage_txt.COMBAT_ANIMSETS)')
+                         'player AnimSets for being hit/knocked down/getting up, aiming and melee/shove/stomp (stage_txt.COMBAT_ANIMSETS); mobility = fence vault/climb, window/wall/sheet-rope climbing, window open/close/smash, '
+                         'falling and body throws (stage_txt.MOBILITY_ANIMSETS)')
     ap.add_argument('--zombie-anims', action='store_true',
                     help='also dump every clip of media/anims_X/Zombie (the zombie AnimSets: walk, lunge, attack, hit reactions...); '
                          'without them zombies have no pose (not drawn) and no root motion (do not move)')
@@ -69,7 +70,7 @@ def main():
         shutil.rmtree(stage)
     real.mkdir(parents=True, exist_ok=True)
     jobs = [('x-mesh', meshes, 'models_X/')]
-    if a.bob_anims in ('locomotion', 'combat'):
+    if a.bob_anims != 'none':
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import stage_txt
         clips, missing = stage_txt.bob_clips(home / 'media', a.bob_anims)

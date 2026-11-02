@@ -58,6 +58,17 @@ export class BrowserWindow {
     }, { signal: this.gamepadController.signal });
     onGamepad('gamepadconnected');
     onGamepad('gamepaddisconnected');
+    // GLFW_FOCUSED follows the page's real focus (alt-tab, clicking into devtools). It starts true: a page that was never
+    // told otherwise is the one the user just opened.
+    for (const [type, value] of [['focus', true], ['blur', false]])
+      window.addEventListener(type, () => { this.focused = value; this.events.push({type: value ? 'focus_gained' : 'focus_lost'}); },
+        { signal: this.gamepadController.signal });
+    // The browser only grants pointer lock inside a user gesture, so a lock the game asked for (GLFW_CURSOR_DISABLED) from the Java
+    // thread, or one the user left with Esc, is taken (again) by the next click on the canvas instead of leaving the game with a
+    // 'disabled' cursor that never moves.
+    canvas.addEventListener('pointerdown', () => {
+      if (this.created && this.inputMode[208897] === 212995 && document.pointerLockElement !== this.canvas) this.requestPointerLock();
+    }, { signal: this.gamepadController.signal });
     const codes = ['Space','Quote','Comma','Minus','Period','Slash','Semicolon','Equal',
       'BracketLeft','Backslash','BracketRight','Backquote','Escape','Enter','Tab','Backspace',
       'Insert','Delete','ArrowRight','ArrowLeft','ArrowDown','ArrowUp','PageUp','PageDown',
