@@ -42,13 +42,37 @@ Arranca sin Steam, sin UPnP, sin voz y **sin vehículos** (`Bullet.addVehicle` t
 PZ_MP_DATA=/tmp/pz86/zomboid PZ_MP_PORT=16271 PZ_MP_UDPPORT=16272 PZ_MP_LOG=/tmp/pz86/server.log bash scripts/mp-server.sh start
 ```
 
-### Densidad de zombis: necesita un mundo nuevo
+### Población de zombis (pocos) y cómo cambiarla
 
-`scripts/mp-server.sh` fija `Zombies=3` (alta), `Distribution=2`, `ZombieRespawn=2` y `PlayerSpawnZombieRemoval=4` cada vez que arranca, y el servidor reescribe `pzweb_SandboxVars.lua` con esos valores. **Eso no repuebla lo que ya está guardado**: la población inicial de cada celda del mapa se genera la primera vez que alguien la visita y queda en `Saves/Multiplayer/pzweb/zpop/zpop_<x>_<y>.bin`. En el mundo en vivo (`/tmp/pz82/zomboid`) esos archivos son de la noche del 1/11, antes del cambio de densidad: las celdas ya visitadas conservan la densidad vieja y la nueva solo se nota en celdas que nadie pisó. Para tener la densidad nueva en todo el mapa hay que crear un mundo nuevo:
+`scripts/mp-server.sh` reescribe la población de `pzweb_SandboxVars.lua` en cada `start` (y con `apply-config`, que solo escribe los archivos sin arrancar). Por defecto deja **pocos zombis y sin reaparición**:
+
+| Clave | Variable | Por defecto | Qué es (enum del archivo que genera el servidor fijado) |
+|---|---|---|---|
+| `Zombies` | `PZWEB_ZOMBIES` | `5` | 1 Insane, 2 Very High, 3 High, 4 Normal, **5 Low**, 6 None (no hay "Very Low") |
+| `Distribution` | `PZWEB_ZOMBIE_DISTRIBUTION` | `2` | 1 urbana, 2 uniforme |
+| `ZombieRespawn` | `PZWEB_ZOMBIE_RESPAWN` | `4` | 1 High, 2 Normal, 3 Low, **4 None** |
+| `PlayerSpawnZombieRemoval` | `PZWEB_SPAWN_ZOMBIE_REMOVAL` | `1` | **1 sin zombis en el edificio de aparición y alrededor** (valor por defecto del juego), 2 edificio, 3 habitación, 4 en cualquier lado |
+| `ZombieConfig.PopulationMultiplier` | `PZWEB_POP_MULT` | `0.15` | el valor de "Low" según el archivo (Normal 0.65, High 1.2) |
+| `ZombieConfig.PopulationStartMultiplier` | `PZWEB_POP_START_MULT` | `0.5` | multiplicador del día 1 ("Low") |
+| `ZombieConfig.PopulationPeakMultiplier` | `PZWEB_POP_PEAK_MULT` | `1.0` | multiplicador del día pico (28) |
+| `ZombieConfig.RespawnHours` / `RespawnUnseenHours` / `RespawnMultiplier` | `PZWEB_RESPAWN_HOURS` / `PZWEB_RESPAWN_UNSEEN_HOURS` / `PZWEB_RESPAWN_MULT` | `0.0` | `RespawnHours=0` apaga la reaparición |
+| `ZombieConfig.RedistributeHours` | `PZWEB_REDISTRIBUTE_HOURS` | `12.0` | migración dentro de la celda (por defecto del juego) |
+
+Los valores se validan (entero o decimal con punto, dentro del rango que documenta el archivo) antes de escribir nada; uno inválido corta el `start`. Ojo: el servidor dedicado **no** deriva `ZombieConfig` del preset `Zombies` (el mundo en vivo tenía `Zombies=3` con `PopulationMultiplier=0.65`, el de Normal), por eso se fijan las dos cosas. Ejemplo, un poco más que el defecto:
+
+```bash
+PZWEB_POP_MULT=0.3 bash scripts/mp-server.sh start
+```
+
+En un `PZ_MP_DATA` nuevo el primer `start` todavía no tiene `pzweb_SandboxVars.lua` (lo crea el servidor): arranca con los valores del juego. Para un mundo de prueba con estos valores: `start`, esperar `SERVER STARTED`, `stop`, `reset-world`, `start`.
+
+**Cambiar la población no repuebla lo que ya está guardado**: la población inicial de cada celda del mapa se genera la primera vez que alguien la visita y queda en `Saves/Multiplayer/pzweb/zpop/zpop_<x>_<y>.bin`. En el mundo en vivo (`/tmp/pz82/zomboid`) las celdas ya visitadas conservan la densidad alta y la nueva solo se nota en celdas que nadie pisó (y, al no haber reaparición, los zombis que se maten no vuelven). Para tener la densidad nueva en todo el mapa hay que crear un mundo nuevo:
 
 ```bash
 bash scripts/mp-server.sh stop && bash scripts/mp-server.sh reset-world && bash scripts/mp-server.sh start
 ```
+
+Alternativa que conserva casas, inventarios y personajes (probada solo en una copia de prueba, no en el mundo en vivo): con el servidor **parado**, sacar la carpeta `Saves/Multiplayer/pzweb/zpop/` (moverla a un respaldo fuera del mundo, no borrarla) y arrancar. El servidor la vuelve a crear con la densidad nueva. En la prueba, un mundo creado con la densidad vieja bajó de 24 a 5 zombis cargados alrededor del bar; uno nuevo con los valores nuevos tuvo 3. Es un corte del servidor como cualquier reinicio y pide el mismo OK. Los zombis guardados dentro de los chunks visitados podrían seguir ahí: con un mundo visitado durante días puede quedar más densidad que en la prueba.
 
 `reset-world` **borra la partida guardada** (casas, inventarios, personajes): es el mismo corte que cualquier reinicio del servidor más la pérdida del progreso. Necesita OK explícito del dueño y mirar antes `/tmp/pzweb-access.log`; no se hace en vivo por iniciativa de un agente. Probar la densidad sin tocar la partida: instancia de prueba con otros puertos y otra carpeta (`PZ_MP_DATA`, `PZ_MP_PORT`, `PZ_MP_UDPPORT`, `PZ_MP_LOG`); un `reset-world` con esas variables solo borra la carpeta de prueba.
 
