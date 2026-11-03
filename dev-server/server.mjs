@@ -70,6 +70,13 @@ export function parseRange(value, size) {
   return { start, end };
 }
 
+/** PZWEB_LANGUAGE (código de carpeta de media/lua/shared/Translate: ES, EN, ES_MX...); vacío o ausente = ES. Uno inválido corta el arranque. */
+export function languageSetting(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return 'ES';
+  const code = String(value).trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9_]{1,15}$/.test(code)) throw new Error(`PZWEB_LANGUAGE inválido: ${value}`);
+  return code;
+}
 /** Round 79: [[path relative to media/, size], ...] for every regular file (symlinks followed only inside media).
  *  `version` (sha256 of names, sizes and mtimes) keys the browser's persistent media cache (port/runtime/mediacache.mjs):
  *  any change in PZ_HOME/media invalidates it. Returned with a strong ETag so a reload revalidates with a 304. */
@@ -147,7 +154,9 @@ async function pickPrecompressed(resolved, info, acceptEncoding) {
 
 export async function createDevServer({ webRoot = path.join(root, 'port/target/web'),
   resourceRoots = [], pzHome = process.env.PZ_HOME, packsRoot = process.env.PZ_PACKS || path.join(root, 'packs'),
-  publicKey = process.env.PZWEB_PUBLIC_KEY || '', warmFile = process.env.PZWEB_WARM_FILE || '/tmp/pzweb-warm.json' } = {}) {
+  publicKey = process.env.PZWEB_PUBLIC_KEY || '', language = process.env.PZWEB_LANGUAGE, warmFile = process.env.PZWEB_WARM_FILE || '/tmp/pzweb-warm.json' } = {}) {
+  // Idioma por defecto del cliente (port/runtime/language.mjs lo lee del manifest; no cambia `version`, así que no invalida la caché).
+  const serverLanguage = languageSetting(language);
   const gate = createPublicGate({ key: publicKey });
   const warm = createWarmList({ file: warmFile });
   const compressor = createCompressor();
@@ -253,7 +262,7 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
       }
       if (pathname === '/media-manifest.json') { // Round 79: every PZ_HOME/media file with its size, for on-demand reads
         if (!mediaRoot) { respond(404, 'PZ_HOME not mounted'); return; }
-        manifest ??= buildManifest(mediaRoot, { slices: 1 });
+        manifest ??= buildManifest(mediaRoot, { slices: 1, language: serverLanguage });
         const { body, etag } = await manifest;
         await sendText(`manifest|${etag}`, body, { 'Content-Type': 'application/json' }, etag); return;
       }

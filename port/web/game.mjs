@@ -13,6 +13,7 @@ import { TextureCache } from '/runtime/texcache.mjs';
 import { MediaCache, mediaCacheVersion } from '/runtime/mediacache.mjs';
 import { LoadingScreen, formatMB } from '/runtime/loading.mjs';
 import { ShaderCache, translatorVersion } from '/runtime/glslcache.mjs';
+import { resolveLanguage, applyLanguage } from '/runtime/language.mjs';
 import { installPerfHud, perfName } from '/runtime/perfhud.mjs';
 
 const status = document.getElementById('game-status');
@@ -267,6 +268,16 @@ try {
     }
     // Lo precargado (red o caché persistente) que el juego no usó en 10 min se descarta: es memoria, no datos.
     setTimeout(() => { vfs.prefetched.clear(); }, 10 * 60 * 1000);
+  }
+  // Idioma (port/runtime/language.mjs): ES por defecto; ?lang=<CÓDIGO> lo elige y lo recuerda, ?lang=auto vuelve al del servidor
+  // (PZWEB_LANGUAGE en /media-manifest.json). Se reescribe solo la línea language= del options.ini del pack, antes de boot.wasm.
+  {
+    const listed = mediaReady ? await mediaReady.catch(() => null) : null;
+    let storage = null;
+    try { storage = globalThis.localStorage ?? null; } catch {}
+    const language = resolveLanguage({ search: location.search, storage, serverDefault: listed?.language ?? null });
+    const result = globalThis.pzLanguage = applyLanguage(vfs, language);
+    (result.applied ? console.log : console.warn)(`language ${JSON.stringify(result)}`);
   }
   // Round 43: KahluaUtil.setupLibraryText opens new FileInputStream(new File("stdlib.lua")
   // .getAbsoluteFile()), which resolves to the VFS root "/stdlib.lua". Those bytes are the pinned
