@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Round 82: servidor dedicado REAL de PZ (misma instalación fijada), sólo 127.0.0.1, sin Steam, sin UPnP.
 # Datos fuera del repo (PZ_MP_DATA, por defecto /tmp/pz82/zomboid). Puerto UDP 16261 (+16262).
-#   scripts/mp-server.sh start|stop|status|reset-world|admin-pass-file|gen-admin-pass [--force]   (logs: /tmp/pz82/server.log)
+#   scripts/mp-server.sh start|stop|status|apply-config|reset-world|admin-pass-file|gen-admin-pass [--force]   (logs: /tmp/pz82/server.log)
 set -euo pipefail
 G=${PZ_HOME:-/home/agente47/pz-pinned/25485521/projectzomboid}; D=${PZ_MP_DATA:-/tmp/pz82/zomboid}; LOG=${PZ_MP_LOG:-/tmp/pz82/server.log}
 # Una segunda instancia para pruebas (R86): PZ_MP_DATA=/tmp/pz86/zomboid PZ_MP_PORT=16271 PZ_MP_UDPPORT=16272 PZ_MP_LOG=/tmp/pz86/server.log
@@ -29,15 +29,40 @@ admin_password() {
   local modo; modo=$(stat -c %a "$f"); [[ "$modo" == 600 || "$modo" == 400 ]] || { echo "permisos $modo en $f: tienen que ser 600" >&2; return 1; }
   head -n1 "$f" | tr -d '\r\n'
 }
+# Población de zombis (pocos): se reescribe en cada start/apply-config; cada valor se cambia con su variable de entorno.
+# Enums tal como los documenta el pzweb_SandboxVars.lua que genera el servidor de la versión fijada (B42):
+#   Zombies: 1 Insane, 2 Very High, 3 High, 4 Normal, 5 Low, 6 None (no existe "Very Low")
+#   Distribution: 1 Urban Focused, 2 Uniform · ZombieRespawn: 1 High, 2 Normal, 3 Low, 4 None
+#   PlayerSpawnZombieRemoval: 1 en el edificio y alrededor (por defecto), 2 en el edificio, 3 en la habitación, 4 en cualquier lado
+# El servidor dedicado NO deriva ZombieConfig del preset (el mundo en vivo tenía Zombies=3 y PopulationMultiplier=0.65):
+# los multiplicadores de ZombieConfig se fijan explícitamente. Low = 0.15 según el propio archivo.
+# La densidad de una celda se fija la primera vez que se visita (zpop/zpop_<x>_<y>.bin): ver docs/operacion/manejar.md.
+PZWEB_ZOMBIES=${PZWEB_ZOMBIES:-5}; PZWEB_ZOMBIE_DISTRIBUTION=${PZWEB_ZOMBIE_DISTRIBUTION:-2}
+PZWEB_ZOMBIE_RESPAWN=${PZWEB_ZOMBIE_RESPAWN:-4}; PZWEB_SPAWN_ZOMBIE_REMOVAL=${PZWEB_SPAWN_ZOMBIE_REMOVAL:-1}
+PZWEB_POP_MULT=${PZWEB_POP_MULT:-0.15}; PZWEB_POP_START_MULT=${PZWEB_POP_START_MULT:-0.5}; PZWEB_POP_PEAK_MULT=${PZWEB_POP_PEAK_MULT:-1.0}
+PZWEB_RESPAWN_HOURS=${PZWEB_RESPAWN_HOURS:-0.0}; PZWEB_RESPAWN_UNSEEN_HOURS=${PZWEB_RESPAWN_UNSEEN_HOURS:-0.0}
+PZWEB_RESPAWN_MULT=${PZWEB_RESPAWN_MULT:-0.0}; PZWEB_REDISTRIBUTE_HOURS=${PZWEB_REDISTRIBUTE_HOURS:-12.0}
+apply_zombie_config() { # $1 = pzweb_SandboxVars.lua; idempotente; valida todo antes de escribir (nunca deja el archivo a medias)
+  local f=$1 k v var min max t spec edits=()
+  # clave:variable:mín:máx:tipo (int = entero; dec = decimal, se escribe con punto como lo deja el juego)
+  for spec in Zombies:PZWEB_ZOMBIES:1:6:int Distribution:PZWEB_ZOMBIE_DISTRIBUTION:1:2:int ZombieRespawn:PZWEB_ZOMBIE_RESPAWN:1:4:int \
+      PlayerSpawnZombieRemoval:PZWEB_SPAWN_ZOMBIE_REMOVAL:1:4:int PopulationMultiplier:PZWEB_POP_MULT:0:4:dec \
+      PopulationStartMultiplier:PZWEB_POP_START_MULT:0:4:dec PopulationPeakMultiplier:PZWEB_POP_PEAK_MULT:0:4:dec \
+      RespawnHours:PZWEB_RESPAWN_HOURS:0:8760:dec RespawnUnseenHours:PZWEB_RESPAWN_UNSEEN_HOURS:0:8760:dec \
+      RespawnMultiplier:PZWEB_RESPAWN_MULT:0:1:dec RedistributeHours:PZWEB_REDISTRIBUTE_HOURS:0:8760:dec; do
+    IFS=: read -r k var min max t <<< "$spec"; v=${!var}
+    if [[ $t == int ]]; then [[ $v =~ ^[0-9]+$ ]] || { echo "$var=$v: tiene que ser un entero" >&2; return 1; }
+    else [[ $v =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "$var=$v: tiene que ser un número decimal (con punto)" >&2; return 1; }
+      [[ $v == *.* ]] || v=$v.0; fi
+    awk -v v="$v" -v a="$min" -v b="$max" 'BEGIN{exit !(v+0>=a+0 && v+0<=b+0)}' || { echo "$var=$v: fuera de rango [$min, $max]" >&2; return 1; }
+    if grep -qE "^[[:space:]]*$k = " "$f"; then edits+=(-e "s/^([[:space:]]*$k = )[0-9.]+,/\\1$v,/"); else echo "aviso: $k no está en $f (no se cambia)" >&2; fi
+  done
+  (( ${#edits[@]} == 0 )) || sed -i -E "${edits[@]}" "$f"
+}
 apply_config() {
   [[ -f "$D/Server/pzweb.ini" ]] && sed -i 's/^VoiceEnable=.*/VoiceEnable=false/; s/^UPnP=true/UPnP=false/; s/^SteamVAC=true/SteamVAC=false/' "$D/Server/pzweb.ini"
   [[ -f "$D/Server/pzweb_SandboxVars.lua" ]] && sed -i 's/EnableVehicles = true/EnableVehicles = false/' "$D/Server/pzweb_SandboxVars.lua"
-  #  - Zombis (R86): se quieren zombis cerca del punto de aparición (el bar). Distribution=2 (uniforme, no sólo urbano),
-  #    PlayerSpawnZombieRemoval=4 (pueden aparecer donde aparecen los jugadores), ZombieRespawn=2 (reaparecen normal), Zombies=3 (alta).
-  #    La densidad se fija al crear el mundo: tras cambiarla, `reset-world`.
-  if [[ -f "$D/Server/pzweb_SandboxVars.lua" ]]; then
-    sed -i -E 's/^(\s*Zombies = )[0-9]+,/\13,/; s/^(\s*Distribution = )[0-9]+,/\12,/; s/^(\s*ZombieRespawn = )[0-9]+,/\12,/; s/^(\s*PlayerSpawnZombieRemoval = )[0-9]+,/\14,/' "$D/Server/pzweb_SandboxVars.lua"
-  fi
+  if [[ -f "$D/Server/pzweb_SandboxVars.lua" ]]; then apply_zombie_config "$D/Server/pzweb_SandboxVars.lua" || return 1; fi
   #  - DoLuaChecksum=false: el modo directo agrega media/lua/client/zzz_pzweb_play.lua (código propio), y el servidor expulsa a los
   #    clientes cuyos Lua no coinciden con los suyos. Sólo para este servidor local de confianza.
   [[ -f "$D/Server/pzweb.ini" ]] && sed -i 's/^DoLuaChecksum=.*/DoLuaChecksum=false/' "$D/Server/pzweb.ini"
@@ -46,6 +71,8 @@ apply_config() {
   return 0
 }
 case "${1:-status}" in
+  apply-config) # reaplica la configuración a los archivos de $D sin arrancar (un servidor en marcha no la lee hasta el próximo start)
+    apply_config ;;
   reset-world) # borra el mundo guardado (sólo datos de prueba bajo $D) y reaplica la configuración
     [[ -z "$(pid)" ]] || { echo "detené el servidor primero"; exit 1; }
     rm -rf "$D/Saves/Multiplayer/pzweb" "$D/db/pzweb.db"; apply_config; echo "mundo reiniciado" ;;
