@@ -42,6 +42,20 @@ Arranca sin Steam, sin UPnP, sin voz y **sin vehículos** (`Bullet.addVehicle` t
 PZ_MP_DATA=/tmp/pz86/zomboid PZ_MP_PORT=16271 PZ_MP_UDPPORT=16272 PZ_MP_LOG=/tmp/pz86/server.log bash scripts/mp-server.sh start
 ```
 
+### Idioma (español por defecto)
+
+El juego sale en **español (ES)** en el menú y en la partida. Lo decide cada navegador antes de arrancar el juego (`port/runtime/language.mjs`): reescribe la línea `language=` del `/Zomboid/options.ini` del pack (de solo lectura) y el juego la lee en `Translator.getLanguage()`. Las traducciones (`media/lua/shared/Translate/<CÓDIGO>/`) se leen bajo demanda de `PZ_HOME/media` como el resto de `/media`: no se empaquetan ni se suben.
+
+| Quién | Cómo se cambia | Por defecto |
+|---|---|---|
+| Un jugador | `play.html?lang=EN` (cualquier carpeta de `Translate`: `EN`, `ES`, `ES_MX`, `PTBR`…). Queda guardado en ese navegador (`localStorage` `pzweb.language`); `?lang=auto` lo borra | lo que diga el dev server |
+| El dev server (todos los que no eligieron) | `PZWEB_LANGUAGE=EN` al arrancarlo; va en `/media-manifest.json` (`language`). Uno inválido corta el arranque. **Necesita reiniciar el dev server** | `ES` (también con un dev server viejo que no lo anuncia) |
+| El servidor PZ | `PZWEB_LANGUAGE=EN bash scripts/mp-server.sh start` (o `apply-config`): reescribe `language=` en `$PZ_MP_DATA/options.ini`. Se valida contra `PZ_HOME`. **Necesita reiniciar el servidor PZ** | `ES` |
+
+Opciones guardadas de un jugador: el port nunca guarda `options.ini` (el juego intenta y recibe EROFS), así que no hay un idioma "guardado" por el juego que respetar: todos pasan a ES al recargar, salvo quien eligió otro con `?lang=`. Cambiar el idioma en Opciones dentro del juego dura hasta recargar. Si falta la carpeta del idioma elegido no se toca nada y la consola dice `language {"applied":false,…}`.
+
+El idioma del servidor solo afecta lo que el servidor traduce por su cuenta; los textos de la interfaz de cada jugador salen de su cliente. El mensaje de bienvenida del chat (`ServerWelcomeMessage` de `pzweb.ini`) es texto de configuración, no una traducción: con `ES` y el mensaje por defecto del juego, `start`/`apply-config` lo cambian por una versión propia en español; `PZWEB_WELCOME_MESSAGE='…'` (una línea, `<LINE>` separa renglones) fija otro, y uno ya personalizado no se toca.
+
 ### Población de zombis (pocos) y cómo cambiarla
 
 `scripts/mp-server.sh` reescribe la población de `pzweb_SandboxVars.lua` en cada `start` (y con `apply-config`, que solo escribe los archivos sin arrancar). Por defecto deja **pocos zombis y sin reaparición**:

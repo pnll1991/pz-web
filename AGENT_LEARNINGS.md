@@ -1076,3 +1076,8 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Patrón: el servidor dedicado no deriva `ZombieConfig.PopulationMultiplier` del preset `Zombies` (el vivo tenía `Zombies=3` con 0.65, el de Normal); fijar los dos. Lo mismo `ZombieRespawn` y `RespawnHours`.
 - Patrón: un `sed` por clave en un bucle deja el archivo a medias si un valor posterior es inválido. Validar todo primero y aplicar un solo `sed -i` con varios `-e`.
 - Proceso: medir con tres servidores de prueba sucesivos (antes, después y sin zpop) salió en ~35 min usando `systemd-run --user` para cada proceso y un `until grep … READY` en segundo plano que copia el `cmd.js` solo. Los servidores "antes" y "después" pueden levantarse en paralelo en otros puertos mientras carga el cliente.
+
+## 2026-11-02 — idioma español
+- Error: al editar mi driver de prueba con Python busqué el fin del bloque con el primer `} catch (e)` del archivo, que estaba antes (en `shot`); el archivo quedó roto, el lanzamiento murió con SyntaxError y esperé 10 min un `CLOSED` que nunca llegaba. Mejor enfoque: `node --check` antes de lanzar un driver por `systemd-run`, y que la espera también corte con `SyntaxError|FAIL`.
+- Patrón: `until grep -q "SERVER STARTED" log` justo después de `start` puede coincidir con el log del arranque anterior (el script lo trunca un instante después) y la lectura del ini sale "vieja". Esperar a que el log nuevo exista (o mirar el mtime) antes de leer.
+- Patrón: el `options.ini` del cliente nunca se guarda (pack de solo lectura), así que cualquier opción "por defecto" se fija reescribiendo esa vista antes de `boot.wasm`, no esperando que el juego la guarde.

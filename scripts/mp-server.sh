@@ -59,7 +59,40 @@ apply_zombie_config() { # $1 = pzweb_SandboxVars.lua; idempotente; valida todo a
   done
   (( ${#edits[@]} == 0 )) || sed -i -E "${edits[@]}" "$f"
 }
+# Idioma del servidor (PZWEB_LANGUAGE, código de carpeta de media/lua/shared/Translate; por defecto ES). El dedicado lo lee de
+# $D/options.ini (Translator.getLanguage -> Core.getOptionLanguageName); se reescribe en cada start/apply-config. Si el archivo no
+# existe todavía (mundo nuevo) se crea uno mínimo y el juego completa el resto al guardarlo. El idioma de la interfaz de cada
+# jugador lo decide su cliente (port/runtime/language.mjs), no este valor.
+PZWEB_LANGUAGE=${PZWEB_LANGUAGE:-ES}
+apply_language() { # $1 = options.ini del servidor
+  local f=$1 code; code=$(printf '%s' "$PZWEB_LANGUAGE" | tr '[:lower:]' '[:upper:]')
+  [[ $code =~ ^[A-Z][A-Z0-9_]{1,15}$ ]] || { echo "PZWEB_LANGUAGE=$PZWEB_LANGUAGE: código inválido" >&2; return 1; }
+  # sin la copia del juego (CI) no hay contra qué validar el código: solo el formato
+  [[ ! -d "$G/media/lua/shared/Translate" || -f "$G/media/lua/shared/Translate/$code/language.json" ]] || { echo "PZWEB_LANGUAGE=$code: no existe $G/media/lua/shared/Translate/$code" >&2; return 1; }
+  if [[ ! -f "$f" ]]; then printf 'version=8\nlanguage=%s\n' "$code" > "$f"
+  elif grep -q '^language=' "$f"; then sed -i "s/^language=.*/language=$code/" "$f"
+  else printf 'language=%s\n' "$code" >> "$f"; fi
+}
+# Mensaje de bienvenida del chat: es texto de configuración del servidor (pzweb.ini), no pasa por las traducciones. Con ES y el
+# mensaje por defecto del juego (empieza con "Welcome to Project Zomboid Multiplayer!") se cambia por esta versión propia en español.
+# PZWEB_WELCOME_MESSAGE lo fija a mano (sin saltos de línea; <LINE> separa renglones); un mensaje ya personalizado no se toca.
+WELCOME_ES='¡Bienvenido al multijugador de Project Zomboid! <LINE> <LINE> Para usar el chat: Tab, T o Enter. <LINE> <LINE> Tab cambia el canal del mensaje. <LINE> <LINE> Canales globales: /all <LINE> Canales locales: /say, /yell <LINE> Canales especiales: /whisper, /safehouse, /faction. <LINE> <LINE> La flecha hacia arriba recorre los mensajes anteriores. El engranaje configura el chat. <LINE> <LINE> ¡Buena suerte sobreviviendo!'
+apply_welcome() { # $1 = pzweb.ini
+  local f=$1 msg="${PZWEB_WELCOME_MESSAGE:-}" code; code=$(printf '%s' "$PZWEB_LANGUAGE" | tr '[:lower:]' '[:upper:]')
+  [[ "$msg" != *$'\n'* && "$msg" != *$'\r'* ]] || { echo "PZWEB_WELCOME_MESSAGE no puede tener saltos de línea" >&2; return 1; }
+  if [[ -z "$msg" ]]; then
+    [[ $code == ES ]] && grep -q '^ServerWelcomeMessage=Welcome to Project Zomboid Multiplayer!' "$f" || return 0
+    msg=$WELCOME_ES
+  fi
+  local tmp; tmp=$(mktemp "$f.XXXXXX")
+  if grep -q '^ServerWelcomeMessage=' "$f"; then
+    M=$msg awk '/^ServerWelcomeMessage=/{print "ServerWelcomeMessage=" ENVIRON["M"]; next} {print}' "$f" > "$tmp"
+  else cat "$f" > "$tmp"; printf 'ServerWelcomeMessage=%s\n' "$msg" >> "$tmp"; fi
+  cat "$tmp" > "$f"; rm -f "$tmp"
+}
 apply_config() {
+  if [[ -d "$D/Server" ]]; then apply_language "$D/options.ini" || return 1; fi
+  if [[ -f "$D/Server/pzweb.ini" ]]; then apply_welcome "$D/Server/pzweb.ini" || return 1; fi
   [[ -f "$D/Server/pzweb.ini" ]] && sed -i 's/^VoiceEnable=.*/VoiceEnable=false/; s/^UPnP=true/UPnP=false/; s/^SteamVAC=true/SteamVAC=false/' "$D/Server/pzweb.ini"
   [[ -f "$D/Server/pzweb_SandboxVars.lua" ]] && sed -i 's/EnableVehicles = true/EnableVehicles = false/' "$D/Server/pzweb_SandboxVars.lua"
   if [[ -f "$D/Server/pzweb_SandboxVars.lua" ]]; then apply_zombie_config "$D/Server/pzweb_SandboxVars.lua" || return 1; fi
