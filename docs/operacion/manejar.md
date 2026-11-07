@@ -56,6 +56,16 @@ Opciones guardadas de un jugador: el port nunca guarda `options.ini` (el juego i
 
 El idioma del servidor solo afecta lo que el servidor traduce por su cuenta; los textos de la interfaz de cada jugador salen de su cliente. El mensaje de bienvenida del chat (`ServerWelcomeMessage` de `pzweb.ini`) es texto de configuración, no una traducción: con `ES` y el mensaje por defecto del juego, `start`/`apply-config` lo cambian por una versión propia en español; `PZWEB_WELCOME_MESSAGE='…'` (una línea, `<LINE>` separa renglones) fija otro, y uno ya personalizado no se toca.
 
+### Calidad gráfica (mínima por defecto)
+
+Cada navegador baja las opciones gráficas antes de arrancar el juego (`port/runtime/graphics.mjs`), con el mismo mecanismo que el idioma: reescribe 16 líneas del `/Zomboid/options.ini` del pack (niebla Legacy, agua y charcos bajos, sin charcos, sin cielo, sin reflejos, iluminación a 10 fps, interfaz a 30 fps, sin sombras de cadáveres, sin sangre, objetos del suelo en 2D, ropa simplificada, sin lluvia ni nieve dibujadas, sin efectos de puertas ni contorno de contenedores). La lista con los valores del juego está en `MINIMUM_OPTIONS`.
+
+| Quién | Cómo se cambia | Por defecto |
+|---|---|---|
+| Un jugador | `play.html?calidad=juego` deja los valores del juego; `?calidad=minima` vuelve a la mínima; `?calidad=auto` borra la elección. Queda guardado en ese navegador (`localStorage` `pzweb.quality`) | `minima` |
+
+Medido (instancia de prueba, Chrome con GPU, mismo lugar del mapa): quieto 50,1 → 60,0 fps (tope de 60), caminando 41,3 → 45,0. No arregla la lentitud de fondo; solo saca lo que el juego dibuja de más.
+
 ### Población de zombis (pocos) y cómo cambiarla
 
 `scripts/mp-server.sh` reescribe la población de `pzweb_SandboxVars.lua` en cada `start` (y con `apply-config`, que solo escribe los archivos sin arrancar). Por defecto deja **pocos zombis y sin reaparición**:

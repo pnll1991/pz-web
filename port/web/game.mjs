@@ -14,6 +14,7 @@ import { MediaCache, mediaCacheVersion } from '/runtime/mediacache.mjs';
 import { LoadingScreen, formatMB } from '/runtime/loading.mjs';
 import { ShaderCache, translatorVersion } from '/runtime/glslcache.mjs';
 import { resolveLanguage, applyLanguage } from '/runtime/language.mjs';
+import { resolveQuality, applyQuality } from '/runtime/graphics.mjs';
 import { installPerfHud, perfName } from '/runtime/perfhud.mjs';
 
 const status = document.getElementById('game-status');
@@ -278,6 +279,14 @@ try {
     const language = resolveLanguage({ search: location.search, storage, serverDefault: listed?.language ?? null });
     const result = globalThis.pzLanguage = applyLanguage(vfs, language);
     (result.applied ? console.log : console.warn)(`language ${JSON.stringify(result)}`);
+  }
+  // Calidad gráfica (port/runtime/graphics.mjs): mínima por defecto para ganar fps; ?calidad=juego deja los valores del juego,
+  // ?calidad=auto vuelve al defecto. Mismo mecanismo que el idioma: líneas del options.ini del pack, antes de boot.wasm.
+  {
+    let storage = null;
+    try { storage = globalThis.localStorage ?? null; } catch {}
+    const result = globalThis.pzQuality = applyQuality(vfs, resolveQuality({ search: location.search, storage }));
+    console.log(`quality ${JSON.stringify(result)}`);
   }
   // Round 43: KahluaUtil.setupLibraryText opens new FileInputStream(new File("stdlib.lua")
   // .getAbsoluteFile()), which resolves to the VFS root "/stdlib.lua". Those bytes are the pinned
