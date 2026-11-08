@@ -46,6 +46,14 @@ const lazyAllowed = () => typeof location === 'undefined' || new URLSearchParams
 const memoAllowed = () => typeof location === 'undefined' || new URLSearchParams(location.search).get('nocache') !== '1';
 const urlFlag = name => typeof location !== 'undefined' && new URLSearchParams(location.search).get(name) === '1';
 const fullDigestWanted = () => urlFlag('packverify') || urlFlag('nocache');
+// Ronda 9X (texturas 1x, ?tile1x=1): la copia fijada hardcodea Core.tileScale=2 (getOptionTexture2x devuelve
+// true siempre), así que GameWindow#enter monta siempre Tiles2x.pack (321 MB). TextureScaleCompatibility pone
+// tileScale=1 cuando game.mjs publica pzRuntime.tile1x y entonces el juego monta los packs 1x (49 MB). Acá se
+// saca del índice el conjunto del otro escala: no se baja, no se verifica ni ocupa el presupuesto de la VFS;
+// el presupuesto se chequea despues de filtrar, porque el índice trae los dos conjuntos.
+const TILE_PACKS_1X = new Set(['/media/texturepacks/Tiles1x.pack', '/media/texturepacks/Tiles1x.floor.pack',
+  '/media/texturepacks/Overlays1x.pack', '/media/texturepacks/JumboTrees1x.pack']);
+const TILE_PACKS_2X = new Set(['/media/texturepacks/Tiles2x.pack']);
 const readMemo = () => { try { return localStorage.getItem(VERIFIED_KEY); } catch { return null; } };
 const writeMemo = value => { try { localStorage.setItem(VERIFIED_KEY, value); } catch { /* sin localStorage: se verifica siempre */ } };
 
@@ -72,6 +80,19 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', options 
     if (normalizePath(file.path) !== file.path || !mountablePath(file.path))
       throw new Error('Invalid mounted resource path');
   }
+  const want1x = urlFlag('tile1x');
+  // El blob del otro escala queda fuera de index.packs pero se conserva en la cache local: cambiar el flag
+  // de un arranque a otro no debe obligar a bajarlo otra vez (removeStalePacks solo borra lo que no está acá).
+  const tileBlobNames = new Set(index.files.filter(f => TILE_PACKS_1X.has(f.path) || TILE_PACKS_2X.has(f.path)).map(f => f.pack));
+  if (want1x || index.files.some(f => TILE_PACKS_1X.has(f.path) || TILE_PACKS_2X.has(f.path))) {
+    const offSet = want1x ? TILE_PACKS_2X : TILE_PACKS_1X;
+    index.files = index.files.filter(f => !offSet.has(f.path));
+    const used = new Set(index.files.map(f => f.pack));
+    index.packs = index.packs.filter(pack => used.has(pack.name));
+    if (want1x && !index.files.some(f => TILE_PACKS_1X.has(f.path)))
+      throw new Error('?tile1x=1 necesita los packs 1x en el índice; reempaquetar con tools/pack/startup_extra.py (ronda 9X)');
+  }
+  stats.tileScale = want1x ? 1 : 2;
   if (index.packs.reduce((sum, pack) => sum + pack.bytes, 0) > vfs.maxBytes)
     throw new Error('Pack preload exceeds VFS memory budget');
   const base = new URL(indexUrl, location.href);
@@ -214,7 +235,7 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', options 
   if (!skipFileDigests && memo) writeMemo(indexHash);
   // Packs of older indexes (every repack changes their content-addressed names) would otherwise pile up forever:
   // a 321 MB stale copy per repack. Only entries absent from this verified index are removed, in the background.
-  if (cleanup) stats.cleanup = removeStalePacks(cache, opfs, new Set(index.packs.map(pack => pack.name)), stats)
+  if (cleanup) stats.cleanup = removeStalePacks(cache, opfs, new Set([...index.packs.map(pack => pack.name), ...tileBlobNames]), stats)
     .catch(error => { stats.lastCleanupError = String(error); });
   stats.opfsDone = Promise.all(opfsWrites);
   stats.ms = performance.now() - stats.t0;

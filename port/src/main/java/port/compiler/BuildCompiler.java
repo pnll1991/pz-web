@@ -128,6 +128,8 @@ public final class BuildCompiler {
                 tool.getTransformers().add(SpinWaitCompatibility.class.getName());
                 // Ronda 81 (frente 2): caché de páginas de texturas decodificadas (runtime/texcache.mjs).
                 tool.getTransformers().add(PackImageCacheCompatibility.class.getName());
+                // Ronda 9X: tiles 1x opt-in (?tile1x=1) para achicar la carga inicial (port.runtime.TextureScale).
+                tool.getTransformers().add(TextureScaleCompatibility.class.getName());
             }
             try {
                 verifyCompilerPatch();

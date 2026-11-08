@@ -47,6 +47,11 @@ LUA_REQUIRED = ('lua/client/OptionScreens/MainScreen.lua',)
 # (107 MB more, including JumboTreesBigs2x at 82 MB) stay unmounted for now to keep the tab inside
 # the memory budget, and the game reports them honestly.
 TILE_PACKS = ('Tiles2x.pack', 'Clock2x.pack')
+# Round 9X (?tile1x=1): when TextureScaleCompatibility puts Core.tileScale=1, GameWindow.enter() mounts
+# these four instead of Tiles2x (Clock2x stays in both branches; animated_clock_01_* lives only there).
+# They ship in the same index; packs.mjs drops whichever set is not active, so the download and the VFS
+# budget only ever carry the mounted scale (49 MB of 1x vs the 321 MB Tiles2x).
+TILE_PACKS_1X = ('Tiles1x.pack', 'Tiles1x.floor.pack', 'Overlays1x.pack', 'JumboTrees1x.pack')
 # Two "failed to read image /media/ui/cursor_blank.png|cursor_white.png" in the same log: both
 # files exist in the pinned copy (110 B and 463 B). Only these two, never all 28 MB of media/ui.
 # Paths here are relative to media/, exactly like LUA_FILES.
@@ -172,6 +177,10 @@ def main():
         path = media / 'texturepacks' / name
         if not path.is_file():
             raise SystemExit(f'Missing required texturepack: media/texturepacks/{name}')
+    for name in TILE_PACKS_1X:
+        path = media / 'texturepacks' / name
+        if not path.is_file():
+            raise SystemExit(f'Missing required texturepack: media/texturepacks/{name}')
     for relative in UI_FILES:
         if not (media / relative).is_file():
             raise SystemExit(f'Missing required ui file: media/{relative}')
@@ -223,6 +232,8 @@ def main():
         elif name.startswith('media/texturepacks/') and name.split('/')[-1] in TEXTUREPACKS:
             keep.append(name)
         elif name.startswith('media/texturepacks/') and name.split('/')[-1] in TILE_PACKS:
+            keep.append(name)
+        elif name.startswith('media/texturepacks/') and name.split('/')[-1] in TILE_PACKS_1X:
             keep.append(name)
         elif name.startswith('media/ui/') and name[len('media/'):] in UI_FILES:
             keep.append(name)

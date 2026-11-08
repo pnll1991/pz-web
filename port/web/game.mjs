@@ -315,7 +315,10 @@ try {
     vfs.writeFile('/Zomboid/debug-options.ini', new TextEncoder().encode(
       '# pz-web: no PZPathFind64 native in the browser; use the game\'s Java pathfinder.\nPathfind.UseNativeCode=false\n'));
   }
-  globalThis.pzRuntime = { vfs, normalizePath, gl:new GLBridge(canvas), input:new CanvasInput(canvas), net:new NetBridge() };
+  // Ronda 9X: ?tile1x=1 activa las texturas 1x (TextureScaleCompatibility lee este flag al entrar en GameWindow#enter
+  // y el montador de packs baja los tiles del otro escala). Sin el flag el comportamiento es idéntico al de antes.
+  globalThis.pzRuntime = { vfs, normalizePath, tile1x:new URLSearchParams(location.search).get('tile1x') === '1',
+    gl:new GLBridge(canvas), input:new CanvasInput(canvas), net:new NetBridge() };
   // Round 83: direct mode (?autojoin=1, entered through /play.html): per-browser account, the menu is driven by a Lua script
   // mounted into media/lua/client (port/web/play.lua), and the loading screen's click is sent from here.
   if (new URLSearchParams(location.search).get('autojoin') === '1') {
