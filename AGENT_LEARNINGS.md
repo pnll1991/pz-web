@@ -1103,3 +1103,15 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Error: `apply_map` solo enlazaba `$D/mods` si no existía; en el mundo en vivo el juego ya la había creado vacía en el primer arranque y el servidor arrancó sin Maplewood (no apareció `loading Maplewood`).
 - Patrón a evitar: dar por hecho que una ruta que el juego maneja no existe todavía. Mejor enfoque: después de arrancar, buscar en el log la línea que prueba que el cambio entró (`loading <mod>`), no solo `SERVER STARTED`.
 - Error (mismo día): calculé el punto de aparición sumando el desplazamiento de los nombres de archivo de B42 (31_32) a las coordenadas del mod, sin ver que `SpawnPoints` usa celdas de 300 casillas; el jugador apareció fuera del pueblo. Mejor enfoque: usar los puntos que trae el mod y confirmar la `position:` que imprime `CreatePlayerPacket` en el log del servidor.
+
+## 2026-11-08 — R92: web de pruebas lanzada desde un worktree nuevo
+- Error: levanté la web 8199 desde mi worktree, que no tenía `.toolchain/` ni `port/target/mp-bridge/`. El cliente llegó al menú, pero cada conexión moría con `mp-bridge: … .toolchain/jdk/bin/java: No such file or directory` y después con `ClassNotFoundException: Bridge`. Perdí la medición de `ingame` de dos cargas en frío (~25 min cada una).
+- Patrón a evitar: medir desde un worktree sin revisar que el dev server pueda lanzar el puente.
+- Mejor enfoque: en un worktree nuevo, enlazar `.toolchain` (`ln -s <repo>/.toolchain .toolchain`, ignorado, borrarlo antes de commitear), correr `bash scripts/mp-bridge.sh build` y, antes de gastar un slot de Chrome, revisar que `tail /tmp/pz86/web.log` no muestre `bridge exit`.
+- Error evitado gracias a una prueba: el mensaje por tramo del Worker (`{ filled: i }`) usaba la misma clave que el resumen final (`{ done, filled: n }`), así que el resumen se tomaba como un tramo más y `fill()` no terminaba nunca. En mensajes entre hilos, cada tipo lleva una clave que ningún otro usa (`chunk` / `done`).
+- Proceso: las lecturas síncronas de una corrida se anotan en el warm-list de 8199 (`/tmp/pz86/warm.json`), así que la corrida siguiente precarga esos tramos y deja de ser comparable. Guardar una copia antes de la primera corrida y restaurarla (reiniciando 8199) antes de cada una.
+
+## 2026-11-08 — estado de un servicio guardado en /tmp
+- Error (de diseño, ronda 84): la warm-list del dev server vivía en `/tmp/pzweb-warm.json`; `/tmp` es tmpfs y se borra en cada reinicio de la máquina. Tras el reinicio de hoy el primer jugador por el túnel hizo más de 1300 lecturas sueltas de `/media` en 11 min sin entrar.
+- Patrón a evitar: guardar en `/tmp` un estado que el servicio necesita para andar bien (listas aprendidas, claves de admin, datos de partida). `/tmp` sirve para logs, candados y temporales.
+- Mejor enfoque: estado persistente en `~/.local/share/pz-web/` (o `~/.config/pz-web/` si es configuración), con la variable de entorno respetada, creación de la carpeta y una migración única desde la ruta vieja de `/tmp`. Al revisar un servicio, preguntarse qué pasa con cada archivo de `/tmp` después de reiniciar la máquina.
