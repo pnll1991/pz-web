@@ -724,3 +724,7 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 ## 2026-11-08: más memoria para el servidor PZ (rama `perf/servidor-mas-memoria`)
 - Hecho: heap de 6 GB por defecto en `scripts/mp-server.sh`, configurable. Estimación sin medir: 8–12 jugadores cómodos con 2 GB, 20–32 (el tope de `MaxPlayers`) con 6 GB si la subida de internet aguanta la primera descarga (~700 MB por jugador nuevo).
 - Faltante: prueba con varios jugadores reales a la vez.
+
+## 2026-11-08: estudio de decodificar texturas en paralelo (sin build)
+- Hecho: `docs/analisis-texturas-en-paralelo.md` (opciones A1/A1'/A2/B/C con ganancia estimada) y brief `docs/briefs/r92-texturas-en-paralelo.md`. Recomendación: medir primero sin build cuántas páginas pide el juego a la vez (`maxInflight`) y la CPU por página (`decodeMs`) en `texcache.mjs`; después el camino stb en Workers (A2); el mismo `boot.wasm` en Workers (B) solo si el juego pide varias páginas a la vez.
+- Evidencia: solo lectura de código propio y del perfil de CPU del 8/11; no se compiló ni se abrió Chrome.
