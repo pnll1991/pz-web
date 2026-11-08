@@ -724,3 +724,8 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 ## 2026-11-08: más memoria para el servidor PZ (rama `perf/servidor-mas-memoria`)
 - Hecho: heap de 6 GB por defecto en `scripts/mp-server.sh`, configurable. Estimación sin medir: 8–12 jugadores cómodos con 2 GB, 20–32 (el tope de `MaxPlayers`) con 6 GB si la subida de internet aguanta la primera descarga (~700 MB por jugador nuevo).
 - Faltante: prueba con varios jugadores reales a la vez.
+
+## 2026-11-08: warm-list persistente (rama `fix/warm-list-persistente`, ronda 92)
+- Hecho: `scripts/dev_server_8098.sh` exporta `PZWEB_WARM_FILE=~/.local/share/pz-web/warm.json` (respeta uno ya exportado; migra una vez `/tmp/pzweb-warm.json`); `dev-server/warm-list.mjs` crea la carpeta al guardar y `flush()` cancela el guardado pendiente. Prueba Node nueva en `tests/node/prefetch.test.mjs`.
+- Evidencia: `npm test` 278/281 en el worktree (las 3 que fallan son `pzbullet.test.mjs`, que pide `port/target/web/vendor/pzbullet`, salida del build ausente en el worktree); `bash -n` de los scripts; lógica de la variable probada en subshells (migración, no pisa, variable propia, herencia al hijo) sin lanzar el servidor.
+- Pendiente en vivo: reiniciar 8098 (corta a los jugadores un momento; con el túnel abierto, con la clave) para que tome la ruta nueva. Sin eso, el server actual sigue escribiendo en `/tmp`.
