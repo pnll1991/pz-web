@@ -1102,3 +1102,4 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 ## 2026-11-08 — enlace de mods con una carpeta vacía
 - Error: `apply_map` solo enlazaba `$D/mods` si no existía; en el mundo en vivo el juego ya la había creado vacía en el primer arranque y el servidor arrancó sin Maplewood (no apareció `loading Maplewood`).
 - Patrón a evitar: dar por hecho que una ruta que el juego maneja no existe todavía. Mejor enfoque: después de arrancar, buscar en el log la línea que prueba que el cambio entró (`loading <mod>`), no solo `SERVER STARTED`.
+- Error (mismo día): calculé el punto de aparición sumando el desplazamiento de los nombres de archivo de B42 (31_32) a las coordenadas del mod, sin ver que `SpawnPoints` usa celdas de 300 casillas; el jugador apareció fuera del pueblo. Mejor enfoque: usar los puntos que trae el mod y confirmar la `position:` que imprime `CreatePlayerPacket` en el log del servidor.
