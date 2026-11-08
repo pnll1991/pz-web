@@ -1086,3 +1086,11 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Error: lancé `play-repl.mjs` con `--out` en `/tmp` (tmpfs con 3,3 GB libres por cachés ajenas); Chrome falló IndexedDB con `UnknownError: Internal error.` y la carga quedó trabada 9 min sin pasar de `mediacache restore`. Mejor enfoque: `df -h /tmp` antes de lanzar Chrome; si hay poco lugar, perfil en disco (`--out build/<tema>`, ignorado).
 - Error: después de un reinicio de la máquina, el servidor PZ en vivo arrancó con mundo nuevo y `DoLuaChecksum=true` (ya anotado en R91, ahora en el servidor en vivo): el cliente mostraba "File doesn't exist on the server: media/lua/client/zzz_pzweb_play.lua". Mejor enfoque: tras un reinicio, arrancar, parar y volver a arrancar, o arreglar `apply_config` para que agregue la línea si falta.
 - Hecho: apuntar con un arma de fuego llama `Bullet.updateBallisticsAimReticleQuaternion` (sin implementar, BulletWorld no tiene cuerpos) → excepción → `IngameState` sale → pantalla negra y 0 fps. Son 20 nativas de balística.
+
+## 2026-11-08 — carga lenta y caché de texturas
+- Error: di por buena la caché de texturas (activa por defecto) sin mirar sus contadores; el perfil en caliente mostró 44 s en el camino sin caché. Causa: `stats.dropped` = 253 por el tope de 256 MB.
+- Patrón a evitar: concluir "la caché ya cubre esto" por la descripción del código. Mejor enfoque: leer la línea `caches` de `/tmp/pz86/load-bytes/<label>-run<N>.log` (hit/miss/dropped) antes de proponer cambios.
+- Error: lancé una corrida de 10 min sin avisar y el usuario preguntó "¿en qué estás?". Mejor enfoque: decir qué corre y cuánto tarda antes de esperar.
+## 2026-11-08 — pkill y procesos del usuario
+- Error: usé `pkill -f 'node tools/diag/loading-hold'` y `pkill -f 'chrome.*8199'` dentro de un `bash -c` que contenía esos mismos textos: maté mi propia shell (exit 144) y el patrón de Chrome podía haber cerrado el navegador del usuario, que jugaba en 8199.
+- Patrón a evitar: `pkill -f` con patrones que aparecen en la línea de comando del propio comando o que cubren procesos del usuario. Mejor enfoque: guardar el PID al lanzar (`echo $! > archivo`) y matar solo ese PID.

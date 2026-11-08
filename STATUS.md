@@ -699,3 +699,19 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 - Hecho: `port/runtime/graphics.mjs` + `port/web/game.mjs`: 16 opciones gráficas en mínimo antes de `boot.wasm`; `?calidad=juego|minima|auto` (localStorage `pzweb.quality`).
 - Evidencia (juego real; web de prueba 8199 + PZ de prueba 16271, un cliente, `play-repl.mjs`): el juego toma los 16 valores (Lua: fog=2 water=2 puddles=2 lightFPS=10 skybox=2 perfPuddles=3 refl=false corpseShadows=false blood=0 ground3d=false uiFPS=30 precip=3 clothes=3); fps quieto 50,1 (juego) → 60,0 (mínima, tope), caminando 41,3 → 45,0. `npm test` 280/280.
 - Encontrado de paso: apuntar con un arma de fuego llama `Bullet.updateBallisticsAimReticleQuaternion` (de 20 nativas de balística sin implementar) → excepción → sale de `IngameState`, pantalla negra. Pendiente: ronda de balística.
+
+## 2026-11-08: perfil de la carga y caché de texturas (rama `perf/texcache-sin-descartes`)
+- Medido (juego real, instancia de prueba 8199/16291, loopback, 1 corrida por caso): 1.ª carga 288–301 s hasta la partida, 2.ª 208 s con la caché de texturas llena. De los ~190 s entre elegir personaje y entrar, ~110 s son CPU de wasm en decodificar PNG y trabajar píxeles (`ImageData.getPixelClamped/setPixel/performPreMultipliedAlpha`, mipmaps).
+- Hallazgo: la caché de texturas descartaba el 45 % de las páginas en la 1.ª carga (253 de 561) por el tope de 256 MB de escrituras pendientes. Con 2 GB: 0 descartes y 2.ª carga 170 s.
+- Hecho: tope por defecto 1 GB + `?texpending=MB` (`port/runtime/texcache.mjs`, sin build). El valor de 1 GB no se midió; solo 256 MB y 2 GB.
+- Faltantes: texturas de profundidad (`TilesetDepthTexture.load`, ~26 s) y `NativeImage.read` (~15 s) no pasan por la caché; `MetaGridLoader.loadCell` (~21 s) es lógica del juego. La caché ocupa ~3 GB en IndexedDB con todas las páginas guardadas. Decodificar en paralelo con workers en la 1.ª carga sigue sin probarse.
+- `tools/diag/load-bytes.mjs` con `PZ_CPUPROF=archivo` guarda un perfil de CPU (cambio hecho en el worktree `pzweb-tile1x`, sin subir).
+## 2026-11-08: pantalla de carga hasta el mapa (rama `feat/carga-hasta-mapa`, sin build)
+- Hecho: en el modo directo la carga tapa todo hasta `ingame` (`port/web/game.mjs`, `LoadingScreen.entering` en `port/runtime/loading.mjs`); `?intro=1` la quita con el primer cuadro como antes. Sonda: `tools/diag/loading-hold.mjs`.
+- Evidencia (juego real, web 8199 + PZ 16291, Chrome aparte, 1 corrida): overlay presente en `tos-accepted`, `menu`, `profession`, `character`; desaparece en `ingame` (333,6 s en frío); `npm test` 280/280. Capturas locales, no se suben.
+- Faltantes: la barra es indeterminada durante los ~290 s de carga del mundo (no hay progreso real); no se probó en el túnel ni en móvil.
+
+## 2026-11-08: diagnóstico `slowread` (rama `perf/diag-lecturas-lentas`, sin build)
+- Hecho: lecturas síncronas de `/media` de 30 ms o más quedan en `globalThis.pzSlowReads` y en la consola (`port/runtime/vfs.mjs`).
+- Evidencia: `npm test` 280/280. Una caminata de 90 s en Chrome de prueba (web 8199, PZ 16291) no reprodujo el 0 fps: 1 parón de 335 ms, sin pedidos de media; no se confirmó que el personaje se moviera.
+- Faltante: que el dueño capture las líneas `slowread` en una sesión real al caminar a zonas nuevas.
