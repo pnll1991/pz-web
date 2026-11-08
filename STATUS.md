@@ -720,3 +720,7 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 - Hecho: el dev server sirve `PZWEB_MODS_DIR` (`/mods-manifest.json`, `/modfiles/…`) y el cliente lo monta en `/Zomboid/mods/`; `mp-server.sh` y `dev_server_8098.sh` leen `~/.config/pz-web/mapa`.
 - Evidencia (servidor de prueba 16293 + web 8199, 1 cliente): `IsoMetaGrid` sin Muldraugh (1,5 s contra 2,7 s), el cliente carga el mod (`loading Maplewood`) y entra a la partida a los 279,6 s; captura del personaje en la zona de Maplewood. `npm test` 280/280.
 - Faltantes: no se probó caminar fuera de las 4 celdas ni varios jugadores a la vez; el punto de aparición (31,32,160,74) sale de las coordenadas viejas del mod más el desplazamiento de B42 y cayó en un bosque.
+
+## 2026-11-08: más memoria para el servidor PZ (rama `perf/servidor-mas-memoria`)
+- Hecho: heap de 6 GB por defecto en `scripts/mp-server.sh`, configurable. Estimación sin medir: 8–12 jugadores cómodos con 2 GB, 20–32 (el tope de `MaxPlayers`) con 6 GB si la subida de internet aguanta la primera descarga (~700 MB por jugador nuevo).
+- Faltante: prueba con varios jugadores reales a la vez.
