@@ -724,3 +724,24 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 ## 2026-11-08: más memoria para el servidor PZ (rama `perf/servidor-mas-memoria`)
 - Hecho: heap de 6 GB por defecto en `scripts/mp-server.sh`, configurable. Estimación sin medir: 8–12 jugadores cómodos con 2 GB, 20–32 (el tope de `MaxPlayers`) con 6 GB si la subida de internet aguanta la primera descarga (~700 MB por jugador nuevo).
 - Faltante: prueba con varios jugadores reales a la vez.
+
+## R92 (2026-11-08): tramos de Tiles2x en memoria antes de que el juego los lea (rama `perf/tiles2x-antes-del-mundo`, sin build)
+- Hallazgo: el juego lee los 369 tramos de Tiles2x **entre `script-loaded` y el menú**, no en la carga del mundo. En cuanto sus lecturas síncronas alcanzan al relleno, este se detiene: sus respuestas esperan a que se libere el hilo principal. Medido sin el cambio: el relleno trajo 28 tramos y el juego leyó 341 con XHR síncrono, de 65 s a 254 s.
+- Hecho: los tramos van a un SharedArrayBuffer y los baja un Worker (`port/runtime/lazyfill-worker.mjs`, `fillShared` en `lazypack.mjs`), empezando por el que sigue al último que leyó el juego. Si el juego lee un tramo que el Worker está bajando, lo espera en vez de pedirlo de nuevo (hasta 20 s; después lo pide él). Concurrencia: 4 en http/1.1 y 8 en h2/h3. `?lazyconc=N` la fija, `?lazyworker=0` vuelve a lo anterior y, si el Worker falla, el relleno sigue en el hilo principal. Nuevas líneas `lazy-at <estado>` en la consola, más `waited`/`waitMs`/`workerFetchMsMin` en `lazyfill`.
+- Evidencia: Chrome con el juego, web 8199 y PZ de prueba 16293 (Maplewood), carga en frío con `load-bytes.mjs --throttle 40 --latency 300`, una corrida por caso y el warm-list restaurado antes de cada una.
+
+  | | `?lazyworker=0` (antes) | Worker (después) |
+  |---|---|---|
+  | `sync` / `syncBytes` | 341 / 292,6 MB (188,8 s congelado) | **0 / 0** (2 corridas) |
+  | lecturas que esperaron al Worker | — | 172–177, 38–39 s en total |
+  | menú | 357,6 s (1.ª corrida base: 367,0 s) | 222,4 s / 222,8 s |
+  | `ingame` | 537,0 s | **405,8 s** |
+
+  `workerFetchMsMin` 325–328 ms, así que la latencia simulada sí se aplica a los pedidos del Worker. `npm test`: 286/289; fallan solo las 3 de pzbullet (no hay build en el worktree), 9 pruebas nuevas en `tests/node/lazypack-shared.test.mjs`.
+- No verificado:
+  - Si el límite de 40 Mbps de CDP se reparte entre el Worker y la página o si el Worker tiene un cupo propio. El `load-bytes.mjs` de la página no ve los pedidos del Worker: el total de "después" (382,7 MB) no incluye los 319 MB de tramos.
+  - Por el túnel real (h2/h3, concurrencia 8): sin medir.
+  - La 2.ª carga (tramos restaurados de la Cache API al buffer compartido): solo cubierta en Node.
+  - Firefox y Safari: sin probar. Sin `crossOriginIsolated` o sin Worker se usa el camino anterior.
+- Siguiente cuello visto: los otros texture packs de `/media` (`JumboTreesBigs2x.pack` ~50 MB, `Overlays2x`, `JumboTrees2x`, `Tiles2x.floor`) se leen de a 1 MB por XHR síncrono, a ~0,54 s cada uno, entre 111 s y 169 s. Candidatos al mismo tratamiento perezoso.
+- Para publicar: alcanza con `sync_web` / `publicar_web.sh` (solo `port/web/game.mjs` y `port/runtime/*.mjs`, archivo nuevo incluido). No hay que reiniciar nada.
