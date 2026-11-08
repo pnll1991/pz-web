@@ -79,7 +79,10 @@ apply_map() { # $1 = pzweb.ini
   done
   if [[ -n "${PZWEB_MODS_DIR:-}" ]]; then
     [[ -d "$PZWEB_MODS_DIR" ]] || { echo "PZWEB_MODS_DIR=$PZWEB_MODS_DIR no existe" >&2; return 1; }
-    if [[ -L "$D/mods" || ! -e "$D/mods" ]]; then ln -sfn "$PZWEB_MODS_DIR" "$D/mods"; fi
+    # el juego crea $D/mods vacía en el primer arranque: una carpeta vacía se reemplaza por el enlace; una con archivos no se toca
+    if [[ -d "$D/mods" && ! -L "$D/mods" ]] && [[ -z "$(ls -A "$D/mods")" ]]; then rmdir "$D/mods"; fi
+    if [[ -L "$D/mods" || ! -e "$D/mods" ]]; then ln -sfn "$PZWEB_MODS_DIR" "$D/mods"
+    else echo "aviso: $D/mods es una carpeta con archivos; no se enlaza $PZWEB_MODS_DIR" >&2; fi
   fi
   return 0
 }
