@@ -5,7 +5,7 @@
 - Leer `docs/CODEX_TASK.md`, `docs/ROADMAP-source.txt` y `STATUS.md` antes de trabajar.
 - Nunca versionar archivos del juego, `.jar`, `.class`, `.so`, `media/`, `.bank`, mapas, código decompilado/desensamblado ni código derivado del juego.
 - Leer la copia fija desde `PZ_HOME`; no copiarla al repositorio. Inventarios: solo nombres, tamaños, firmas y metadatos.
-- Uso personal. El único remoto es el repositorio privado `pnll1991/pz-web`: no hacerlo público ni crear otros remotos. Servidor exclusivamente en `127.0.0.1`.
+- Uso personal. El único remoto es `pnll1991/pz-web`, público desde el 8/11/2026 por decisión del dueño: no crear otros remotos. Como es público, nunca commitear URLs del túnel, claves, contraseñas ni datos de jugadores. Servidor exclusivamente en `127.0.0.1`.
 - Las nativas ausentes lanzan una excepción con su nombre JNI; nunca simular éxito.
 - No cambiar reglas del juego: solo plataforma, archivos, gráficos, input, audio y nativas.
 - No usar sudo ni modificar herramientas globales. Instalar en `.toolchain/`; caches y temporales en rutas ignoradas.
