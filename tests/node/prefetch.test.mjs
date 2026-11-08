@@ -1,7 +1,7 @@
 // Round 84: warm list (server side), parallel prefetch (client side) and the VFS hook that consumes prefetched ranges.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createWarmList } from '../../dev-server/warm-list.mjs';
@@ -19,6 +19,20 @@ test('warm list dedupes, persists and reloads', async () => {
     assert.deepEqual(JSON.parse(await readFile(file, 'utf8')).length, 2);
     assert.equal(createWarmList({ file }).size(), 2);
     assert.equal(createWarmList({ file: path.join(dir, 'x.json'), max: 1 }).record('/a', ''), true);
+  } finally { await rm(dir, { recursive: true }); }
+});
+
+test('warm list creates a missing folder and replaces the file atomically', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pz-warm-')), file = path.join(dir, 'nueva', 'sub', 'warm.json');
+  try {
+    const a = createWarmList({ file });
+    a.record('/media/a.bin?r=0-4', 'bytes=0-3');
+    a.flush();
+    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), [['/media/a.bin?r=0-4', 'bytes=0-3']]);
+    a.record('/media/b.bin?r=0-4', 'bytes=0-3');
+    a.flush();
+    assert.deepEqual(await readdir(path.dirname(file)), ['warm.json'], 'no temporary file left behind');
+    assert.equal(createWarmList({ file }).size(), 2);
   } finally { await rm(dir, { recursive: true }); }
 });
 

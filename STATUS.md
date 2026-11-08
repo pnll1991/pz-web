@@ -728,3 +728,8 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 ## 2026-11-08: estudio de decodificar texturas en paralelo (sin build)
 - Hecho: `docs/analisis-texturas-en-paralelo.md` (opciones A1/A1'/A2/B/C con ganancia estimada) y brief `docs/briefs/r92-texturas-en-paralelo.md`. Recomendación: medir primero sin build cuántas páginas pide el juego a la vez (`maxInflight`) y la CPU por página (`decodeMs`) en `texcache.mjs`; después el camino stb en Workers (A2); el mismo `boot.wasm` en Workers (B) solo si el juego pide varias páginas a la vez.
 - Evidencia: solo lectura de código propio y del perfil de CPU del 8/11; no se compiló ni se abrió Chrome.
+
+## 2026-11-08: warm-list persistente (rama `fix/warm-list-persistente`, ronda 92)
+- Hecho: `scripts/dev_server_8098.sh` exporta `PZWEB_WARM_FILE=~/.local/share/pz-web/warm.json` (respeta uno ya exportado; migra una vez `/tmp/pzweb-warm.json`); `dev-server/warm-list.mjs` crea la carpeta al guardar y `flush()` cancela el guardado pendiente. Prueba Node nueva en `tests/node/prefetch.test.mjs`.
+- Evidencia: `npm test` 278/281 en el worktree (las 3 que fallan son `pzbullet.test.mjs`, que pide `port/target/web/vendor/pzbullet`, salida del build ausente en el worktree); `bash -n` de los scripts; lógica de la variable probada en subshells (migración, no pisa, variable propia, herencia al hijo) sin lanzar el servidor.
+- Pendiente en vivo: reiniciar 8098 (corta a los jugadores un momento; con el túnel abierto, con la clave) para que tome la ruta nueva. Sin eso, el server actual sigue escribiendo en `/tmp`.
