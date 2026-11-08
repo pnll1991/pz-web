@@ -1098,3 +1098,8 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Error: lancé web 8199 y los servidores PZ de prueba con `setsid … & disown` desde la shell del agente; al interrumpirse un comando de espera (`for … sleep`), los tres recibieron SIGTERM a la vez (`bridge exit 143`, "Shutdown handling" en ambos logs) y el jugador vio negro y volvió a "Conectarse al servidor".
 - Patrón a evitar: suponer que `setsid` aísla un servicio de la sesión del agente, y dejar servicios que usa el dueño colgando de esa sesión.
 - Mejor enfoque: al ver negro + pantalla de conexión, mirar primero si el servidor sigue vivo (`ss -lun`, final del log) antes de buscar fallos del juego; avisar al dueño de que los servicios de prueba dependen de la sesión del agente.
+
+## 2026-11-08 — enlace de mods con una carpeta vacía
+- Error: `apply_map` solo enlazaba `$D/mods` si no existía; en el mundo en vivo el juego ya la había creado vacía en el primer arranque y el servidor arrancó sin Maplewood (no apareció `loading Maplewood`).
+- Patrón a evitar: dar por hecho que una ruta que el juego maneja no existe todavía. Mejor enfoque: después de arrancar, buscar en el log la línea que prueba que el cambio entró (`loading <mod>`), no solo `SERVER STARTED`.
+- Error (mismo día): calculé el punto de aparición sumando el desplazamiento de los nombres de archivo de B42 (31_32) a las coordenadas del mod, sin ver que `SpawnPoints` usa celdas de 300 casillas; el jugador apareció fuera del pueblo. Mejor enfoque: usar los puntos que trae el mod y confirmar la `position:` que imprime `CreatePlayerPacket` en el log del servidor.
