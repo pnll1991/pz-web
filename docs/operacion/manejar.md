@@ -36,6 +36,8 @@ Variables: `PORT`, `PZ_HOME`, `PZ_PACKS` (por defecto `build/real-browser/packs`
 | Admin | usuario `admin`; contraseña en `~/.config/pz-web/admin-pass` (600, persiste a reinicios; si no existe, el viejo `/tmp/pz82/admin.pw`). `bash scripts/mp-server.sh admin-pass-file` dice cuál usará `start`; nunca imprime la clave |
 | Rotar la clave admin | `bash scripts/mp-server.sh gen-admin-pass --force` escribe una nueva sin mostrarla. **No cambia nada hasta el próximo `start`**: el servidor en marcha sigue con la anterior. Se reaplica sobre el mundo existente (verificado), así que basta con parar y arrancar; el reinicio corta la partida y va agrupado con otros (OK del dueño) |
 
+Memoria: heap de 6 GB por defecto (`PZWEB_SERVER_XMX`, `PZWEB_SERVER_XMS`=2g; formato de Java, ej. `8g`); con 2 GB ya usaba 2,8 GB de RSS sin jugadores. Cambiarla necesita reiniciar el servidor.
+
 Arranca sin Steam, sin UPnP, sin voz y **sin vehículos** (`Bullet.addVehicle` todavía no existe en el navegador). La configuración del mundo se aplica en `scripts/mp-server.sh` (`apply_config`). Para probar cambios de mundo sin tocar la partida en vivo, la instancia de prueba:
 
 ```bash
