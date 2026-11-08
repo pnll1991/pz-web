@@ -17,6 +17,18 @@ cd "$PZ_WEB_ROOT"
 PORT=8098
 LOG=${PZ_SERVER_LOG:-/tmp/pz80-server.log}
 export PORT PZ_HOME=${PZ_HOME:-/home/agente47/pz-pinned/25485521/projectzomboid} PZ_PACKS=${PZ_PACKS:-build/real-browser/packs}
+# Warm-list (rangos de /media que las sesiones necesitaron, ver dev-server/warm-list.mjs): en disco, no en /tmp, que se
+# borra al reiniciar la máquina y deja a los jugadores del túnel sin precarga. Respeta un PZWEB_WARM_FILE ya exportado.
+# Migración única (sólo con la ruta por defecto): si no existe y queda la vieja /tmp/pzweb-warm.json, se copia.
+warm_file_default() {
+  local file=${PZWEB_WARM_FILE:-} old=/tmp/pzweb-warm.json migrate=0
+  [[ -n $file ]] || { file=$HOME/.local/share/pz-web/warm.json; migrate=1; }
+  local dir; dir=$(dirname -- "$file")
+  [[ -d $dir ]] || mkdir -p -- "$dir"
+  if (( migrate )) && [[ ! -e $file && -s $old ]]; then cp -- "$old" "$file.tmp" && mv -- "$file.tmp" "$file"; fi
+  echo "$file"
+}
+PZWEB_WARM_FILE=$(warm_file_default); export PZWEB_WARM_FILE
 FORBIDDEN=" 446769 12149 12150 26807 "
 CHROME_LOCK=${PZ_CHROME_LOCK:-/tmp/pz80-locks/chrome.lock}
 # Cierra en este (sub)shell todo fd heredado > 2: si el llamador tiene un flock (chrome.lock, build.lock,
@@ -33,7 +45,7 @@ server_pid() { # pid de node que escucha en 127.0.0.1:$PORT y ejecuta dev-server
 }
 start() {
   if listening; then echo "server ya escucha en 127.0.0.1:$PORT (pid $(server_pid || echo '?'))"; return 0; fi
-  echo "[$(date +%T)] start PORT=$PORT PZ_HOME=$PZ_HOME PZ_PACKS=$PZ_PACKS" >> "$LOG"
+  echo "[$(date +%T)] start PORT=$PORT PZ_HOME=$PZ_HOME PZ_PACKS=$PZ_PACKS PZWEB_WARM_FILE=$PZWEB_WARM_FILE" >> "$LOG"
   ( close_inherited_fds; exec setsid nohup node dev-server/server.mjs >> "$LOG" 2>&1 < /dev/null ) &
   for _ in $(seq 1 60); do listening && { echo "server arriba en 127.0.0.1:$PORT (pid $(server_pid))"; return 0; }; sleep 0.5; done
   echo "el server no respondió en 30 s; ver $LOG" >&2; tail -5 "$LOG" >&2; return 1

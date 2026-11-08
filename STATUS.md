@@ -745,3 +745,8 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
   - Firefox y Safari: sin probar. Sin `crossOriginIsolated` o sin Worker se usa el camino anterior.
 - Siguiente cuello visto: los otros texture packs de `/media` (`JumboTreesBigs2x.pack` ~50 MB, `Overlays2x`, `JumboTrees2x`, `Tiles2x.floor`) se leen de a 1 MB por XHR síncrono, a ~0,54 s cada uno, entre 111 s y 169 s. Candidatos al mismo tratamiento perezoso.
 - Para publicar: alcanza con `sync_web` / `publicar_web.sh` (solo `port/web/game.mjs` y `port/runtime/*.mjs`, archivo nuevo incluido). No hay que reiniciar nada.
+
+## 2026-11-08: warm-list persistente (rama `fix/warm-list-persistente`, ronda 92)
+- Hecho: `scripts/dev_server_8098.sh` exporta `PZWEB_WARM_FILE=~/.local/share/pz-web/warm.json` (respeta uno ya exportado; migra una vez `/tmp/pzweb-warm.json`); `dev-server/warm-list.mjs` crea la carpeta al guardar y `flush()` cancela el guardado pendiente. Prueba Node nueva en `tests/node/prefetch.test.mjs`.
+- Evidencia: `npm test` 278/281 en el worktree (las 3 que fallan son `pzbullet.test.mjs`, que pide `port/target/web/vendor/pzbullet`, salida del build ausente en el worktree); `bash -n` de los scripts; lógica de la variable probada en subshells (migración, no pisa, variable propia, herencia al hijo) sin lanzar el servidor.
+- Pendiente en vivo: reiniciar 8098 (corta a los jugadores un momento; con el túnel abierto, con la clave) para que tome la ruta nueva. Sin eso, el server actual sigue escribiendo en `/tmp`.

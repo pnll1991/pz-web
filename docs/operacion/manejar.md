@@ -24,7 +24,9 @@ curl -s http://127.0.0.1:8098/perf           # fps, ping y memoria de cada jugad
 
 Lee cada archivo en cada pedido (`Cache-Control: no-cache`): un JS o un `boot.wasm` nuevo se ven al recargar la página **sin reiniciar**. Solo hace falta reiniciar si cambió `dev-server/*.mjs` o el manifiesto de media (se calcula al arrancar). Si el túnel está abierto, un `restart` directo levanta el server **sin la clave**: pasar por `public-tunnel.sh stop/start` (cambia la URL) o arrancar con `PZWEB_PUBLIC_KEY="$(cat /tmp/pzweb-public.key)" bash scripts/dev_server_8098.sh restart`.
 
-Variables: `PORT`, `PZ_HOME`, `PZ_PACKS` (por defecto `build/real-browser/packs`), `PZWEB_WEB_ROOT` (raíz web alternativa), `PZWEB_PUBLIC_KEY` (modo público), `PZWEB_ACCESS_LOG`, `PZWEB_WARM_FILE`, `PZWEB_MEDIA_CACHE_MB` (caché de tramos de `/media` comprimidos), `PZWEB_RANGES_CACHE_MB` (caché de lotes de `/media-ranges` comprimidos).
+Variables: `PORT`, `PZ_HOME`, `PZ_PACKS` (por defecto `build/real-browser/packs`), `PZWEB_WEB_ROOT` (raíz web alternativa), `PZWEB_PUBLIC_KEY` (modo público), `PZWEB_ACCESS_LOG`, `PZWEB_WARM_FILE` (ver abajo), `PZWEB_MEDIA_CACHE_MB` (caché de tramos de `/media` comprimidos), `PZWEB_RANGES_CACHE_MB` (caché de lotes de `/media-ranges` comprimidos).
+
+Warm-list (la lista de rangos de `/media` y `/packs` que las sesiones necesitaron hasta entrar al mundo; el cliente la precarga en lotes con `/media-ranges`): `dev_server_8098.sh` la guarda en `~/.local/share/pz-web/warm.json`, que sobrevive a los reinicios de la máquina. Un `PZWEB_WARM_FILE` ya exportado manda. Si el archivo no existe y queda el viejo `/tmp/pzweb-warm.json`, el script lo copia una vez. `public-tunnel.sh` reinicia el server con el mismo script, así que usa la misma ruta. Cuántas entradas tiene: `curl -s http://127.0.0.1:8098/warm-media.json | node -e 'console.log(JSON.parse(require("fs").readFileSync(0)).length)'`. Vacía = el primer jugador por el túnel hace cientos de lecturas sueltas (~0,7 s cada una) hasta que se reconstruye.
 
 ## Servidor PZ
 
@@ -151,6 +153,7 @@ Parámetros que ayudan a diagnosticar: `?tos=1` (muestra los términos), `?nocac
 | No conecta al servidor | Servidor PZ caído o sin `SERVER STARTED` | `bash scripts/mp-server.sh status`; `tail /tmp/pz82/server.log` |
 | "Script version mismatch" o expulsión por Lua | El Lua del cliente difiere del servidor | Ver `AGENT_LEARNINGS.md` (R82/R83) |
 | `/tmp` lleno, errores de cuota | Perfiles de Chrome de prueba acumulados | Borrar perfiles viejos en `/tmp`; `df -h /tmp` |
+| Tras reiniciar la máquina, la carga por el túnel tarda muchísimo (cientos de `/media` sueltos en el log de accesos) | Warm-list vacía: un dev server arrancado sin `dev_server_8098.sh` o anterior a la ronda 92 la guardaba en `/tmp` | Arrancar con `dev_server_8098.sh` (usa `~/.local/share/pz-web/warm.json`); la lista se reconstruye con la primera sesión que entra |
 | La partida desapareció tras reiniciar la máquina | Los datos del servidor viven en `/tmp` (tmpfs) | No hay recuperación; avisar antes de reiniciar la máquina |
 
 Para matar procesos, filtrar por pid concreto (`ps -eo pid,args | grep -v grep`): un `pkill -f` con un patrón que aparece en la propia línea de comandos mata la shell que lo corre (`AGENT_LEARNINGS.md`, R81/R83).
