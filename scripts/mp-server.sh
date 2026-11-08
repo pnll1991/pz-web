@@ -64,6 +64,10 @@ apply_zombie_config() { # $1 = pzweb_SandboxVars.lua; idempotente; valida todo a
 # existe todavía (mundo nuevo) se crea uno mínimo y el juego completa el resto al guardarlo. El idioma de la interfaz de cada
 # jugador lo decide su cliente (port/runtime/language.mjs), no este valor.
 PZWEB_LANGUAGE=${PZWEB_LANGUAGE:-ES}
+# Memoria del servidor PZ (heap de Java). Con 2 GB ya usaba 2,8 GB de RSS sin jugadores: era lo primero que se acababa con varios
+# jugadores. 6 GB por defecto (la máquina en vivo tiene 31 GB); PZWEB_SERVER_XMX/XMS lo cambian. Formato de -Xmx de Java (6g, 4096m).
+PZWEB_SERVER_XMS=${PZWEB_SERVER_XMS:-2g} PZWEB_SERVER_XMX=${PZWEB_SERVER_XMX:-6g}
+[[ $PZWEB_SERVER_XMS =~ ^[0-9]+[mMgG]$ && $PZWEB_SERVER_XMX =~ ^[0-9]+[mMgG]$ ]] || { echo "PZWEB_SERVER_XMS/XMX inválido (ej. 6g)" >&2; exit 2; }
 # Mapa de un mod (opcional, local y fuera de git): ~/.config/pz-web/mapa define PZWEB_MAP (carpeta del mapa), PZWEB_MODS (ids de
 # mod separados por ';'), PZWEB_MODS_DIR (carpeta con los mods, se enlaza en $D/mods) y PZWEB_SPAWN (worldX,worldY,posX,posY del
 # punto de aparición). Sin el archivo ni las variables, el servidor queda con el mapa del juego como siempre.
@@ -148,7 +152,7 @@ case "${1:-status}" in
     if [[ -f "$D/Server/pzweb.ini" ]]; then sed -i 's/^UPnP=true/UPnP=false/; s/^SteamVAC=true/SteamVAC=false/' "$D/Server/pzweb.ini"; fi
     cd "$G"; export PATH="$G/jre64/bin:$PATH" LD_LIBRARY_PATH="$G/natives:$G/jre64/lib/amd64"
     setsid nohup java -cp ./:./projectzomboid.jar -Djava.awt.headless=true --enable-native-access=ALL-UNNAMED \
-      --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED -Xms1g -Xmx2g -XX:+UseZGC -Dzomboid.steam=0 -Djava.library.path=./:./natives/ \
+      --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED -Xms"$PZWEB_SERVER_XMS" -Xmx"$PZWEB_SERVER_XMX" -XX:+UseZGC -Dzomboid.steam=0 -Djava.library.path=./:./natives/ \
       -Djava.security.egd=file:/dev/urandom zombie/network/GameServer -nosteam -cachedir="$D" -ip 127.0.0.1 -port "$PORT" -udpport "$UDPPORT" \
       -servername pzweb -adminpassword "$ADMIN_PW" > "$LOG" 2>&1 < /dev/null &
     echo "arrancando; esperá 'SERVER STARTED' en $LOG" ;;
