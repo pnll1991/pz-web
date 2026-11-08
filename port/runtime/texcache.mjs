@@ -26,7 +26,7 @@ const promised = request => new Promise((resolve, reject) => {
 
 export class TextureCache {
   /** mode: 0 apagada, 1 activa, 2 verificación. */
-  constructor({ mode = 1, build = '', keying = 'codec', codec = CODEC_VERSION, maxPendingBytes = 256 << 20 } = {}) {
+  constructor({ mode = 1, build = '', keying = 'codec', codec = CODEC_VERSION, maxPendingBytes = 1024 << 20 } = {}) {
     this.mode = mode; this.build = build; this.keying = keying; this.codec = codec; this.db = null; this.maxPendingBytes = maxPendingBytes;
     this.pendingBytes = 0; this.writes = Promise.resolve();
     this.stats = { hit:0, miss:0, stored:0, storedBytes:0, readBytes:0, lookupMs:0, dropped:0, writeErrors:0,
@@ -38,7 +38,10 @@ export class TextureCache {
     // Ronda 81: activa por defecto (medido: ToS 106 -> 55 s, carga de la partida 252 -> 178 s, verify 174/174 idénticas);
     // ?nocache=1 o ?texcache=0 la apagan.
     const mode = q.get('nocache') === '1' || v === '0' ? 0 : v === 'verify' ? 2 : 1;
-    return new TextureCache({ mode, build, keying: v === 'build' ? 'build' : 'codec' });
+    // ?texpending=MB: tope de bytes encolados para escribir (por defecto 1024 MB). Medido: con 256 MB la 1.ª carga
+    // descartaba el 45 % de las páginas (253 de 561) porque el juego decodifica más rápido de lo que IndexedDB escribe.
+    const pending = +q.get('texpending');
+    return new TextureCache({ mode, build, keying: v === 'build' ? 'build' : 'codec', ...(pending > 0 ? { maxPendingBytes: pending * 1048576 } : {}) });
   }
 
   /** Llave de las claves y del vaciado: "codec:<versión>" (por defecto) o "build:<ETag>" (?texcache=build). */
