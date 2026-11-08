@@ -1094,3 +1094,7 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 ## 2026-11-08 — pkill y procesos del usuario
 - Error: usé `pkill -f 'node tools/diag/loading-hold'` y `pkill -f 'chrome.*8199'` dentro de un `bash -c` que contenía esos mismos textos: maté mi propia shell (exit 144) y el patrón de Chrome podía haber cerrado el navegador del usuario, que jugaba en 8199.
 - Patrón a evitar: `pkill -f` con patrones que aparecen en la línea de comando del propio comando o que cubren procesos del usuario. Mejor enfoque: guardar el PID al lanzar (`echo $! > archivo`) y matar solo ese PID.
+## 2026-11-08 — servidores de prueba caídos al cortar un comando
+- Error: lancé web 8199 y los servidores PZ de prueba con `setsid … & disown` desde la shell del agente; al interrumpirse un comando de espera (`for … sleep`), los tres recibieron SIGTERM a la vez (`bridge exit 143`, "Shutdown handling" en ambos logs) y el jugador vio negro y volvió a "Conectarse al servidor".
+- Patrón a evitar: suponer que `setsid` aísla un servicio de la sesión del agente, y dejar servicios que usa el dueño colgando de esa sesión.
+- Mejor enfoque: al ver negro + pantalla de conexión, mirar primero si el servidor sigue vivo (`ss -lun`, final del log) antes de buscar fallos del juego; avisar al dueño de que los servicios de prueba dependen de la sesión del agente.

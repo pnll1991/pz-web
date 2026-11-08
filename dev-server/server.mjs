@@ -255,6 +255,26 @@ export async function createDevServer({ webRoot = path.join(root, 'port/target/w
         res.writeHead(200, { ...headers, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
         res.end(req.method === 'HEAD' ? undefined : body); return;
       }
+      // Mods de mapa del juego (PZWEB_MODS_DIR = carpeta con <mod>/...). Archivos del dueño, locales y fuera de git: el cliente los monta en
+      // /Zomboid/mods/ antes de arrancar. Sin la variable, 404 y no pasa nada.
+      if (pathname === '/mods-manifest.json' || pathname.startsWith('/modfiles/')) {
+        const modsDir = process.env.PZWEB_MODS_DIR ? await realpath(process.env.PZWEB_MODS_DIR).catch(() => null) : null;
+        if (!modsDir) { respond(404, 'PZWEB_MODS_DIR not set'); return; }
+        if (pathname === '/mods-manifest.json') {
+          const files = [], walk = async (dir, rel) => { for (const e of (await readdir(dir, { withFileTypes: true })).sort((x, y) => (x.name < y.name ? -1 : 1))) {
+            const name = rel ? `${rel}/${e.name}` : e.name;
+            if (e.isDirectory()) await walk(path.join(dir, e.name), name); else if (e.isFile()) files.push([name, (await stat(path.join(dir, e.name))).size]); } };
+          await walk(modsDir, '');
+          const body = JSON.stringify({ schema_version: 1, files });
+          res.writeHead(200, { ...headers, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
+          res.end(req.method === 'HEAD' ? undefined : body); return;
+        }
+        const target = await realpath(path.resolve(modsDir, decodeURIComponent(pathname.slice('/modfiles/'.length)))).catch(() => null);
+        if (!target || !inside(modsDir, target)) { respond(404, 'No such mod file'); return; }
+        const bytes = await readFile(target);
+        res.writeHead(200, { ...headers, 'Content-Type': 'application/octet-stream', 'Content-Length': bytes.length, 'Cache-Control': 'no-store' });
+        res.end(req.method === 'HEAD' ? undefined : bytes); return;
+      }
       if (pathname === '/health') {
         res.writeHead(200, { ...headers, 'Content-Type': 'application/json' });
         res.end(req.method === 'HEAD' ? undefined : JSON.stringify({ mode: 'platform-smoke', gameMounted: !!mediaRoot }));

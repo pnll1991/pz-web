@@ -281,6 +281,20 @@ try {
     const result = globalThis.pzLanguage = applyLanguage(vfs, language);
     (result.applied ? console.log : console.warn)(`language ${JSON.stringify(result)}`);
   }
+  // Mods de mapa (dev-server PZWEB_MODS_DIR): sus archivos se montan de solo lectura en /Zomboid/mods/<mod>/... antes de arrancar,
+  // que es donde el juego busca los mods del servidor. Sin la variable el dev server contesta 404 y no se monta nada.
+  try {
+    const response = await fetch('/mods-manifest.json', { cache: 'no-cache' });
+    if (response.ok) {
+      const { files } = await response.json();
+      await Promise.all(files.map(async ([rel]) => {
+        const file = await fetch('/modfiles/' + rel.split('/').map(encodeURIComponent).join('/'), { cache: 'no-cache' });
+        if (!file.ok) throw new Error(`${rel}: HTTP ${file.status}`);
+        vfs.mountReadOnly('/Zomboid/mods/' + rel, new Uint8Array(await file.arrayBuffer()));
+      }));
+      console.log(`mods montados: ${files.length} archivos`);
+    }
+  } catch (error) { console.warn('mods de mapa no montados:', error); }
   // Calidad gráfica (port/runtime/graphics.mjs): mínima por defecto para ganar fps; ?calidad=juego deja los valores del juego,
   // ?calidad=auto vuelve al defecto. Mismo mecanismo que el idioma: líneas del options.ini del pack, antes de boot.wasm.
   {

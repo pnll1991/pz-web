@@ -10,6 +10,9 @@
 # Sólo hace falta reiniciar si cambia dev-server/*.mjs o el manifest de media (se calcula una vez).
 set -euo pipefail
 source "$(dirname -- "$0")/env.sh"
+# Mods de mapa (opcional): ~/.config/pz-web/mapa puede definir PZWEB_MODS_DIR; el dev server sirve esos archivos al navegador.
+PZWEB_MAP_CONFIG=${PZWEB_MAP_CONFIG:-$HOME/.config/pz-web/mapa}
+if [[ -f "$PZWEB_MAP_CONFIG" ]]; then source "$PZWEB_MAP_CONFIG"; [[ -n "${PZWEB_MODS_DIR:-}" ]] && export PZWEB_MODS_DIR; fi
 cd "$PZ_WEB_ROOT"
 PORT=8098
 LOG=${PZ_SERVER_LOG:-/tmp/pz80-server.log}
