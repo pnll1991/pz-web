@@ -116,6 +116,14 @@ export class LoadingScreen {
     this.rightEl.textContent = right;
   }
 
+  /** Modo directo, ya con el juego arrancado: se esconde la lista de pasos y queda un título, la barra y qué se está haciendo. */
+  entering(label) {
+    if (this.finished) return;
+    this.titleEl.textContent = 'Entrando al mundo';
+    this.root.querySelector('ol').hidden = true;
+    this.bar(null, label);
+  }
+
   fail(message) {
     if (this.finished) return;
     for (const item of this.root.querySelectorAll('li.pz-active')) item.className = 'pz-failed';

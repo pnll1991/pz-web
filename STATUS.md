@@ -706,3 +706,7 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 - Hecho: tope por defecto 1 GB + `?texpending=MB` (`port/runtime/texcache.mjs`, sin build). El valor de 1 GB no se midió; solo 256 MB y 2 GB.
 - Faltantes: texturas de profundidad (`TilesetDepthTexture.load`, ~26 s) y `NativeImage.read` (~15 s) no pasan por la caché; `MetaGridLoader.loadCell` (~21 s) es lógica del juego. La caché ocupa ~3 GB en IndexedDB con todas las páginas guardadas. Decodificar en paralelo con workers en la 1.ª carga sigue sin probarse.
 - `tools/diag/load-bytes.mjs` con `PZ_CPUPROF=archivo` guarda un perfil de CPU (cambio hecho en el worktree `pzweb-tile1x`, sin subir).
+## 2026-11-08: pantalla de carga hasta el mapa (rama `feat/carga-hasta-mapa`, sin build)
+- Hecho: en el modo directo la carga tapa todo hasta `ingame` (`port/web/game.mjs`, `LoadingScreen.entering` en `port/runtime/loading.mjs`); `?intro=1` la quita con el primer cuadro como antes. Sonda: `tools/diag/loading-hold.mjs`.
+- Evidencia (juego real, web 8199 + PZ 16291, Chrome aparte, 1 corrida): overlay presente en `tos-accepted`, `menu`, `profession`, `character`; desaparece en `ingame` (333,6 s en frío); `npm test` 280/280. Capturas locales, no se suben.
+- Faltantes: la barra es indeterminada durante los ~290 s de carga del mundo (no hay progreso real); no se probó en el túnel ni en móvil.
