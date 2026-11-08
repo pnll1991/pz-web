@@ -715,3 +715,8 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 - Hecho: lecturas síncronas de `/media` de 30 ms o más quedan en `globalThis.pzSlowReads` y en la consola (`port/runtime/vfs.mjs`).
 - Evidencia: `npm test` 280/280. Una caminata de 90 s en Chrome de prueba (web 8199, PZ 16291) no reprodujo el 0 fps: 1 parón de 335 ms, sin pedidos de media; no se confirmó que el personaje se moviera.
 - Faltante: que el dueño capture las líneas `slowread` en una sesión real al caminar a zonas nuevas.
+
+## 2026-11-08: mapa de un mod (Maplewood) sin Muldraugh (rama `feat/mods-de-mapa`)
+- Hecho: el dev server sirve `PZWEB_MODS_DIR` (`/mods-manifest.json`, `/modfiles/…`) y el cliente lo monta en `/Zomboid/mods/`; `mp-server.sh` y `dev_server_8098.sh` leen `~/.config/pz-web/mapa`.
+- Evidencia (servidor de prueba 16293 + web 8199, 1 cliente): `IsoMetaGrid` sin Muldraugh (1,5 s contra 2,7 s), el cliente carga el mod (`loading Maplewood`) y entra a la partida a los 279,6 s; captura del personaje en la zona de Maplewood. `npm test` 280/280.
+- Faltantes: no se probó caminar fuera de las 4 celdas ni varios jugadores a la vez; el punto de aparición (31,32,160,74) sale de las coordenadas viejas del mod más el desplazamiento de B42 y cayó en un bosque.
