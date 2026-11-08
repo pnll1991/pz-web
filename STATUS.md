@@ -710,3 +710,8 @@ Repositorio /home/agente47/Projects/pz-web. Rondas anteriores (hasta la 52) arch
 - Hecho: en el modo directo la carga tapa todo hasta `ingame` (`port/web/game.mjs`, `LoadingScreen.entering` en `port/runtime/loading.mjs`); `?intro=1` la quita con el primer cuadro como antes. Sonda: `tools/diag/loading-hold.mjs`.
 - Evidencia (juego real, web 8199 + PZ 16291, Chrome aparte, 1 corrida): overlay presente en `tos-accepted`, `menu`, `profession`, `character`; desaparece en `ingame` (333,6 s en frío); `npm test` 280/280. Capturas locales, no se suben.
 - Faltantes: la barra es indeterminada durante los ~290 s de carga del mundo (no hay progreso real); no se probó en el túnel ni en móvil.
+
+## 2026-11-08: diagnóstico `slowread` (rama `perf/diag-lecturas-lentas`, sin build)
+- Hecho: lecturas síncronas de `/media` de 30 ms o más quedan en `globalThis.pzSlowReads` y en la consola (`port/runtime/vfs.mjs`).
+- Evidencia: `npm test` 280/280. Una caminata de 90 s en Chrome de prueba (web 8199, PZ 16291) no reprodujo el 0 fps: 1 parón de 335 ms, sin pedidos de media; no se confirmó que el personaje se moviera.
+- Faltante: que el dueño capture las líneas `slowread` en una sesión real al caminar a zonas nuevas.

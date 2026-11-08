@@ -213,9 +213,17 @@ export class VirtualFileSystem {
     const ahead = this.takePrefetched(url, `bytes=${start}-${end - 1}`);
     if (ahead && ahead.length === end - start) { const s = this.remoteStats; s.requests++; s.bytes += ahead.length; return ahead; }
     const out = this.remoteSlices ? this.syncSlice(url, end - start, path) : this.syncRange(url, start, end, path);
-    const s = this.remoteStats; s.requests++; s.bytes += out.length; s.ms += performance.now() - t0;
+    const s = this.remoteStats, took = performance.now() - t0; s.requests++; s.bytes += out.length; s.ms += took;
+    if (took >= 30) this.noteSlow(path, took, out.length);
     this.noteRemoteFetch(url, `bytes=${start}-${end - 1}`, out);
     return out;
+  }
+  /** Diagnóstico de tirones: una lectura síncrona de red congela el hilo principal mientras dura. Las de >= 30 ms quedan en
+   *  `globalThis.pzSlowReads` (últimas 200) y en la consola como `slowread <ms> <bytes> <ruta>`. */
+  noteSlow(path, ms, bytes) {
+    const list = globalThis.pzSlowReads ??= [];
+    if (list.length < 200) list.push({ t: Math.round(performance.now()), path, ms: Math.round(ms), bytes });
+    console.warn(`slowread ${Math.round(ms)}ms ${bytes}B ${path}`);
   }
   remoteBlock(path, index) {
     const BLOCK = 1 << 20, key = path + '#' + index;
