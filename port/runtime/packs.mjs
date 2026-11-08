@@ -43,6 +43,9 @@ const opfsWrite = async (dir, name, bytes) => {
 const VERIFIED_KEY = 'pz-web-packs-verified-index';
 // Ronda 89: los packs perezosos (lazypack.mjs) se montan sin bajar el blob grande; '?lazy=0' (o { lazy:false }) los baja enteros como antes.
 const lazyAllowed = () => typeof location === 'undefined' || new URLSearchParams(location.search).get('lazy') !== '0';
+// Ronda 92: tramos en un SharedArrayBuffer que llena un Worker (lazypack.mjs, modo compartido). Hace falta aislamiento (COOP/COEP); '?lazyworker=0' lo apaga.
+const lazySharedAllowed = () => typeof SharedArrayBuffer !== 'undefined' && typeof Worker !== 'undefined' && globalThis.crossOriginIsolated === true
+  && (typeof location === 'undefined' || new URLSearchParams(location.search).get('lazyworker') !== '0');
 const memoAllowed = () => typeof location === 'undefined' || new URLSearchParams(location.search).get('nocache') !== '1';
 const urlFlag = name => typeof location !== 'undefined' && new URLSearchParams(location.search).get(name) === '1';
 const fullDigestWanted = () => urlFlag('packverify') || urlFlag('nocache');
@@ -52,7 +55,7 @@ const writeMemo = value => { try { localStorage.setItem(VERIFIED_KEY, value); } 
 /** Cache immutable local pack blobs and preload verified files into synchronous memory. */
 export async function preloadPacks(vfs, indexUrl = '/packs/index.json', options = {}) {
   const { memo = memoAllowed(), cachesImpl = globalThis.caches, storage = globalThis.navigator?.storage, cleanup = memo,
-    cacheMaxBytes = CACHE_MAX_BYTES, onProgress = () => {}, lazy = lazyAllowed(), chunkCache = memo,
+    cacheMaxBytes = CACHE_MAX_BYTES, onProgress = () => {}, lazy = lazyAllowed(), chunkCache = memo, lazyShared = lazySharedAllowed(),
     fullDigest = fullDigestWanted() } = options;
   const response = await fetch(indexUrl, { cache:'no-cache' });
   if (!response.ok) throw new Error(`Pack index HTTP ${response.status}`);
@@ -152,7 +155,7 @@ export async function preloadPacks(vfs, indexUrl = '/packs/index.json', options 
     const files = index.files.filter(file => file.pack === pack.name);
     if (isLazy(pack)) {
       // Pack perezoso: ni el blob ni sus archivos se verifican enteros aqui; cada tramo se verifica contra su sha256 cuando se trae.
-      for (const file of files) lazyMounts.push([file.path, buildLazyFile(file, pack, bytesByName, base, vfs, lazyStore)]);
+      for (const file of files) lazyMounts.push([file.path, buildLazyFile(file, pack, bytesByName, base, vfs, lazyStore, lazyShared)]);
       continue;
     }
     // One view over the whole downloaded blob; every mounted file is a subarray of it, so the
@@ -234,7 +237,7 @@ async function removeStalePacks(cache, opfs, current, stats) {
 
 // Un archivo del índice con `lazy: { head, parts }` -> LazyFile. `head` es el nombre de un blob chico (ya bajado y verificado) con los bytes de
 // cabecera; `parts` son [at, length, sha256|null] contiguas. El blob grande (`pack`) solo se pide con Range, por tramos.
-function buildLazyFile(file, pack, bytesByName, base, vfs, store) {
+function buildLazyFile(file, pack, bytesByName, base, vfs, store, shared = false) {
   const lazy = file.lazy;
   if (!lazy || typeof lazy.head !== 'string' || !Array.isArray(lazy.parts) || file.offset !== 0 || file.length !== pack.bytes)
     throw new Error(`Invalid lazy pack entry: ${file.path}`);
@@ -248,6 +251,6 @@ function buildLazyFile(file, pack, bytesByName, base, vfs, store) {
   lazyFile = new LazyFile({ length: file.length, parts: lazy.parts, head: new Uint8Array(headBytes), url: url.href,
     syncGet: (target, start, end) => vfs.syncRange(target, start, end, file.path),
     takePrefetched: (target, range) => vfs.takePrefetched(target, range),
-    onFetch: (chunk, bytes) => store?.record(lazyFile, chunk, bytes) });
+    onFetch: (chunk, bytes) => store?.record(lazyFile, chunk, bytes), shared });
   return lazyFile;
 }

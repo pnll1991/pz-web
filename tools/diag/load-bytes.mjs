@@ -32,30 +32,48 @@ for (let run = 1; run <= RUNS; run++) {
   const page = ctx.pages()[0] || await ctx.newPage();
   const cdp = await ctx.newCDPSession(page); await cdp.send('Network.enable');
   if (A.throttle) await cdp.send('Network.emulateNetworkConditions', { offline: false, latency: +(A.latency || 40), downloadThroughput: +A.throttle * 125000, uploadThroughput: +A.throttle * 125000 });
-  const reqs = new Map(), tot = {}, seconds = {}; let ingame = false; const t0 = Date.now();
-  cdp.on('Network.requestWillBeSent', e => reqs.set(e.requestId, { url: e.request.url, ranged: !!(e.request.headers.Range || e.request.headers.range), decoded: 0 }));
+  const reqs = new Map(), tot = {}, byUrl = {}, seconds = {}; let ingame = false; const t0 = Date.now();
+  cdp.on('Network.requestWillBeSent', e => reqs.set(e.requestId, { url: e.request.url, ranged: !!(e.request.headers.Range || e.request.headers.range), decoded: 0, t: Date.now() }));
   cdp.on('Network.dataReceived', e => { const r = reqs.get(e.requestId); if (r) r.decoded += e.dataLength; });
   cdp.on('Network.loadingFinished', e => {
     const r = reqs.get(e.requestId); if (!r) return;
     const c = cat(r.url, r.ranged); (tot[c] ??= { bytes: 0, decoded: 0, n: 0 });
     tot[c].bytes += e.encodedDataLength; tot[c].decoded += r.decoded; tot[c].n++;
+    const u = new URL(r.url); const key = u.pathname + (r.ranged ? '#range' : '');
+    (byUrl[key] ??= { bytes: 0, decoded: 0, n: 0 }); byUrl[key].bytes += e.encodedDataLength; byUrl[key].decoded += r.decoded; byUrl[key].n++;
   });
   page.on('console', m => {
     const text = m.text();
     // errores, estado de las cachés y de los packs perezosos al archivo de la corrida (el resto del log del juego es enorme)
-    if (m.type() === 'error' || m.type() === 'warning' && !/GL|WebGL/.test(text) || /^(caches|lazyfill|prefetch|mediacache|boot-timings|PZWEB-STATE)/.test(text)) appendFileSync(`${OUT}/${LABEL}-run${run}.log`, `${((Date.now() - t0) / 1000).toFixed(1)} ${m.type()} ${text.slice(0, 1500)}\n`);
+    if (m.type() === 'error' || m.type() === 'warning' && !/GL|WebGL/.test(text) || /^(caches|lazy|prefetch|mediacache|boot-timings|PZWEB-STATE)/.test(text)) appendFileSync(`${OUT}/${LABEL}-run${run}.log`, `${((Date.now() - t0) / 1000).toFixed(1)} ${m.type()} ${text.slice(0, 1500)}\n`);
     const s = /PZWEB-STATE:(\S+)/.exec(text);
     if (s) { seconds[s[1]] ??= +((Date.now() - t0) / 1000).toFixed(1); if (s[1] === 'ingame') ingame = true; }
   });
+  if (process.env.PZ_CPUPROF) { await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 1000 }); await cdp.send('Profiler.start'); }
   await page.goto(URL_, { waitUntil: 'domcontentloaded', timeout: 120000 });
   const end = Date.now() + LIMIT_MIN * 60000; while (!ingame && Date.now() < end) await sleep(2000);
   await sleep(+(A.settle || 5) * 1000);
+  let walk = null;
+  if (A.walk) {
+    // Diagnóstico de tirones: camina A.walk segundos rotando teclas y mide huecos de rAF (>300 ms) y qué se pidió a la red.
+    await page.evaluate(() => { window.__gaps = []; let last = performance.now(); const f = () => { const n = performance.now(); if (n - last > 300) window.__gaps.push([Math.round(n), Math.round(n - last)]); last = n; requestAnimationFrame(f); }; requestAnimationFrame(f); });
+    const w0 = Date.now(), keys = ['s', 'd', 'w', 'a'], t0p = await page.evaluate(() => Math.round(performance.now()));
+    await page.mouse.click(640, 360).catch(() => {});
+    for (let i = 0; Date.now() - w0 < +A.walk * 1000; i++) { const k = keys[i % 4]; await page.keyboard.down(k); await sleep(4000); await page.keyboard.up(k); }
+    const gaps = await page.evaluate(() => window.__gaps);
+    const by = {}; let n = 0;
+    for (const r of reqs.values()) if (r.t >= w0) { n++; const u = new URL(r.url); const k = u.pathname.replace(/\/[0-9a-f]{64}\.bin/, '/<pack>.bin'); (by[k] ??= { n: 0, bytes: 0 }); by[k].n++; by[k].bytes += r.decoded; }
+    walk = { seconds: +A.walk, requests: n, stalls: gaps.filter(g => g[0] >= t0p).length, maxStallMs: Math.max(0, ...gaps.map(g => g[1])), totalStallMs: gaps.reduce((a, g) => a + g[1], 0), gaps: gaps.slice(0, 40),
+      top: Object.entries(by).sort((a, b) => b[1].n - a[1].n).slice(0, 12) };
+    console.error('WALK ' + JSON.stringify(walk));
+  }
   const stats = await page.evaluate(() => ({ pack: globalThis.pzPackStats && { sources: globalThis.pzPackStats.sources, lazy: globalThis.pzPackStats.lazy, lazyStore: globalThis.pzPackStats.lazyStore },
     lazyFiles: globalThis.pzLazyFiles && Object.fromEntries(Object.entries(globalThis.pzLazyFiles).map(([k, f]) => [k, { ...f.stats, touched: f.touched.size, touchedMB: +(f.touchedBytes / 1e6).toFixed(1) }])) })).catch(() => null);
   const sum = Object.values(tot).reduce((n, v) => n + v.bytes, 0), sumDecoded = Object.values(tot).reduce((n, v) => n + v.decoded, 0);
-  const r = { label: LABEL, run, throttleMbps: A.throttle ? +A.throttle : null, ingame, secondsToIngame: seconds.ingame ?? null, seconds, totalMB: +(sum / 1e6).toFixed(1), decodedMB: +(sumDecoded / 1e6).toFixed(1),
-    byCategory: Object.fromEntries(Object.entries(tot).map(([k, v]) => [k, { MB: +(v.bytes / 1e6).toFixed(1), decodedMB: +(v.decoded / 1e6).toFixed(1), requests: v.n }])), stats };
+  const r = { walk, label: LABEL, run, throttleMbps: A.throttle ? +A.throttle : null, ingame, secondsToIngame: seconds.ingame ?? null, seconds, totalMB: +(sum / 1e6).toFixed(1), decodedMB: +(sumDecoded / 1e6).toFixed(1),
+    byCategory: Object.fromEntries(Object.entries(tot).map(([k, v]) => [k, { MB: +(v.bytes / 1e6).toFixed(1), decodedMB: +(v.decoded / 1e6).toFixed(1), requests: v.n }])), topURLs: Object.entries(byUrl).sort((a, b) => b[1].bytes - a[1].bytes).slice(0, 12).map(([u, v]) => [u, +(v.bytes / 1e6).toFixed(1), v.n]), stats };
   console.log(JSON.stringify(r)); results.push(r);
+  if (process.env.PZ_CPUPROF) { const { profile } = await cdp.send('Profiler.stop'); (await import('node:fs')).writeFileSync(process.env.PZ_CPUPROF, JSON.stringify(profile)); (await import('node:fs')).writeFileSync(process.env.PZ_CPUPROF + '.marks.json', JSON.stringify(seconds)); }
   await ctx.close();
 }
 writeFileSync(`${OUT}/${LABEL}.json`, JSON.stringify(results, null, 1));

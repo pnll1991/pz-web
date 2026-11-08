@@ -201,7 +201,7 @@ try {
   })();
   const vfs = await vfsInstance.open();
   bootMark('vfs');
-  // Ronda 89: Tiles2x se lee entero durante la carga del mundo (medido: el juego pide los 369 PNG), asi que no hay bytes que ahorrar, pero si tiempo:
+  // Ronda 89: Tiles2x se lee entero (medido: el juego pide los 369 PNG; R92: antes del menú, no en la carga del mundo), asi que no hay bytes que ahorrar, pero si tiempo:
   // en vez de bajar 321 MB antes de arrancar, los tramos se bajan en paralelo (en el orden del archivo, que es el que lee el juego) mientras
   // arranca el resto. Lo que el juego pida antes de que llegue se lee con un XHR sincrono (verificado igual). ?lazyfill=0 lo apaga.
   let lazyFillStarted = false;
@@ -209,13 +209,29 @@ try {
     if (lazyFillStarted || new URLSearchParams(location.search).get('lazyfill') === '0') return;
     lazyFillStarted = true;
     (async () => {
+      // Ronda 92: con los tramos en memoria compartida el relleno va en un Worker (sigue aunque el juego tenga ocupado el hilo, y una lectura
+      // espera al tramo en vuelo en vez de pedirlo otra vez). Concurrencia: 4 en http/1.1 (Chrome abre 6 conexiones por host y las lecturas
+      // síncronas del juego necesitan alguna libre), 8 en h2/h3 (el túnel), donde cada pedido paga ~0,7 s de ida y vuelta. ?lazyconc=N la fija.
+      const protocol = performance.getEntriesByType?.('navigation')?.[0]?.nextHopProtocol ?? '';
+      const concurrency = Number(new URLSearchParams(location.search).get('lazyconc')) || (/^h[23]/.test(protocol) ? 8 : 4);
       for (const file of Object.values(globalThis.pzLazyFiles ?? {})) {
-        const result = await file.fill({ concurrency: 4 }).catch(error => ({ error: String(error) }));
-        console.log(`lazyfill ${JSON.stringify({ ...result, ...file.stats, touched: file.touched.size })}`);
+        let worker = null;
+        if (file.shared) try { worker = new Worker(new URL('/runtime/lazyfill-worker.mjs', location.href), { type: 'module' }); } catch (error) { console.warn('lazyfill sin Worker:', error); }
+        const result = await file.fill({ concurrency, worker }).catch(error => ({ error: String(error) }));
+        if (result?.error && worker) { // el Worker no anduvo: el relleno de siempre, en este hilo
+          console.warn(`lazyfill worker ${result.error}`);
+          Object.assign(result, await file.fill({ concurrency: 4 }).catch(error => ({ error: String(error) })));
+        }
+        console.log(`lazyfill ${JSON.stringify({ ...result, ...file.stats, touched: file.touched.size, protocol, concurrency, t: Math.round(performance.now() / 100) / 10 })}`);
       }
       await globalThis.pzLazyStore?.flush?.();
     })();
   };
+  // Cuántos tramos ya estaban en memoria en cada estado del modo directo (para ver si llegan antes de la carga del mundo).
+  const lazyReport = state => { for (const file of Object.values(globalThis.pzLazyFiles ?? {})) {
+    const { loaded, chunks, sync, syncBytes } = file.stats;
+    console.log(`lazy-at ${state} ${JSON.stringify({ t: Math.round(performance.now() / 100) / 10, loaded, chunks, sync, syncBytes, touched: file.touched.size })}`);
+  } };
   const lazyClaim = () => { const files = Object.values(globalThis.pzLazyFiles ?? {}); return files.length ? claimPrefetch(files) : undefined; };
   // La barra sigue los bytes de los packs; los eventos llegan por bloque, se pintan una vez por cuadro.
   let packProgress = null, packFrame = 0;
@@ -349,7 +365,7 @@ try {
       : state === 'world' ? 'Cargando el mundo…' : state === 'loaded' ? 'Entrando al mapa…' : 'Entrando a la partida…';
     if (holdLoading) setTimeout(() => loading.finish(), 15 * 60000);
     watchConsole(auto, { onState: state => {
-      if (!state.startsWith('connect')) { bootMark(`play:${state}`); bootReport(); }
+      if (!state.startsWith('connect')) { bootMark(`play:${state}`); bootReport(); lazyReport(state); }
       show(state);
       if (holdLoading) { const label = entering(state); if (label === null) loading.finish(); else loading.entering(label); }
       if (state === 'loaded') clickUntilIngame(auto, pzRuntime.input, canvas);
@@ -495,7 +511,7 @@ try {
     for (const [mark, list] of worldLabels) {
       if (mark in bootTimings || !list.some(label => counts[label] > 0)) continue;
       bootMark(mark); bootReport();
-      if (mark === 'world-load-start') pzRuntime.autoJoin?.show?.('world');
+      if (mark === 'world-load-start') { pzRuntime.autoJoin?.show?.('world'); lazyReport('world'); }
       if (mark === 'world-load-end') cachesReport(); // segunda línea `caches`: lo que la carga del mundo sacó de cada caché
     }
   };
