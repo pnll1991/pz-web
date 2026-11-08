@@ -64,6 +64,25 @@ apply_zombie_config() { # $1 = pzweb_SandboxVars.lua; idempotente; valida todo a
 # existe todavía (mundo nuevo) se crea uno mínimo y el juego completa el resto al guardarlo. El idioma de la interfaz de cada
 # jugador lo decide su cliente (port/runtime/language.mjs), no este valor.
 PZWEB_LANGUAGE=${PZWEB_LANGUAGE:-ES}
+# Mapa de un mod (opcional, local y fuera de git): ~/.config/pz-web/mapa define PZWEB_MAP (carpeta del mapa), PZWEB_MODS (ids de
+# mod separados por ';'), PZWEB_MODS_DIR (carpeta con los mods, se enlaza en $D/mods) y PZWEB_SPAWN (worldX,worldY,posX,posY del
+# punto de aparición). Sin el archivo ni las variables, el servidor queda con el mapa del juego como siempre.
+PZWEB_MAP_CONFIG=${PZWEB_MAP_CONFIG:-$HOME/.config/pz-web/mapa}
+[[ -f "$PZWEB_MAP_CONFIG" ]] && source "$PZWEB_MAP_CONFIG"
+apply_map() { # $1 = pzweb.ini
+  local f=$1 key value
+  for key in Map Mods; do
+    [[ $key == Map ]] && value=${PZWEB_MAP:-} || value=${PZWEB_MODS:-}
+    [[ -n "$value" ]] || continue
+    [[ "$value" != *$'\n'* && "$value" != *'|'* ]] || { echo "PZWEB_MAP/PZWEB_MODS inválido" >&2; return 1; }
+    if grep -q "^$key=" "$f"; then sed -i "s|^$key=.*|$key=$value|" "$f"; else printf '%s=%s\n' "$key" "$value" >> "$f"; fi
+  done
+  if [[ -n "${PZWEB_MODS_DIR:-}" ]]; then
+    [[ -d "$PZWEB_MODS_DIR" ]] || { echo "PZWEB_MODS_DIR=$PZWEB_MODS_DIR no existe" >&2; return 1; }
+    if [[ -L "$D/mods" || ! -e "$D/mods" ]]; then ln -sfn "$PZWEB_MODS_DIR" "$D/mods"; fi
+  fi
+  return 0
+}
 apply_language() { # $1 = options.ini del servidor
   local f=$1 code; code=$(printf '%s' "$PZWEB_LANGUAGE" | tr '[:lower:]' '[:upper:]')
   [[ $code =~ ^[A-Z][A-Z0-9_]{1,15}$ ]] || { echo "PZWEB_LANGUAGE=$PZWEB_LANGUAGE: código inválido" >&2; return 1; }
@@ -100,6 +119,12 @@ apply_config() {
   #    clientes cuyos Lua no coinciden con los suyos. Sólo para este servidor local de confianza.
   [[ -f "$D/Server/pzweb.ini" ]] && sed -i 's/^DoLuaChecksum=.*/DoLuaChecksum=false/' "$D/Server/pzweb.ini"
   # una sola región de aparición (punto fijo de pzweb_spawnpoints.lua): los jugadores de prueba aparecen juntos
+  if [[ -f "$D/Server/pzweb.ini" ]]; then apply_map "$D/Server/pzweb.ini" || return 1; fi
+  if [[ -n "${PZWEB_SPAWN:-}" && -d "$D/Server" ]]; then
+    [[ $PZWEB_SPAWN =~ ^([0-9]+),([0-9]+),([0-9]+),([0-9]+)$ ]] || { echo "PZWEB_SPAWN=$PZWEB_SPAWN: se espera worldX,worldY,posX,posY" >&2; return 1; }
+    printf 'function SpawnPoints()\n\treturn {\n\t\tunemployed = {\n\t\t\t{ worldX = %s, worldY = %s, posX = %s, posY = %s }\n\t\t}\n\t}\nend\n' \
+      "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}" > "$D/Server/pzweb_spawnpoints.lua"
+  fi
   [[ -d "$D/Server" ]] && printf 'function SpawnRegions()\n\treturn {\n\t\t{ name = "pzweb", serverfile = "pzweb_spawnpoints.lua" },\n\t}\nend\n' > "$D/Server/pzweb_spawnregions.lua"
   return 0
 }
