@@ -1091,3 +1091,6 @@ Leer al comenzar cada chat. Registrar errores propios, patrones a evitar y enfoq
 - Error: di por buena la caché de texturas (activa por defecto) sin mirar sus contadores; el perfil en caliente mostró 44 s en el camino sin caché. Causa: `stats.dropped` = 253 por el tope de 256 MB.
 - Patrón a evitar: concluir "la caché ya cubre esto" por la descripción del código. Mejor enfoque: leer la línea `caches` de `/tmp/pz86/load-bytes/<label>-run<N>.log` (hit/miss/dropped) antes de proponer cambios.
 - Error: lancé una corrida de 10 min sin avisar y el usuario preguntó "¿en qué estás?". Mejor enfoque: decir qué corre y cuánto tarda antes de esperar.
+## 2026-11-08 — pkill y procesos del usuario
+- Error: usé `pkill -f 'node tools/diag/loading-hold'` y `pkill -f 'chrome.*8199'` dentro de un `bash -c` que contenía esos mismos textos: maté mi propia shell (exit 144) y el patrón de Chrome podía haber cerrado el navegador del usuario, que jugaba en 8199.
+- Patrón a evitar: `pkill -f` con patrones que aparecen en la línea de comando del propio comando o que cubren procesos del usuario. Mejor enfoque: guardar el PID al lanzar (`echo $! > archivo`) y matar solo ese PID.

@@ -20,6 +20,7 @@ import { installPerfHud, perfName } from '/runtime/perfhud.mjs';
 const status = document.getElementById('game-status');
 // Pantalla de carga: tapa la página hasta que el juego dibuja su primer cuadro (BrowserWindow.swapCount).
 const loading = new LoadingScreen(document);
+let holdLoading = false; // true en el modo directo (autojoin): la carga se queda hasta el estado 'ingame'
 loading.step('build', 'active');
 // Medición de la carga inicial: ms desde el inicio de la navegación hasta cada fase del arranque (performance.now()),
 // también como performance.mark('pz:<fase>') para el panel Performance de Chrome. `boot-timings {...}` sale por consola
@@ -327,7 +328,18 @@ try {
       profession: 'Creando personaje', character: 'Creando personaje', world: 'Cargando el mundo…', loaded: 'Mundo cargado', ingame: '' };
     const show = state => { label.textContent = state.startsWith('connect-failed') ? `No se pudo conectar (${state.slice(15)}); reintentando…`
       : state.startsWith('connect') ? `Conectando como ${auto.user}…` : (text[state] ?? state) && `${text[state] ?? state} · ${auto.user}`; };
-    watchConsole(auto, { onState: state => { if (!state.startsWith('connect')) { bootMark(`play:${state}`); bootReport(); } show(state); if (state === 'loaded') clickUntilIngame(auto, pzRuntime.input, canvas); } });
+    // Pantalla de carga hasta estar en el mapa: el modo directo pasa términos, menú, conexión y creación del personaje solo, y todo eso
+    // queda tapado por la carga, que se va con el estado 'ingame' (?intro=1 la quita con el primer cuadro, como antes). Si en 15 min no llegó, se va igual.
+    holdLoading = new URLSearchParams(location.search).get('intro') !== '1';
+    const entering = state => state === 'ingame' ? null : state.startsWith('connect-failed') ? `No se pudo conectar (${state.slice(15)}); reintentando…`
+      : state === 'world' ? 'Cargando el mundo…' : state === 'loaded' ? 'Entrando al mapa…' : 'Entrando a la partida…';
+    if (holdLoading) setTimeout(() => loading.finish(), 15 * 60000);
+    watchConsole(auto, { onState: state => {
+      if (!state.startsWith('connect')) { bootMark(`play:${state}`); bootReport(); }
+      show(state);
+      if (holdLoading) { const label = entering(state); if (label === null) loading.finish(); else loading.entering(label); }
+      if (state === 'loaded') clickUntilIngame(auto, pzRuntime.input, canvas);
+    } });
     show('installed');
     auto.show = show; // ronda 89: el bucle de abajo muestra 'world' al entrar GameLoadingState
     // Over the public https tunnel (or ?prefetch=1) bring the media the game will read in parallel first: one round trip per read is too slow.
@@ -485,7 +497,7 @@ try {
     document.getElementById('game-error').textContent = globalThis.pzGame?.error || '';
     if (globalThis.pzGame?.phase === 'failed') loading.fail(globalThis.pzGame.error || 'El arranque encontró un error.');
     else if (pzRuntime.window.swapCount > 0) {
-      loading.finish();
+      if (!holdLoading) loading.finish();
       if (!('first-frame' in bootTimings)) { bootMark('first-frame'); bootReport(); }
     }
     requestAnimationFrame(update);
